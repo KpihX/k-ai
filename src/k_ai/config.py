@@ -71,14 +71,27 @@ class ConfigManager:
         """
         return self.config.get(key, default)
 
-    def get_provider_config(self, provider_name: str) -> Optional[Dict[str, Any]]:
+    def get_provider_config(self, provider_name: str, auth_mode: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
-        Searches all '*_providers' sections and returns the config for a specific provider.
+        Searches provider sections and returns the config for a specific provider.
+        If auth_mode is specified, it only looks in that section.
+        If not, it searches in a predefined priority order.
         """
-        for key, section in self.config.items():
-            if key.endswith("_providers") and isinstance(section, dict):
+        search_priority = self.get("provider_search_priority", ["no_auth_providers", "api_providers", "oauth_providers"])
+
+        if auth_mode:
+            # If a specific mode is requested, only search in that corresponding section
+            section_name = f"{auth_mode}_providers"
+            section = self.config.get(section_name, {})
+            if provider_name in section:
+                return section[provider_name]
+        else:
+            # Otherwise, search through sections based on priority
+            for section_name in search_priority:
+                section = self.config.get(section_name, {})
                 if provider_name in section:
                     return section[provider_name]
+                    
         return None
 
 # Example usage (for testing)

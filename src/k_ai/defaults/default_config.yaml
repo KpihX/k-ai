@@ -10,58 +10,75 @@ temperature: 0.7
 max_tokens: 8192
 stream: true
 
+# The order in which to search for a provider if no auth_mode is specified
+provider_search_priority:
+  - "no_auth_providers"
+  - "api_providers"
+  - "oauth_providers"
+
 # ==============================================================================
 # 2. CLI & UI Behavior
 # ==============================================================================
 cli:
   show_token_usage: true
   theme: "default"
-  thinking_indicator: "dots" # (dots, bar, etc.)
+  thinking_indicator: "dots"
   show_welcome_panel: true
 
 # ==============================================================================
 # 3. Provider Registry
 # ==============================================================================
-# Defines available providers and their specific configurations.
-# Based on the LiteLLM driver, adding a provider is as simple as adding an entry.
+
+no_auth_providers:
+  ollama:
+    auth_mode: "no_auth"
+    base_url: "http://localhost:11434/v1"
+    litellm_prefix: "ollama"
+    default_model: "phi4-mini:latest"
+    context_window: 32768
 
 api_providers:
   mistral:
+    auth_mode: "api_key"
     api_key_env_var: "MISTRAL_API_KEY"
+    litellm_prefix: "mistral"
     default_model: "mistral-large-latest"
     context_window: 128000
 
   openai:
+    auth_mode: "api_key"
     api_key_env_var: "OPENAI_API_KEY"
+    litellm_prefix: "openai"
     default_model: "gpt-4o"
     context_window: 128000
 
   groq:
+    auth_mode: "api_key"
     api_key_env_var: "GROQ_API_KEY"
+    litellm_prefix: "groq"
     default_model: "qwen/qwen3-32b"
     context_window: 32768
     
-  google-api:
+  gemini: # Unified gemini provider
     auth_mode: "api_key"
     api_key_env_var: "GOOGLE_API_KEY"
+    litellm_prefix: "gemini"
     default_model: "gemini-2.5-flash"
     context_window: 1000000
 
   anthropic:
+    auth_mode: "api_key"
     api_key_env_var: "ANTHROPIC_API_KEY"
+    litellm_prefix: "anthropic"
     default_model: "claude-3-sonnet-20240229"
     context_window: 200000
 
   alibaba:
+    auth_mode: "api_key"
     api_key_env_var: "DASHSCOPE_API_KEY"
+    litellm_prefix: "dashscope"
     default_model: "qwen-turbo"
     context_window: 6144
-
-  ollama:
-    base_url: "http://localhost:11434/v1"
-    api_key_value: "ollama" # Dummy key
-    default_model: "phi4-mini:latest"
-    context_window: 32768
 
 # ==============================================================================
 # 4. OAuth Based Providers
@@ -69,9 +86,10 @@ api_providers:
 # For providers that support browser-based OAuth authentication.
 
 oauth_providers:
-  google-pro:
+  gemini: # Unified gemini provider
     auth_mode: "oauth"
     oauth_provider_name: "google"
+    litellm_prefix: "gemini"
     oauth_scopes:
       - "https://www.googleapis.com/auth/cloud-platform"
     token_path: "~/.k_ai/tokens/google_oauth.json"
