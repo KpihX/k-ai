@@ -25,7 +25,7 @@ cli:
 # Defines available providers and their specific configurations.
 # Based on the LiteLLM driver, adding a provider is as simple as adding an entry.
 
-openai_providers:
+api_providers:
   mistral:
     api_key_env_var: "MISTRAL_API_KEY"
     default_model: "mistral-large-latest"
@@ -41,7 +41,7 @@ openai_providers:
     default_model: "qwen/qwen3-32b"
     context_window: 32768
     
-  google-api: # Renamed from 'google' to be explicit
+  google-api:
     auth_mode: "api_key"
     api_key_env_var: "GOOGLE_API_KEY"
     default_model: "gemini-2.5-flash"
@@ -68,7 +68,7 @@ openai_providers:
 # ==============================================================================
 # For providers that support browser-based OAuth authentication.
 
-google_oauth_providers:
+oauth_providers:
   google-pro:
     auth_mode: "oauth"
     oauth_provider_name: "google"
