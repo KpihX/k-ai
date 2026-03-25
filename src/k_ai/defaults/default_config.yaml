@@ -28,7 +28,7 @@ cli:
 openai_providers:
   mistral:
     api_key_env_var: "MISTRAL_API_KEY"
-    default_model: "mistral-medium-latest"
+    default_model: "mistral-large-latest"
     context_window: 32000
 
   openai:
@@ -37,21 +37,21 @@ openai_providers:
     context_window: 128000
 
   groq:
-      api_key_env_var: "GROQ_API_KEY"
-      default_model: "llama-3.1-70b-versatile"
-      context_window: 131072
+    api_key_env_var: "GROQ_API_KEY"
+    default_model: "qwen/qwen3-32b"
+    context_window: 32768
+    
+  google-api: # Renamed from 'google' to be explicit
+    auth_mode: "api_key"
+    api_key_env_var: "GOOGLE_API_KEY"
+    default_model: "gemini-2.5-flash"
+    context_window: 1000000
 
-    google-api: # Renamed from 'google' to be explicit
-      auth_mode: "api_key"
-      api_key_env_var: "GOOGLE_API_KEY"
-      default_model: "gemini-1.5-pro-latest"
-      context_window: 1000000
-
-    ollama:
-      base_url: "http://localhost:11434/v1"
-      api_key_value: "ollama" # Dummy key
-      default_model: "phi3:medium"
-      context_window: 32768
+  ollama:
+    base_url: "http://localhost:11434/v1"
+    api_key_value: "ollama" # Dummy key
+    default_model: "phi4-mini:latest"
+    context_window: 32768
 
 # ==============================================================================
 # 4. OAuth Based Providers
@@ -65,5 +65,5 @@ google_oauth_providers:
     oauth_scopes:
       - "https://www.googleapis.com/auth/cloud-platform"
     token_path: "~/.k_ai/tokens/google_oauth.json"
-    default_model: "gemini-2.5-pro-latest"
+    default_model: "gemini-2.5-flash"
     context_window: 1000000
