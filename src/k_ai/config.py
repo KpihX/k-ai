@@ -7,18 +7,32 @@ import os
 import yaml
 from pathlib import Path
 from typing import Dict, Any, Optional
+from functools import lru_cache
 
 # The name of the default configuration file included with the package
 DEFAULT_CONFIG_FILENAME = "default_config.yaml"
+
+@lru_cache(maxsize=None)
+def load_config_from_path(path: Path) -> Dict[str, Any]:
+    """
+    Loads and parses a YAML configuration file from a given path.
+    This function is cached to avoid repeated disk I/O.
+    """
+    if not path.exists():
+        raise FileNotFoundError(f"Configuration file not found at {path}")
+        
+    with open(path, 'r') as f:
+        config = yaml.safe_load(f)
+    
+    if not isinstance(config, dict):
+        raise TypeError(f"Configuration at {path} is not a valid dictionary.")
+        
+    return config
 
 class ConfigManager:
     def __init__(self, override_path: Optional[str] = None):
         """
         Initializes the ConfigManager.
-
-        Args:
-            override_path: Optional path to a user-provided config.yaml.
-                           If provided, it will be merged on top of the default config.
         """
         self.default_config_path = Path(__file__).parent / "defaults" / DEFAULT_CONFIG_FILENAME
         self.override_path = Path(override_path).expanduser() if override_path else None
@@ -30,27 +44,12 @@ class ConfigManager:
         """
         Loads the default configuration and merges the override config on top.
         """
-        # 1. Load default config
-        if not self.default_config_path.exists():
-            raise FileNotFoundError(f"Default configuration file not found at {self.default_config_path}")
-            
-        with open(self.default_config_path, 'r') as f:
-            default_config = yaml.safe_load(f)
-        
-        if not isinstance(default_config, dict):
-            raise TypeError("Default configuration is not a valid dictionary.")
-            
-        self.config = default_config
+        # 1. Load default config from cache
+        self.config = load_config_from_path(self.default_config_path)
 
         # 2. Load override config if it exists
         if self.override_path and self.override_path.exists():
-            with open(self.override_path, 'r') as f:
-                override_config = yaml.safe_load(f)
-            
-            if not isinstance(override_config, dict):
-                print(f"Warning: Override config at {self.override_path} is not a valid dictionary. Skipping.")
-                return
-
+            override_config = load_config_from_path(self.override_path)
             # 3. Merge override into default (deep merge)
             self._deep_merge(self.config, override_config)
 

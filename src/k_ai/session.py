@@ -15,14 +15,14 @@ from .ui import StreamingRenderer
 from .commands import CommandHandler
 
 class ChatSession:
-    def __init__(self, config_manager: ConfigManager, provider: str = None, model: str = None):
+    def __init__(self, config_manager: ConfigManager, provider: Optional[str] = None, model: Optional[str] = None):
         self.cm = config_manager
         self.console = Console()
         self.llm: LLMProvider = get_provider(self.cm, provider=provider, model=model)
         self.history: List[Message] = []
         self.command_handler = CommandHandler(self)
 
-    async def start(self):
+    async def start(self) -> None:
         """Starts the interactive chat session."""
         self._print_welcome_panel()
         session = PromptSession(history=InMemoryHistory())
@@ -53,7 +53,7 @@ class ChatSession:
         
         self.console.print("\n[bold green]Goodbye![/bold green]")
 
-    def _print_welcome_panel(self):
+    def _print_welcome_panel(self) -> None:
         from rich.panel import Panel
         from rich.text import Text
 

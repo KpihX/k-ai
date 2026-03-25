@@ -29,7 +29,7 @@ openai_providers:
   mistral:
     api_key_env_var: "MISTRAL_API_KEY"
     default_model: "mistral-large-latest"
-    context_window: 32000
+    context_window: 128000
 
   openai:
     api_key_env_var: "OPENAI_API_KEY"
@@ -46,6 +46,16 @@ openai_providers:
     api_key_env_var: "GOOGLE_API_KEY"
     default_model: "gemini-2.5-flash"
     context_window: 1000000
+
+  anthropic:
+    api_key_env_var: "ANTHROPIC_API_KEY"
+    default_model: "claude-3-sonnet-20240229"
+    context_window: 200000
+
+  alibaba:
+    api_key_env_var: "DASHSCOPE_API_KEY"
+    default_model: "qwen-turbo"
+    context_window: 6144
 
   ollama:
     base_url: "http://localhost:11434/v1"

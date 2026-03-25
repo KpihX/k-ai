@@ -32,7 +32,7 @@ class CommandHandler:
         
         return True
 
-    def show_help(self):
+    def show_help(self) -> None:
         """Displays the help message."""
         table = Table(title="Available Commands")
         table.add_column("Command", style="cyan")
@@ -42,7 +42,7 @@ class CommandHandler:
         table.add_row("/config get", "Copy the default config file to the current directory.")
         self.console.print(table)
 
-    def get_config(self):
+    def get_config(self) -> None:
         """Copies the default config file to the current directory."""
         try:
             default_path = self.session.cm.default_config_path

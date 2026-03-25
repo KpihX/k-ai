@@ -17,12 +17,13 @@ from .exceptions import (
     ServiceUnavailableError,
     ConfigurationError,
 )
+from .config import ConfigManager
 # We will create a simple base class for now
 from abc import ABC, abstractmethod
 
 class LLMProvider(ABC):
     """Abstract Base Class for all LLM providers."""
-    def __init__(self, config_manager, provider_name: Optional[str] = None, model_name: Optional[str] = None):
+    def __init__(self, config_manager: ConfigManager, provider_name: Optional[str] = None, model_name: Optional[str] = None):
         self.config_manager = config_manager
         self.provider_name = provider_name or self.config_manager.get("provider")
         
@@ -46,7 +47,7 @@ class LiteLLMDriver(LLMProvider):
     """
     Universal Provider using the LiteLLM library.
     """
-    def __init__(self, config_manager, provider_name: Optional[str] = None, model_name: Optional[str] = None):
+    def __init__(self, config_manager: ConfigManager, provider_name: Optional[str] = None, model_name: Optional[str] = None):
         super().__init__(config_manager, provider_name, model_name)
         
         self.api_key: Optional[str] = None
@@ -57,7 +58,7 @@ class LiteLLMDriver(LLMProvider):
             if api_key_var:
                 self.api_key = os.getenv(api_key_var)
             elif "api_key_value" in self.provider_config:
-                 self.api_key = self.provider_config.get("api_key_value")
+                self.api_key = self.provider_config.get("api_key_value")
                  
             if not self.api_key and api_key_var:
                  raise ValueError(f"API Key not found for provider '{self.provider_name}'. Expected env var: {api_key_var}")
