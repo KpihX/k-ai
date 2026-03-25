@@ -70,7 +70,12 @@ class LiteLLMDriver(LLMProvider):
         # Construct model string for litellm
         # For providers like openai, groq, mistral, it's just the model name.
         # For others, it might be `provider/model_name`. LiteLLM handles this well.
-        model_str = f"{self.provider_name}/{self.model_name}" if self.provider_name not in ["openai", "mistral", "groq"] else self.model_name
+        if self.provider_name in ["google-api", "google-pro"]:
+            model_str = f"gemini/{self.model_name}"
+        elif self.provider_name not in ["openai", "mistral", "groq"]:
+            model_str = f"{self.provider_name}/{self.model_name}"
+        else:
+            model_str = self.model_name
 
         try:
             response = await litellm.acompletion(

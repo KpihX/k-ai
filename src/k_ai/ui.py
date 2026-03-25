@@ -1,6 +1,6 @@
 # src/k_ai/ui.py
 """
-User Interface logic for k-ai, inspired by k-llm's rich display.
+User Interface logic for k-ai.
 """
 from rich.console import Console
 from rich.markdown import Markdown
