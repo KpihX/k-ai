@@ -71,28 +71,32 @@ class ConfigManager:
         """
         return self.config.get(key, default)
 
-    def get_provider_config(self, provider_name: str, auth_mode: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    def get_provider_config_with_auth_mode(self, provider_name: str, auth_mode: Optional[str] = None) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
         """
-        Searches provider sections and returns the config for a specific provider.
-        If auth_mode is specified, it only looks in that section.
-        If not, it searches in a predefined priority order.
+        Searches provider sections, finds the provider, and returns its config
+        along with the determined authentication mode.
         """
         search_priority = self.get("provider_search_priority", ["no_auth_providers", "api_providers", "oauth_providers"])
 
-        if auth_mode:
-            # If a specific mode is requested, only search in that corresponding section
-            section_name = f"{auth_mode}_providers"
+        def find_in_section(section_name: str) -> Optional[Dict[str, Any]]:
             section = self.config.get(section_name, {})
             if provider_name in section:
                 return section[provider_name]
+            return None
+
+        if auth_mode:
+            section_name = f"{auth_mode}_providers"
+            config = find_in_section(section_name)
+            if config:
+                return config, auth_mode
         else:
-            # Otherwise, search through sections based on priority
             for section_name in search_priority:
-                section = self.config.get(section_name, {})
-                if provider_name in section:
-                    return section[provider_name]
+                config = find_in_section(section_name)
+                if config:
+                    derived_auth_mode = section_name.replace("_providers", "")
+                    return config, derived_auth_mode
                     
-        return None
+        return None, None
 
 # Example usage (for testing)
 if __name__ == '__main__':
