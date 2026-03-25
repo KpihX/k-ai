@@ -8,5 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 - Initial project scaffolding with `uv`.
-- Basic project structure with `README.md`, `CHANGELOG.md`, `TODO.md`, and `Makefile`.
-- Git repository initialization and remote setup on GitHub and GitLab.
+- Core application structure with a modular design:
+  - `config.py`: `ConfigManager` for hierarchical configuration.
+  - `llm_core.py`: `LiteLLMDriver` for provider-agnostic LLM interaction.
+  - `models.py`: Pydantic models for data consistency.
+  - `ui.py`: `StreamingRenderer` for a rich, interactive UI.
+  - `session.py`: `ChatSession` to encapsulate chat logic.
+  - `commands.py`: `CommandHandler` for `/slash` commands.
+  - `main.py`: CLI entry point using Typer.
+- `README.md`, `CHANGELOG.md`, `TODO.md`, and `Makefile` created.
+- Git repository initialized and remotes set up for GitHub and GitLab.

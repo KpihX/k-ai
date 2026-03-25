@@ -1,13 +1,20 @@
 [project]
 name = "k-ai"
 version = "0.1.0"
-description = "Add your description here"
+description = "A next-generation, highly configurable, and user-friendly Command Line Interface for interacting with Large Language Models."
 readme = "README.md"
 authors = [
     { name = "Ivann KAMDEM", email = "kapoivha@gmail.com" }
 ]
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "rich",
+    "typer",
+    "litellm",
+    "pydantic",
+    "pyyaml",
+    "prompt-toolkit",
+]
 
 [project.scripts]
 k-ai = "k_ai:main"
