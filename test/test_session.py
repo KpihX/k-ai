@@ -252,7 +252,7 @@ class TestSystemPrompt:
         }
         prompt = session._build_system_prompt()
         assert "Continuation After Session Switch" in prompt
-        assert "do not call switch_session again" in prompt
+        assert "do not propose another session-switch tool" in prompt
         assert "Présentation de l'assistant" in prompt
 
 
@@ -1019,15 +1019,12 @@ class TestTurnRollback:
         assistant_msgs = [m for m in session.history if m.role == MessageRole.ASSISTANT]
         assert assistant_msgs[-1].content == "Je suis k-ai."
 
-    def test_session_shift_guidance_detects_explicit_new_session_request(self, session):
+    def test_session_shift_guidance_is_prompt_driven_and_includes_user_input(self, session):
         session._do_new_session(seed={"session_type": "classic", "summary": "Sport"})
         guidance = session._session_shift_guidance_for_turn("bascule sur une nouvelle session et parle moi de meca celeste")
-        assert "explicitly asks for a new session" in guidance
-
-    def test_session_shift_guidance_detects_explicit_topic_change(self, session):
-        session._do_new_session(seed={"session_type": "classic", "summary": "Sport"})
-        guidance = session._session_shift_guidance_for_turn("on va changer de sujet ; on va parler de meca quantique")
-        assert "explicitly signals a topic change" in guidance
+        assert "bascule sur une nouvelle session" in guidance
+        assert "new_session" in guidance
+        assert "switch_session" in guidance
 
 
 class TestPersistenceConsistency:

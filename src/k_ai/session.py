@@ -843,9 +843,12 @@ class ChatSession:
             return True
         render_notice(
             self.console,
-            "Saisie interrompue. Appuyez une seconde fois sur Ctrl+C pour quitter, ou continuez à écrire.",
+            self._notice_value(
+                "prompt_interrupt_message",
+                "Prompt input was interrupted. Press Ctrl+C a second time to exit, or keep typing.",
+            ),
             level="warning",
-            title="Interruption",
+            title=self._notice_value("prompt_interrupt_title", "Interrupt"),
         )
         return False
 
@@ -900,11 +903,22 @@ class ChatSession:
             source_reason = self._continuation_after_switch.get("reason", "").strip() or "(no reason provided)"
             parts.append(
                 "## Continuation After Session Switch\n"
-                "A session switch has already been approved and completed for the current carried-over user request. "
-                "You are already inside the new target session, so do not call switch_session again just because the carried-over "
-                "user message mentions switching. Continue the substantive request directly in this session.\n"
-                f"- target summary: {source_summary}\n"
-                f"- switch reason: {source_reason}"
+                + self._render_prompt_template(
+                    self.cm.get_nested(
+                        "prompts",
+                        "continuation_after_switch",
+                        default=(
+                            "A session switch has already been approved and completed for the current carried-over user request. "
+                            "You are already inside the target session, so do not propose another session-switch tool just because "
+                            "the carried message may mention switching topics or creating a new session. Continue the substantive "
+                            "request directly here.\n"
+                            "- target summary: {target_summary}\n"
+                            "- switch reason: {switch_reason}"
+                        ),
+                    ),
+                    target_summary=source_summary,
+                    switch_reason=source_reason,
+                )
             )
 
         if self._init_mode:
@@ -961,26 +975,40 @@ class ChatSession:
         system_text = self._build_system_prompt(include_sessions=include_sessions)
         return [Message(role=MessageRole.SYSTEM, content=system_text)] + self.history
 
-    def _prompt_template_vars(self) -> Dict[str, str]:
+    def _prompt_template_vars(self, extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
         provider = str(getattr(self.llm, "provider_name", "") or "")
         model = str(getattr(self.llm, "model_name", "") or "")
         assistant_name = str(self.cm.get_nested("prompts", "assistant_name", default="k-ai") or "k-ai").strip()
         user_name = self._remembered_user_name()
         active_tools = ", ".join(self._active_tool_names())
-        return {
+        vars_map = {
             "assistant_name": assistant_name,
             "user_name": user_name or "the user",
             "provider": provider,
             "model": model,
             "active_tools": active_tools,
+            "user_input": "",
+            "target_summary": "",
+            "switch_reason": "",
+            "session_id": "",
+            "session_title": "",
+            "session_type": "",
+            "message_count": "0",
         }
+        if extra:
+            vars_map.update({key: str(value) for key, value in extra.items()})
+        return vars_map
 
-    def _render_prompt_template(self, text: str) -> str:
+    def _render_prompt_template(self, text: str, **extra: str) -> str:
         class _SafeDict(dict):
             def __missing__(self, key):
                 return "{" + key + "}"
 
-        return str(text or "").format_map(_SafeDict(self._prompt_template_vars()))
+        return str(text or "").format_map(_SafeDict(self._prompt_template_vars(extra=extra)))
+
+    def _notice_value(self, key: str, default: str = "", **extra: str) -> str:
+        text = self.cm.get_nested("prompts", "notices", key, default=default)
+        return self._render_prompt_template(text, **extra).strip()
 
     def _remembered_user_name(self) -> str:
         pattern = re.compile(r"^Preferred user name:\s*(.+?)\.?$", re.IGNORECASE)
@@ -1042,51 +1070,24 @@ class ChatSession:
             args = json.dumps({"_raw": str(tc.arguments)}, sort_keys=True, ensure_ascii=True)
         return f"{tc.function_name}:{args}"
 
-    def _has_explicit_new_session_request(self, user_input: str) -> bool:
-        text = str(user_input or "").lower()
-        patterns = [
-            r"\bnew session\b",
-            r"\bnouvelle session\b",
-            r"\bnouveau chat\b",
-            r"\bbascule\b",
-            r"\bouvre une nouvelle session\b",
-            r"\bstart a new session\b",
-        ]
-        return any(re.search(pattern, text) for pattern in patterns)
-
-    def _has_explicit_topic_shift_signal(self, user_input: str) -> bool:
-        text = str(user_input or "").lower()
-        patterns = [
-            r"\bchanger de sujet\b",
-            r"\bon va changer de sujet\b",
-            r"\bnouveau sujet\b",
-            r"\bon va parler d[' ]autre chose\b",
-            r"\bon va parler de\b",
-            r"\bparlons maintenant de\b",
-            r"\bpassons à\b",
-            r"\bon va parler\b",
-            r"\bchange topic\b",
-            r"\bdifferent topic\b",
-            r"\blet's talk about\b",
-        ]
-        return any(re.search(pattern, text) for pattern in patterns)
-
     def _session_shift_guidance_for_turn(self, user_input: str) -> str:
         if not self._session_id or not user_input.strip():
             return ""
-        if self._has_explicit_new_session_request(user_input):
-            return (
-                "The latest user message explicitly asks for a new session and also contains substantive content to continue. "
-                "Prefer proposing new_session before answering the new topic directly. "
-                "If the user rejects the proposal, answer the substantive request naturally in the current session."
-            )
-        if self._has_explicit_topic_shift_signal(user_input):
-            return (
-                "The latest user message explicitly signals a topic change away from the active session. "
-                "Prefer proposing switch_session before mixing this new topic into the current session. "
-                "If the user rejects the proposal, answer the substantive request naturally in the current session."
-            )
-        return ""
+        return self._render_prompt_template(
+            self.cm.get_nested(
+                "prompts",
+                "turn_session_guidance",
+                default=(
+                    'Inspect the latest user message carefully:\n"{user_input}"\n'
+                    "Decide whether it explicitly asks for a fresh session or clearly pivots to a different dominant topic "
+                    "than the active session profile. If so, propose the appropriate session tool before answering the new topic directly: "
+                    "use new_session when the user explicitly asks for a new chat/session, and use switch_session when the request mainly "
+                    "signals topic drift and would be cleaner in a separate session. If the user rejects the proposal, answer the substantive "
+                    "request naturally in the current session instead of insisting."
+                ),
+            ),
+            user_input=user_input,
+        )
 
     def _deduplicate_tool_calls(self, tool_calls: List[ToolCall]) -> List[ToolCall]:
         seen: set[str] = set()
@@ -1161,9 +1162,12 @@ class ChatSession:
                 if carry_message:
                     render_notice(
                         self.console,
-                        "Nouveau sujet détecté. La discussion continue dans une nouvelle session homogène.",
+                        self._notice_value(
+                            "session_switched_message",
+                            "A fresh session is now active. Continue the carried request in this cleaner thread.",
+                        ),
                         level="info",
-                        title="Session Switched",
+                        title=self._notice_value("session_switched_title", "Session Switched"),
                     )
                     self._continuation_after_switch = {
                         "summary": str((seed or {}).get("summary", "") or ""),
@@ -1234,10 +1238,18 @@ class ChatSession:
                 await self._auto_rename_on_exit()
                 await self._auto_commit_runtime_store_on_exit()
             except KeyboardInterrupt:
-                render_notice(self.console, "Finalisation interrompue. Session conservée telle quelle.", level="warning", title="Interruption")
+                render_notice(
+                    self.console,
+                    self._notice_value(
+                        "finalization_interrupted_message",
+                        "Exit finalization was interrupted. The current session was kept as-is.",
+                    ),
+                    level="warning",
+                    title=self._notice_value("finalization_interrupted_title", "Interrupt"),
+                )
             except Exception as e:
                 self.console.print(f"[dim]Exit finalization skipped: {e}[/dim]")
-        self.console.print("\n[bold green]Goodbye![/bold green]")
+        self.console.print(f"\n[bold green]{self._notice_value('goodbye_message', 'Goodbye!')}[/bold green]")
 
     # ------------------------------------------------------------------
     # Boot greeting
@@ -1287,7 +1299,15 @@ class ChatSession:
                     await self._execute_internal_tool(tc)
 
         except KeyboardInterrupt:
-            render_notice(self.console, "Boot interrompu. Retour au prompt.", level="warning", title="Interruption")
+            render_notice(
+                self.console,
+                self._notice_value(
+                    "boot_interrupted_message",
+                    "Boot generation was interrupted. Control has been returned to the prompt.",
+                ),
+                level="warning",
+                title=self._notice_value("boot_interrupted_title", "Interrupt"),
+            )
         except Exception as e:
             self.console.print(f"[dim]Boot greeting skipped: {e}[/dim]")
 
@@ -1329,7 +1349,15 @@ class ChatSession:
                             raise KeyboardInterrupt
                         renderer.update(chunk)
         except KeyboardInterrupt:
-            render_notice(self.console, "Initialisation interrompue. Retour au prompt.", level="warning", title="Interruption")
+            render_notice(
+                self.console,
+                self._notice_value(
+                    "init_interrupted_message",
+                    "Initialization was interrupted. Control has been returned to the prompt.",
+                ),
+                level="warning",
+                title=self._notice_value("init_interrupted_title", "Interrupt"),
+            )
         except Exception as e:
             self.console.print(f"[dim]Initialization intro skipped: {e}[/dim]")
 
@@ -1414,9 +1442,12 @@ class ChatSession:
                         pending_tool_calls = [tc for tc in pending_tool_calls if tc.function_name != "switch_session"]
                         render_notice(
                             self.console,
-                            "Le changement de session a déjà eu lieu pour cette requête transportée. Nouvelle proposition de switch ignorée.",
+                            self._notice_value(
+                                "switch_already_done_message",
+                                "The session change has already been completed for this carried request. Any further switch proposal for the same carried turn is ignored.",
+                            ),
                             level="warning",
-                            title="Switch Déjà Effectué",
+                            title=self._notice_value("switch_already_done_title", "Switch Already Completed"),
                         )
 
                 if not full_content.strip() and not pending_tool_calls:
@@ -1424,17 +1455,23 @@ class ChatSession:
                     if empty_rounds < _MAX_EMPTY_ASSISTANT_ROUNDS:
                         render_notice(
                             self.console,
-                            "Le modèle a renvoyé une réponse vide. Nouvelle tentative automatique.",
+                            self._notice_value(
+                                "empty_response_message",
+                                "The model returned neither text nor tool calls. Retrying automatically.",
+                            ),
                             level="warning",
-                            title="Réponse vide",
+                            title=self._notice_value("empty_response_title", "Empty Response"),
                         )
                         continue
                     self._rollback_turn(turn_start)
                     render_notice(
                         self.console,
-                        "Le modèle n'a produit ni réponse ni action. Rien n'a été enregistré pour ce tour.",
+                        self._notice_value(
+                            "canceled_turn_message",
+                            "The model produced no usable response or action, so nothing was recorded for this turn.",
+                        ),
                         level="error",
-                        title="Tour annulé",
+                        title=self._notice_value("canceled_turn_title", "Turn Canceled"),
                     )
                     return
 
@@ -1496,14 +1533,25 @@ class ChatSession:
                                     pass
                             render_notice(
                                 self.console,
-                                "Changement de session validé. La requête continue dans une nouvelle session dédiée.",
+                                self._notice_value(
+                                    "session_split_message",
+                                    "The session change was approved. The carried request will continue inside a fresh session.",
+                                ),
                                 level="info",
-                                title="Session Split",
+                                title=self._notice_value("session_split_title", "Session Split"),
                             )
                             return
                         if result.data and isinstance(result.data, dict) and result.data.get("interrupted"):
                             self._rollback_turn(turn_start)
-                            render_notice(self.console, "Action interrompue. Retour au prompt.", level="warning", title="Interruption")
+                            render_notice(
+                                self.console,
+                                self._notice_value(
+                                    "action_interrupted_message",
+                                    "The requested action was interrupted. Control has been returned to the prompt.",
+                                ),
+                                level="warning",
+                                title=self._notice_value("action_interrupted_title", "Interrupt"),
+                            )
                             return
                         tool_content = self._normalize_tool_result_for_history(result.message)
                         tool_msg = Message(
@@ -1534,7 +1582,15 @@ class ChatSession:
                 partial_content=full_content,
                 pending_tool_calls=pending_tool_calls,
             )
-            render_notice(self.console, "Génération interrompue. La main vous est rendue.", level="warning", title="Interruption")
+            render_notice(
+                self.console,
+                self._notice_value(
+                    "generation_interrupted_message",
+                    "Generation was interrupted by the user. Partial output, if any, was kept and control has been returned.",
+                ),
+                level="warning",
+                title=self._notice_value("generation_interrupted_title", "Interrupt"),
+            )
         except ProviderAuthenticationError as e:
             self._rollback_turn(turn_start)
             self.console.print(f"[bold red]Auth error:[/bold red] {e}")
@@ -1736,7 +1792,16 @@ class ChatSession:
     def _do_load_session(self, session_id: str, last_n: Optional[int] = None) -> None:
         meta = self.session_store.get_session(session_id)
         if not meta:
-            render_notice(self.console, f"Session {session_id} not found.", level="error")
+            render_notice(
+                self.console,
+                self._notice_value(
+                    "session_not_found_message",
+                    "Session {session_id} was not found.",
+                    session_id=session_id,
+                ),
+                level="error",
+                title=self._notice_value("session_not_found_title", "Session Error"),
+            )
             return
         load_default = int(self.cm.get_nested("sessions", "load_last_n", default=0))
         effective_last_n = last_n if last_n is not None else (load_default if load_default > 0 else None)
@@ -1746,9 +1811,15 @@ class ChatSession:
         theme_name = self.cm.get_nested("cli", "theme", default="default")
         render_notice(
             self.console,
-            f"Session [bold]{meta.summary or meta.title}[/bold] ([dim]{meta.session_type}[/dim]) resumed with {len(messages)} loaded messages.",
+            self._notice_value(
+                "session_resumed_message",
+                "Session [bold]{session_title}[/bold] ([dim]{session_type}[/dim]) was resumed with {message_count} loaded messages.",
+                session_title=meta.summary or meta.title,
+                session_type=meta.session_type,
+                message_count=str(len(messages)),
+            ),
             level="success",
-            title="Session Resumed",
+            title=self._notice_value("session_resumed_title", "Session Resumed"),
         )
 
         # Show the last N messages with proper rendering (same as live chat)

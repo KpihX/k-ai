@@ -19,6 +19,7 @@ The format is based on Keep a Changelog.
 - The installer now persists runtime-root paths and the QMD session collection coherently into runtime config, and can skip the verification phase entirely via `verification.enabled`.
 - `scripts/purge.sh` now supports `--yes` and `--runtime-dir`, and resolves the uv package name dynamically from `pyproject.toml`.
 - Explicit topic-shift requests now add a per-turn session-guidance hint so the model proposes `switch_session` / `new_session` more reliably before mixing unrelated topics.
+- Session-shift guidance and interruption/session notices are now config-driven from the UI prompt YAML instead of being hardcoded in Python.
 
 ### Fixed
 
@@ -28,6 +29,7 @@ The format is based on Keep a Changelog.
 - Non-interactive purge hanging on stdin instead of aborting safely.
 - `new_session` now behaves like `switch_session` for carried user requests: after approval it can open the clean session and continue answering instead of stopping after the tool result.
 - Stale config expectation in the test suite (`max_tokens`) is now aligned with the real default.
+- Hardcoded regex topic-shift detection was removed in favor of prompt-driven per-turn guidance injected from config.
 
 ## [0.1.1] - 2026-03-26
 

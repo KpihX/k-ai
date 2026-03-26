@@ -67,6 +67,9 @@ prompts:
   #   {provider}        active provider name
   #   {model}           active model name
   #   {active_tools}    comma-separated active internal tools
+  #   {user_input}      current raw user message for turn-local guidance
+  #   {target_summary}  summary of the new session already entered after switch
+  #   {switch_reason}   stored reason for that already-approved switch
 
   # Base system prompt used for normal interactive turns.
   identity: >-
@@ -100,17 +103,78 @@ prompts:
     Keep each session semantically homogeneous. If the current session is
     clearly drifting into a different dominant intent, propose switch_session
     instead of mixing unrelated work into the same thread.
-    Treat explicit phrases such as "changeons de sujet", "on va parler d'autre
-    chose", "parlons maintenant de", "new session", "nouvelle session", or
-    "bascule sur une nouvelle session" as strong signals that a session tool
-    should be proposed before answering the new topic directly. If the user
-    rejects the proposal, answer the substantive request naturally in the
-    current session instead of insisting.
     When the user wants to initialize, rename, or personalize the assistant
     identity, use init_system instead of only acknowledging the request.
     The user will validate or reject your proposals. For normal questions,
     answer directly only after checking whether a deterministic or verification
     tool should be used first.
+
+  # Turn-local guidance injected when there is an active session and a fresh
+  # user message to evaluate for semantic drift.
+  turn_session_guidance: >-
+    Inspect the latest user message carefully:
+    "{user_input}"
+    Decide whether it explicitly asks for a fresh session or clearly pivots to
+    a different dominant topic than the active session profile. If so, propose
+    the appropriate session tool before answering the new topic directly:
+    use new_session when the user explicitly asks for a new chat/session, and
+    use switch_session when the request mainly signals topic drift and would be
+    cleaner in a separate session. If the user rejects the proposal, answer the
+    substantive request naturally in the current session instead of insisting.
+
+  # Guidance injected only when a session switch has already been approved and
+  # the carried message is being replayed in the fresh session.
+  continuation_after_switch: >-
+    A session switch has already been approved and completed for the current
+    carried-over user request. You are already inside the target session, so do
+    not propose another session-switch tool just because the carried message may
+    mention switching topics or creating a new session. Continue the substantive
+    request directly here.
+    - target summary: {target_summary}
+    - switch reason: {switch_reason}
+
+  notices:
+    prompt_interrupt_title: "Interrupt"
+    prompt_interrupt_message: >-
+      Prompt input was interrupted. Press Ctrl+C a second time to exit, or keep typing.
+    session_switched_title: "Session Switched"
+    session_switched_message: >-
+      A fresh session is now active. Continue the carried request in this cleaner thread.
+    finalization_interrupted_title: "Interrupt"
+    finalization_interrupted_message: >-
+      Exit finalization was interrupted. The current session was kept as-is.
+    boot_interrupted_title: "Interrupt"
+    boot_interrupted_message: >-
+      Boot generation was interrupted. Control has been returned to the prompt.
+    init_interrupted_title: "Interrupt"
+    init_interrupted_message: >-
+      Initialization was interrupted. Control has been returned to the prompt.
+    switch_already_done_title: "Switch Already Completed"
+    switch_already_done_message: >-
+      The session change has already been completed for this carried request. Any further switch proposal for the same carried turn is ignored.
+    empty_response_title: "Empty Response"
+    empty_response_message: >-
+      The model returned neither text nor tool calls. Retrying automatically.
+    canceled_turn_title: "Turn Canceled"
+    canceled_turn_message: >-
+      The model produced no usable response or action, so nothing was recorded for this turn.
+    session_split_title: "Session Split"
+    session_split_message: >-
+      The session change was approved. The carried request will continue inside a fresh session.
+    action_interrupted_title: "Interrupt"
+    action_interrupted_message: >-
+      The requested action was interrupted. Control has been returned to the prompt.
+    generation_interrupted_title: "Interrupt"
+    generation_interrupted_message: >-
+      Generation was interrupted by the user. Partial output, if any, was kept and control has been returned.
+    session_not_found_title: "Session Error"
+    session_not_found_message: >-
+      Session {session_id} was not found.
+    session_resumed_title: "Session Resumed"
+    session_resumed_message: >-
+      Session [bold]{session_title}[/bold] ([dim]{session_type}[/dim]) was resumed with {message_count} loaded messages.
+    goodbye_message: >-
+      Goodbye!
 
   # Boot prompt used when recent sessions are already shown in the UI.
   boot_with_sessions: >-
