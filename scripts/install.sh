@@ -144,14 +144,21 @@ ok "Installed ${HOOK_FILE}"
 
 step "Running verification"
 
-uv run pytest -q
+if [[ -f "${PROJECT_DIR}/Makefile" ]] && command -v make >/dev/null 2>&1; then
+  make check
+else
+  python3 -m py_compile src/k_ai/*.py src/k_ai/tools/*.py src/k_ai/ui/*.py test/*.py
+  uv run pytest -q
+fi
 uv run k-ai doctor || warn "Doctor reported issues. Review the output above."
 
 echo
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
 echo -e "${GREEN}  k-ai installation complete${RESET}"
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+echo -e "  Install:     ${CYAN}make install${RESET}   ${DIM}(preferred)${RESET}"
 echo -e "  Chat:        ${CYAN}k-ai chat${RESET}"
+echo -e "  Check:       ${CYAN}make check${RESET}     ${DIM}(preferred)${RESET}"
 echo -e "  Status:      ${CYAN}k-ai chat${RESET} then ${CYAN}/status${RESET}"
-echo -e "  Config save: ${CYAN}/config save${RESET}"
-echo -e "  Purge:       ${CYAN}./scripts/purge.sh${RESET}"
+echo -e "  Purge:       ${CYAN}make purge${RESET}     ${DIM}(preferred)${RESET}"
+echo -e "  Direct purge:${CYAN}./scripts/purge.sh${RESET}"

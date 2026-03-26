@@ -1,0 +1,341 @@
+# ==============================================================================
+# Config Persistence
+# ==============================================================================
+
+config:
+  # Default path used by /config save and chat-side config persistence.
+  persist_path: "~/.k-ai/config.yaml"
+
+
+# ==============================================================================
+# Tool Approval Policies
+# ==============================================================================
+
+tool_approval:
+  # Resolution order at runtime:
+  #   1. catalog[*].protected      -> always ask
+  #   2. session overrides         -> ephemeral for current chat session only
+  #   3. global_overrides          -> persisted across future sessions
+  #   4. catalog[*].default_policy -> fallback baseline
+  #
+  # The catalog below is the single source of truth for:
+  #   - category
+  #   - risk
+  #   - default_policy
+  #   - protected
+  # Runtime logic derives everything from this catalog.
+  # Durable overrides persisted across future sessions.
+  # Shape:
+  #   tools.<tool_name>: ask|auto
+  #   categories.<category>: ask|auto
+  #   risks.<risk>: ask|auto
+  # Any malformed entry now fails fast at runtime.
+  global_overrides:
+    tools: {}
+    categories: {}
+    risks: {}
+
+  # Catalog of every internal tool/action shipped by k-ai.
+  # This is both documentation and the runtime source of truth for
+  # category/risk/default_policy/protected.
+  catalog:
+    session:
+      new_session:
+        category: session
+        risk: medium
+        default_policy: ask
+        protected: false
+        description: Start a fresh session, optionally seeded with type/summary/themes.
+      switch_session:
+        category: session
+        risk: medium
+        default_policy: ask
+        protected: false
+        description: Split intent and continue the current request in a new homogeneous session.
+      load_session:
+        category: session
+        risk: medium
+        default_policy: ask
+        protected: false
+        description: Resume an older session, optionally with only the last N messages.
+      exit_session:
+        category: session
+        risk: high
+        default_policy: ask
+        protected: false
+        description: Exit k-ai after finalizing the current session.
+      rename_session:
+        category: session
+        risk: medium
+        default_policy: ask
+        protected: false
+        description: Rename the current session title.
+      list_sessions:
+        category: session
+        risk: low
+        default_policy: auto
+        protected: false
+        description: List persisted sessions with id, type, summary, themes, counts, and dates.
+      session_extract:
+        category: session
+        risk: low
+        default_policy: auto
+        protected: false
+        description: Inspect a slice/window of messages from a session.
+      session_digest:
+        category: session
+        risk: medium
+        default_policy: ask
+        protected: false
+        description: Generate or refresh summary, themes, and session_type metadata.
+      delete_session:
+        category: session
+        risk: high
+        default_policy: ask
+        protected: false
+        description: Permanently delete a persisted session.
+      compact_session:
+        category: session
+        risk: high
+        default_policy: ask
+        protected: false
+        description: Compact old context into a summary while keeping recent messages in full.
+
+    ui:
+      clear_screen:
+        category: ui
+        risk: low
+        default_policy: auto
+        protected: false
+        description: Clear the terminal screen only.
+
+    runtime:
+      runtime_status:
+        category: runtime
+        risk: low
+        default_policy: auto
+        protected: false
+        description: Show live runtime transparency stats and limits.
+
+    config:
+      get_config:
+        category: config
+        risk: low
+        default_policy: auto
+        protected: false
+        description: Inspect one config key or the full merged active config.
+      list_config:
+        category: config
+        risk: low
+        default_policy: auto
+        protected: false
+        description: List config keys with optional prefix filtering.
+      set_config:
+        category: config
+        risk: high
+        default_policy: ask
+        protected: false
+        description: Change a runtime config value except tool_approval.* governance keys.
+      save_config:
+        category: config
+        risk: high
+        default_policy: ask
+        protected: false
+        description: Persist the current active merged config to disk.
+
+    tool_admin:
+      tool_policy_list:
+        category: tool-admin
+        risk: critical
+        default_policy: ask
+        protected: true
+        description: Show effective approval policies for all internal tools.
+      tool_policy_set:
+        category: tool-admin
+        risk: critical
+        default_policy: ask
+        protected: true
+        description: Set a tool/category/risk approval policy at session or global scope.
+      tool_policy_reset:
+        category: tool-admin
+        risk: critical
+        default_policy: ask
+        protected: true
+        description: Remove a session/global approval override and fall back to the next source.
+
+    memory:
+      memory_add:
+        category: memory
+        risk: medium
+        default_policy: ask
+        protected: false
+        description: Add a fact or preference to persistent internal memory.
+      memory_list:
+        category: memory
+        risk: low
+        default_policy: auto
+        protected: false
+        description: List internal memory entries.
+      memory_remove:
+        category: memory
+        risk: high
+        default_policy: ask
+        protected: false
+        description: Remove a memory entry by id.
+
+    web:
+      exa_search:
+        category: web
+        risk: low
+        default_policy: auto
+        protected: false
+        description: Search the public web through the Exa API.
+
+    execution:
+      python_exec:
+        category: execution
+        risk: high
+        default_policy: ask
+        protected: false
+        description: Execute Python code in the sandboxed runtime.
+      shell_exec:
+        category: execution
+        risk: high
+        default_policy: ask
+        protected: false
+        description: Execute a shell command in the sandboxed runtime.
+
+    knowledge:
+      qmd_query:
+        category: knowledge
+        risk: low
+        default_policy: auto
+        protected: false
+        description: Hybrid QMD search over indexed knowledge/session content.
+      qmd_search:
+        category: knowledge
+        risk: low
+        default_policy: auto
+        protected: false
+        description: Keyword BM25 QMD search.
+      qmd_vsearch:
+        category: knowledge
+        risk: low
+        default_policy: auto
+        protected: false
+        description: Vector similarity QMD search.
+      qmd_get:
+        category: knowledge
+        risk: low
+        default_policy: auto
+        protected: false
+        description: Open a single indexed QMD document.
+      qmd_multi_get:
+        category: knowledge
+        risk: low
+        default_policy: auto
+        protected: false
+        description: Open multiple indexed QMD documents.
+      qmd_ls:
+        category: knowledge
+        risk: low
+        default_policy: auto
+        protected: false
+        description: List indexed files in a QMD collection.
+      qmd_collection_list:
+        category: knowledge
+        risk: low
+        default_policy: auto
+        protected: false
+        description: List all QMD collections.
+      qmd_collection_add:
+        category: knowledge
+        risk: high
+        default_policy: ask
+        protected: false
+        description: Add a new QMD collection.
+      qmd_collection_remove:
+        category: knowledge
+        risk: high
+        default_policy: ask
+        protected: false
+        description: Remove a QMD collection.
+      qmd_collection_show:
+        category: knowledge
+        risk: low
+        default_policy: auto
+        protected: false
+        description: Show details for a QMD collection.
+      qmd_status:
+        category: knowledge
+        risk: low
+        default_policy: auto
+        protected: false
+        description: Inspect QMD index health and stats.
+      qmd_update:
+        category: knowledge
+        risk: high
+        default_policy: ask
+        protected: false
+        description: Refresh or rebuild indexed QMD content.
+      qmd_embed:
+        category: knowledge
+        risk: high
+        default_policy: ask
+        protected: false
+        description: Refresh QMD vector embeddings.
+      qmd_cleanup:
+        category: knowledge
+        risk: high
+        default_policy: ask
+        protected: false
+        description: Cleanup/vacuum QMD caches and storage.
+      qmd_context_list:
+        category: knowledge
+        risk: low
+        default_policy: auto
+        protected: false
+        description: List attached QMD context snippets.
+      qmd_context_add:
+        category: knowledge
+        risk: high
+        default_policy: ask
+        protected: false
+        description: Attach a context summary to a QMD collection.
+      qmd_context_rm:
+        category: knowledge
+        risk: high
+        default_policy: ask
+        protected: false
+        description: Remove a context summary from a QMD collection.
+
+
+# ==============================================================================
+# External Tools
+# ==============================================================================
+
+tools:
+  # Public web search through Exa.
+  exa_search:
+    enabled: true
+    api_key_env_var: "EXA_API_KEY"
+    num_results: 5
+
+  # Sandboxed Python execution.
+  python_exec:
+    enabled: true
+    timeout: 30
+    # Dedicated sandbox/venv used for numpy, scipy, pandas, etc.
+    sandbox_dir: "~/.k-ai/sandbox"
+
+  # Sandboxed shell execution.
+  shell_exec:
+    enabled: true
+    timeout: 30
+
+  # QMD search defaults used by search-oriented tools.
+  qmd_search:
+    enabled: true
+    limit: 5
+    # Restrict session/history retrieval to the dedicated k-ai collection.
+    session_collection: "k-ai"

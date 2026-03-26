@@ -57,6 +57,34 @@ class TestCommandHandler:
         assert target.read_text(encoding="utf-8") == "old"
 
     @pytest.mark.asyncio
+    async def test_config_get_can_export_selected_sections(self, session_for_commands, tmp_path):
+        handler = CommandHandler(session_for_commands)
+        target = tmp_path / "ui.yaml"
+
+        await handler.handle(f"/config get {target} ui")
+
+        text = target.read_text(encoding="utf-8")
+        assert "cli:" in text
+        assert "prompts:" in text
+        assert "provider:" not in text
+
+    @pytest.mark.asyncio
+    async def test_config_show_section_renders_default_fragment(self, session_for_commands):
+        handler = CommandHandler(session_for_commands)
+
+        await handler.handle("/config show section:ui")
+
+        assert session_for_commands.console.print.called
+
+    @pytest.mark.asyncio
+    async def test_config_sections_lists_available_sections(self, session_for_commands):
+        handler = CommandHandler(session_for_commands)
+
+        await handler.handle("/config sections")
+
+        assert session_for_commands.console.print.called
+
+    @pytest.mark.asyncio
     async def test_digest_routes_through_internal_tool_executor(self, session_for_commands):
         handler = CommandHandler(session_for_commands)
         session_for_commands._execute_internal_tool = AsyncMock(
@@ -104,3 +132,43 @@ class TestCommandHandler:
         tool_call = session_for_commands._execute_internal_tool.await_args.args[0]
         assert tool_call.function_name == "runtime_status"
         assert tool_call.arguments["mode"] == "full"
+
+    @pytest.mark.asyncio
+    async def test_tools_show_routes_through_policy_list_tool(self, session_for_commands):
+        handler = CommandHandler(session_for_commands)
+        session_for_commands._execute_internal_tool = AsyncMock(
+            return_value=ToolResult(success=True, message="ok")
+        )
+
+        await handler.handle("/tools show global")
+
+        tool_call = session_for_commands._execute_internal_tool.await_args.args[0]
+        assert tool_call.function_name == "tool_policy_list"
+        assert tool_call.arguments["source"] == "global"
+
+    @pytest.mark.asyncio
+    async def test_tools_auto_routes_through_policy_set_tool(self, session_for_commands):
+        handler = CommandHandler(session_for_commands)
+        session_for_commands._execute_internal_tool = AsyncMock(
+            return_value=ToolResult(success=True, message="ok")
+        )
+
+        await handler.handle("/tools auto clear_screen session tool")
+
+        tool_call = session_for_commands._execute_internal_tool.await_args.args[0]
+        assert tool_call.function_name == "tool_policy_set"
+        assert tool_call.arguments["target"] == "clear_screen"
+        assert tool_call.arguments["policy"] == "auto"
+
+    @pytest.mark.asyncio
+    async def test_tools_reset_routes_through_policy_reset_tool(self, session_for_commands):
+        handler = CommandHandler(session_for_commands)
+        session_for_commands._execute_internal_tool = AsyncMock(
+            return_value=ToolResult(success=True, message="ok")
+        )
+
+        await handler.handle("/tools reset clear_screen global tool")
+
+        tool_call = session_for_commands._execute_internal_tool.await_args.args[0]
+        assert tool_call.function_name == "tool_policy_reset"
+        assert tool_call.arguments["scope"] == "global"

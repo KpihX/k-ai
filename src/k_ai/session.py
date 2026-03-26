@@ -98,6 +98,13 @@ class ChatSession:
         self._compact_requested: bool = False
         self._interrupt_requested: bool = False
         self._prompt_interrupt_count: int = 0
+        self._queued_new_session_seed: Optional[Dict[str, Any]] = None
+        self._queued_new_session_message: Optional[str] = None
+        self._session_tool_policy_overrides: Dict[str, Dict[str, str]] = {
+            "tools": {},
+            "categories": {},
+            "risks": {},
+        }
 
         self._tool_ctx = ToolContext(
             config=self.cm,
@@ -117,9 +124,13 @@ class ChatSession:
             apply_config_change=self.apply_config_change,
             generate_session_digest=self.generate_session_digest,
             get_runtime_snapshot=self.get_runtime_snapshot,
+            get_tool_policy_overview=self.get_tool_policy_overview,
+            update_tool_policy=self.update_tool_policy,
+            reset_tool_policy=self.reset_tool_policy,
             is_interrupt_requested=lambda: self._interrupt_requested,
         )
         self.tool_registry: ToolRegistry = create_registry(self._tool_ctx)
+        self._apply_tool_catalog()
         self.command_handler = CommandHandler(self)
 
     # ------------------------------------------------------------------
@@ -204,6 +215,7 @@ class ChatSession:
         percent = round((used / ctx_window) * 100, 1) if ctx_window else 0.0
         session_meta = self.session_store.get_session(self._session_id) if self._session_id else None
         token_snapshot = self.get_token_snapshot()
+        tool_policy = self.get_tool_policy_overview()
         persist_path = (
             str(self.cm.override_path.expanduser())
             if self.cm.override_path
@@ -218,6 +230,7 @@ class ChatSession:
             "stream": self.cm.get("stream"),
             "render_mode": self.cm.get_nested("cli", "render_mode", default="rich"),
             "session_id": self._session_id or "",
+            "session_type": session_meta.session_type if session_meta else "",
             "session_summary": session_meta.summary if session_meta else "",
             "session_themes": list(session_meta.themes) if session_meta else [],
             "history_messages": len(self.history),
@@ -232,6 +245,8 @@ class ChatSession:
             "confirm_all_tools": self.cm.get_nested("cli", "confirm_all_tools", default=True),
             "show_runtime_stats": self.cm.get_nested("cli", "show_runtime_stats", default=True),
             "runtime_stats_mode": self.cm.get_nested("cli", "runtime_stats_mode", default="compact"),
+            "approval_defaults": tool_policy["defaults_by_risk"],
+            "approval_counts": tool_policy["counts"],
             "prompt_tokens": token_snapshot["prompt_tokens"],
             "completion_tokens": token_snapshot["completion_tokens"],
             "total_tokens": token_snapshot["total_tokens"],
@@ -243,6 +258,8 @@ class ChatSession:
         }
 
     def apply_config_change(self, key: str, value: Any, persist: bool = False) -> Dict[str, Any]:
+        if key == "tool_approval" or key.startswith("tool_approval."):
+            raise ValueError("Use the dedicated tool approval admin tools to change tool_approval settings.")
         current = self.cm.get_path(key)
         applied = self.cm.set(key, value)
         saved_to: Optional[str] = None
@@ -266,11 +283,415 @@ class ChatSession:
     def save_active_config(self, path: Optional[str] = None) -> str:
         return str(self.cm.save_active_yaml(path))
 
+    @staticmethod
+    def _normalize_session_type(value: Optional[str]) -> str:
+        normalized = str(value or "classic").strip().lower()
+        if normalized not in {"classic", "meta"}:
+            return "classic"
+        return normalized
+
+    def _tool_catalog_entries(self) -> Dict[str, Dict[str, Any]]:
+        raw_catalog = self.cm.get_nested("tool_approval", "catalog", default={}) or {}
+        if not isinstance(raw_catalog, dict):
+            raise ValueError("tool_approval.catalog must be a mapping of groups to tool entries.")
+
+        catalog: Dict[str, Dict[str, Any]] = {}
+        for group_name, group_entries in raw_catalog.items():
+            if not isinstance(group_entries, dict):
+                raise ValueError(f"tool_approval.catalog.{group_name} must be a mapping.")
+            for tool_name, entry in group_entries.items():
+                if tool_name in catalog:
+                    raise ValueError(f"Duplicate tool catalog entry: {tool_name}")
+                if not isinstance(entry, dict):
+                    raise ValueError(f"tool_approval.catalog.{group_name}.{tool_name} must be a mapping.")
+                category = str(entry.get("category", "") or "").strip()
+                risk = str(entry.get("risk", "") or "").strip().lower()
+                default_policy = str(entry.get("default_policy", "") or "").strip().lower()
+                protected = entry.get("protected", False)
+                description = str(entry.get("description", "") or "").strip()
+                if not category:
+                    raise ValueError(f"tool_approval.catalog.{group_name}.{tool_name}.category is required.")
+                if risk not in {"low", "medium", "high", "critical"}:
+                    raise ValueError(f"tool_approval.catalog.{group_name}.{tool_name}.risk must be low|medium|high|critical.")
+                if default_policy not in {"ask", "auto"}:
+                    raise ValueError(f"tool_approval.catalog.{group_name}.{tool_name}.default_policy must be ask|auto.")
+                if not isinstance(protected, bool):
+                    raise ValueError(f"tool_approval.catalog.{group_name}.{tool_name}.protected must be boolean.")
+                catalog[tool_name] = {
+                    "group": str(group_name),
+                    "category": category,
+                    "risk": risk,
+                    "default_policy": default_policy,
+                    "protected": protected,
+                    "description": description,
+                }
+        return catalog
+
+    def _apply_tool_catalog(self) -> None:
+        catalog = self._tool_catalog_entries()
+        registry_names = set(self.tool_registry.get_names())
+        catalog_names = set(catalog.keys())
+        missing = sorted(registry_names - catalog_names)
+        extra = sorted(catalog_names - registry_names)
+        if missing or extra:
+            details = []
+            if missing:
+                details.append(f"missing from catalog: {', '.join(missing)}")
+            if extra:
+                details.append(f"unknown in catalog: {', '.join(extra)}")
+            raise ValueError("tool_approval.catalog is out of sync with the registered tools: " + "; ".join(details))
+
+        for tool_name, entry in catalog.items():
+            tool = self.tool_registry.get(tool_name)
+            if not tool:
+                continue
+            tool.category = entry["category"]
+            tool.danger_level = entry["risk"]
+
+    def _tool_approval_protected_names(self) -> set[str]:
+        return {name for name, entry in self._tool_catalog_entries().items() if entry.get("protected")}
+
+    def _tool_policy_defaults(self) -> Dict[str, str]:
+        defaults: Dict[str, str] = {}
+        for entry in self._tool_catalog_entries().values():
+            risk = entry["risk"]
+            policy = entry["default_policy"]
+            existing = defaults.get(risk)
+            if existing and existing != policy:
+                raise ValueError(
+                    f"tool_approval.catalog defines conflicting default_policy values for risk '{risk}': "
+                    f"{existing!r} vs {policy!r}"
+                )
+            defaults[risk] = policy
+        return defaults
+
+    def _tool_policy_global_overrides(self) -> Dict[str, Dict[str, str]]:
+        raw = self.cm.get_nested("tool_approval", "global_overrides", default={}) or {}
+        if not isinstance(raw, dict):
+            raise ValueError("tool_approval.global_overrides must be a mapping.")
+        result: Dict[str, Dict[str, str]] = {"tools": {}, "categories": {}, "risks": {}}
+        extra_buckets = sorted(set(raw) - set(result))
+        if extra_buckets:
+            raise ValueError(
+                "tool_approval.global_overrides contains unknown buckets: "
+                + ", ".join(extra_buckets)
+            )
+        catalog = self._tool_catalog_entries()
+        valid_categories = {entry["category"] for entry in catalog.values()}
+        valid_risks = {"low", "medium", "high", "critical"}
+        protected = self._tool_approval_protected_names()
+        for bucket in result:
+            values = raw.get(bucket, {})
+            if values in (None, {}):
+                continue
+            if not isinstance(values, dict):
+                raise ValueError(f"tool_approval.global_overrides.{bucket} must be a mapping.")
+            for key, value in values.items():
+                normalized_key = str(key).strip().lower()
+                if not normalized_key:
+                    raise ValueError(f"tool_approval.global_overrides.{bucket} contains an empty key.")
+                normalized = str(value).strip().lower()
+                if normalized not in {"ask", "auto"}:
+                    raise ValueError(
+                        f"tool_approval.global_overrides.{bucket}.{normalized_key} must be ask|auto."
+                    )
+                if bucket == "tools":
+                    if normalized_key not in catalog:
+                        raise ValueError(f"Unknown tool override target: {normalized_key}")
+                    if normalized_key in protected:
+                        raise ValueError(
+                            f"Protected tool '{normalized_key}' cannot be overridden globally."
+                        )
+                elif bucket == "categories" and normalized_key not in valid_categories:
+                    raise ValueError(f"Unknown tool category override target: {normalized_key}")
+                elif bucket == "risks" and normalized_key not in valid_risks:
+                    raise ValueError(f"Unknown risk override target: {normalized_key}")
+                result[bucket][normalized_key] = normalized
+        return result
+
+    def _tool_policy_bucket_name(self, target_kind: str) -> str:
+        kind = str(target_kind or "tool").strip().lower()
+        mapping = {"tool": "tools", "category": "categories", "risk": "risks"}
+        if kind not in mapping:
+            raise ValueError("target_kind must be one of: tool, category, risk")
+        return mapping[kind]
+
+    def _normalize_tool_policy_target(self, target_kind: str, target: str) -> str:
+        normalized = str(target or "").strip().lower()
+        if not normalized:
+            raise ValueError("target cannot be empty")
+        if target_kind == "tool":
+            tool = self.tool_registry.get(normalized)
+            if not tool:
+                raise ValueError(f"Unknown tool: {target}")
+            return tool.name
+        if target_kind == "category":
+            categories = {entry["category"] for entry in self._tool_catalog_entries().values()}
+            if normalized not in categories:
+                raise ValueError(f"Unknown tool category: {target}")
+            return normalized
+        if target_kind == "risk":
+            if normalized not in {"low", "medium", "high", "critical"}:
+                raise ValueError(f"Unknown risk level: {target}")
+            return normalized
+        raise ValueError("target_kind must be one of: tool, category, risk")
+
+    def _resolve_tool_policy(self, tool) -> Dict[str, Any]:
+        protected_names = self._tool_approval_protected_names()
+        if tool.name in protected_names:
+            return {
+                "policy": "ask",
+                "source": "protected",
+                "scope": "protected",
+                "target_kind": "tool",
+                "target": tool.name,
+                "protected": True,
+                "default_policy": self._tool_policy_defaults().get(tool.danger_level, "ask"),
+                "session_override": None,
+                "global_override": None,
+            }
+
+        bucket_values = {
+            "tools": tool.name,
+            "categories": tool.category,
+            "risks": tool.danger_level,
+        }
+        defaults = self._tool_policy_defaults()
+        session_overrides = self._session_tool_policy_overrides
+        global_overrides = self._tool_policy_global_overrides()
+
+        session_override = (
+            session_overrides["tools"].get(tool.name)
+            or session_overrides["categories"].get(tool.category)
+            or session_overrides["risks"].get(tool.danger_level)
+        )
+        global_override = (
+            global_overrides["tools"].get(tool.name)
+            or global_overrides["categories"].get(tool.category)
+            or global_overrides["risks"].get(tool.danger_level)
+        )
+        default_policy = defaults.get(tool.danger_level, "ask")
+
+        if session_overrides["tools"].get(tool.name):
+            return {
+                "policy": session_overrides["tools"][tool.name],
+                "source": "session",
+                "scope": "session",
+                "target_kind": "tool",
+                "target": tool.name,
+                "protected": False,
+                "default_policy": default_policy,
+                "session_override": session_override,
+                "global_override": global_override,
+            }
+        if session_overrides["categories"].get(tool.category):
+            return {
+                "policy": session_overrides["categories"][tool.category],
+                "source": "session",
+                "scope": "session",
+                "target_kind": "category",
+                "target": tool.category,
+                "protected": False,
+                "default_policy": default_policy,
+                "session_override": session_override,
+                "global_override": global_override,
+            }
+        if session_overrides["risks"].get(tool.danger_level):
+            return {
+                "policy": session_overrides["risks"][tool.danger_level],
+                "source": "session",
+                "scope": "session",
+                "target_kind": "risk",
+                "target": tool.danger_level,
+                "protected": False,
+                "default_policy": default_policy,
+                "session_override": session_override,
+                "global_override": global_override,
+            }
+        if global_overrides["tools"].get(tool.name):
+            return {
+                "policy": global_overrides["tools"][tool.name],
+                "source": "global",
+                "scope": "global",
+                "target_kind": "tool",
+                "target": tool.name,
+                "protected": False,
+                "default_policy": default_policy,
+                "session_override": session_override,
+                "global_override": global_override,
+            }
+        if global_overrides["categories"].get(tool.category):
+            return {
+                "policy": global_overrides["categories"][tool.category],
+                "source": "global",
+                "scope": "global",
+                "target_kind": "category",
+                "target": tool.category,
+                "protected": False,
+                "default_policy": default_policy,
+                "session_override": session_override,
+                "global_override": global_override,
+            }
+        if global_overrides["risks"].get(tool.danger_level):
+            return {
+                "policy": global_overrides["risks"][tool.danger_level],
+                "source": "global",
+                "scope": "global",
+                "target_kind": "risk",
+                "target": tool.danger_level,
+                "protected": False,
+                "default_policy": default_policy,
+                "session_override": session_override,
+                "global_override": global_override,
+            }
+        return {
+            "policy": default_policy,
+            "source": "default",
+            "scope": "default",
+            "target_kind": "risk",
+            "target": tool.danger_level,
+            "protected": False,
+            "default_policy": default_policy,
+            "session_override": session_override,
+            "global_override": global_override,
+        }
+
+    def get_tool_policy_overview(
+        self,
+        filter_policy: Optional[str] = None,
+        filter_source: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        rows: List[Dict[str, Any]] = []
+        defaults = self._tool_policy_defaults()
+        protected = self._tool_approval_protected_names()
+        global_overrides = self._tool_policy_global_overrides()
+        for tool in sorted(self.tool_registry.list_tools(), key=lambda item: (item.category, item.name)):
+            resolved = self._resolve_tool_policy(tool)
+            rows.append({
+                "tool": tool.name,
+                "display_name": tool.display_name or tool.name,
+                "category": tool.category,
+                "risk": tool.danger_level,
+                "default_policy": defaults.get(tool.danger_level, "ask"),
+                "session_override": (
+                    self._session_tool_policy_overrides["tools"].get(tool.name)
+                    or self._session_tool_policy_overrides["categories"].get(tool.category)
+                    or self._session_tool_policy_overrides["risks"].get(tool.danger_level)
+                ),
+                "global_override": (
+                    global_overrides["tools"].get(tool.name)
+                    or global_overrides["categories"].get(tool.category)
+                    or global_overrides["risks"].get(tool.danger_level)
+                ),
+                "effective_policy": resolved["policy"],
+                "source": resolved["source"],
+                "protected": tool.name in protected,
+            })
+
+        if filter_policy:
+            rows = [row for row in rows if row["effective_policy"] == filter_policy]
+        if filter_source:
+            rows = [row for row in rows if row["source"] == filter_source]
+
+        return {
+            "rows": rows,
+            "defaults_by_risk": defaults,
+            "protected_tools": sorted(protected),
+            "counts": {
+                "ask": sum(1 for row in rows if row["effective_policy"] == "ask"),
+                "auto": sum(1 for row in rows if row["effective_policy"] == "auto"),
+                "protected": sum(1 for row in rows if row["protected"]),
+                "session_overrides": sum(1 for row in rows if row["source"] == "session"),
+                "global_overrides": sum(1 for row in rows if row["source"] == "global"),
+            },
+        }
+
+    def update_tool_policy(
+        self,
+        target_kind: str,
+        target: str,
+        policy: str,
+        scope: str = "session",
+        persist: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        kind = str(target_kind or "tool").strip().lower()
+        scope = str(scope or "session").strip().lower()
+        normalized_target = self._normalize_tool_policy_target(kind, target)
+        normalized_policy = str(policy or "").strip().lower()
+        if normalized_policy not in {"ask", "auto"}:
+            raise ValueError("policy must be one of: ask, auto")
+        if scope not in {"session", "global"}:
+            raise ValueError("scope must be one of: session, global")
+        if kind == "tool" and normalized_target in self._tool_approval_protected_names():
+            raise ValueError(f"Tool policy for '{normalized_target}' is protected and always requires approval.")
+
+        bucket = self._tool_policy_bucket_name(kind)
+        previous = None
+        saved_to = None
+        if scope == "session":
+            previous = self._session_tool_policy_overrides[bucket].get(normalized_target)
+            self._session_tool_policy_overrides[bucket][normalized_target] = normalized_policy
+        else:
+            config_path = f"tool_approval.global_overrides.{bucket}.{normalized_target}"
+            previous = self.cm.get_path(config_path, default=None)
+            self.cm.set(config_path, normalized_policy)
+            if persist is not False:
+                saved_to = self.save_active_config()
+
+        return {
+            "target_kind": kind,
+            "target": normalized_target,
+            "policy": normalized_policy,
+            "scope": scope,
+            "previous": previous,
+            "saved_to": saved_to,
+        }
+
+    def reset_tool_policy(
+        self,
+        target_kind: str,
+        target: str,
+        scope: str = "session",
+        persist: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        kind = str(target_kind or "tool").strip().lower()
+        scope = str(scope or "session").strip().lower()
+        normalized_target = self._normalize_tool_policy_target(kind, target)
+        if scope not in {"session", "global"}:
+            raise ValueError("scope must be one of: session, global")
+        if kind == "tool" and normalized_target in self._tool_approval_protected_names():
+            raise ValueError(f"Tool policy for '{normalized_target}' is protected and cannot be reset.")
+
+        bucket = self._tool_policy_bucket_name(kind)
+        removed = False
+        previous = None
+        saved_to = None
+        if scope == "session":
+            previous = self._session_tool_policy_overrides[bucket].get(normalized_target)
+            removed = normalized_target in self._session_tool_policy_overrides[bucket]
+            self._session_tool_policy_overrides[bucket].pop(normalized_target, None)
+        else:
+            config_path = f"tool_approval.global_overrides.{bucket}.{normalized_target}"
+            previous = self.cm.get_path(config_path, default=None)
+            removed = self.cm.delete_path(config_path)
+            if removed and persist is not False:
+                saved_to = self.save_active_config()
+
+        return {
+            "target_kind": kind,
+            "target": normalized_target,
+            "scope": scope,
+            "previous": previous,
+            "removed": removed,
+            "saved_to": saved_to,
+        }
+
     def _print_runtime_snapshot(self, title: str = "Runtime Transparency") -> None:
         if not self.cm.get_nested("cli", "show_runtime_stats", default=True):
             return
         mode = self.cm.get_nested("cli", "runtime_stats_mode", default="compact")
-        self.console.print(render_runtime_panel(self.get_runtime_snapshot(), title=title, mode=mode))
+        theme_name = self.cm.get_nested("cli", "theme", default="default")
+        self.console.print(render_runtime_panel(self.get_runtime_snapshot(), title=title, mode=mode, theme_name=theme_name))
 
     @contextmanager
     def _interrupt_scope(self, allow_escape: bool = True):
@@ -362,6 +783,21 @@ class ChatSession:
             entries_text = "\n".join(f"- {e.text}" for e in self.memory.entries)
             parts.append(f"## Remembered Facts\n{entries_text}")
 
+        if self._session_id:
+            active = self.session_store.get_session(self._session_id)
+            if active:
+                active_summary = active.summary or (active.title if active.title != active.id else "(untitled)")
+                active_themes = ", ".join(active.themes[:6]) if active.themes else "-"
+                parts.append(
+                    "## Active Session Profile\n"
+                    f"- id: {active.id[:8]}\n"
+                    f"- type: {active.session_type}\n"
+                    f"- summary: {active_summary}\n"
+                    f"- themes: {active_themes}\n"
+                    "Keep this session semantically homogeneous. If the user clearly changes to a different dominant intent, "
+                    "propose switch_session instead of mixing unrelated topics into the current session."
+                )
+
         if include_sessions:
             max_recent = self.cm.get_nested("sessions", "max_recent", default=10)
             sessions = self.session_store.list_sessions(limit=max_recent)
@@ -371,12 +807,20 @@ class ChatSession:
                     summary = s.summary or (s.title if s.title != s.id else "(untitled)")
                     themes = f" | themes: {', '.join(s.themes[:4])}" if s.themes else ""
                     lines.append(
-                        f"- [{s.id[:8]}] \"{summary}\"{themes} "
+                        f"- [{s.id[:8]}] type={s.session_type} \"{summary}\"{themes} "
                         f"({s.message_count} msgs, {s.updated_at[:10]})"
                     )
                 parts.append(
                     "## Recent Sessions\n"
                     + "\n".join(lines)
+                    + "\n\nThese sessions are ordered newest first from top to bottom. "
+                    + "If the user refers to the first/top rows, they mean the newest shown sessions. "
+                    + "If the user refers to the last/bottom rows, they mean the oldest shown sessions. "
+                    + "In French, requests like 'les 3 derniers chats' refer to the last visible rows "
+                    + "(the bottom of the table), not the top 3 most recent rows."
+                    + " These lines already include summary, themes, message count, and date. "
+                    + "Use that data directly. Do not call session_digest just to restate visible metadata "
+                    + "unless the user explicitly asks to refresh or missing metadata blocks the answer."
                     + "\n\nYou may suggest resuming a session if relevant."
                 )
 
@@ -467,7 +911,20 @@ class ChatSession:
 
             if self._new_session_requested:
                 self._new_session_requested = False
-                self._do_new_session()
+                seed = self._queued_new_session_seed
+                carry_message = self._queued_new_session_message
+                self._queued_new_session_seed = None
+                self._queued_new_session_message = None
+                self._do_new_session(seed=seed)
+                if carry_message:
+                    render_notice(
+                        self.console,
+                        "Nouveau sujet détecté. La discussion continue dans une nouvelle session homogène.",
+                        level="info",
+                        title="Session Switched",
+                    )
+                    await self._process_message(carry_message)
+                    await self._maybe_compact()
                 continue
 
             if self._load_session_id:
@@ -502,7 +959,8 @@ class ChatSession:
                 if first_message:
                     self._do_new_session()
 
-                self.console.print(render_user_panel(user_input))
+                theme_name = self.cm.get_nested("cli", "theme", default="default")
+                self.console.print(render_user_panel(user_input, theme_name=theme_name))
                 await self._process_message(user_input)
 
                 if first_message and self._session_id and len(self.history) >= 2:
@@ -518,7 +976,12 @@ class ChatSession:
                 continue
 
         if self._session_id:
-            await self._auto_rename_on_exit()
+            try:
+                await self._auto_rename_on_exit()
+            except KeyboardInterrupt:
+                render_notice(self.console, "Finalisation interrompue. Session conservée telle quelle.", level="warning", title="Interruption")
+            except Exception as e:
+                self.console.print(f"[dim]Exit finalization skipped: {e}[/dim]")
         self.console.print("\n[bold green]Goodbye![/bold green]")
 
     # ------------------------------------------------------------------
@@ -547,8 +1010,16 @@ class ChatSession:
             pending_tool_calls: List[ToolCall] = []
 
             render_mode = self.cm.get_nested("cli", "render_mode", default="rich")
+            spinner_name = self.cm.get_nested("cli", "thinking_indicator", default="dots")
+            theme_name = self.cm.get_nested("cli", "theme", default="default")
             with self._interrupt_scope(allow_escape=True):
-                with StreamingRenderer(self.console, self.llm.model_name, render_mode=render_mode) as renderer:
+                with StreamingRenderer(
+                    self.console,
+                    self.llm.model_name,
+                    render_mode=render_mode,
+                    spinner_name=spinner_name,
+                    theme_name=theme_name,
+                ) as renderer:
                     async for chunk in self.llm.chat_stream(boot_messages, tools=tools):
                         if self._interrupt_requested:
                             raise KeyboardInterrupt
@@ -585,6 +1056,8 @@ class ChatSession:
         self._persist_message(self.history[-1])
 
         render_mode = self.cm.get_nested("cli", "render_mode", default="rich")
+        spinner_name = self.cm.get_nested("cli", "thinking_indicator", default="dots")
+        theme_name = self.cm.get_nested("cli", "theme", default="default")
         tools = self._get_active_tools()
 
         try:
@@ -602,7 +1075,13 @@ class ChatSession:
                 pending_tool_calls: List[ToolCall] = []
                 full_content = ""
                 with self._interrupt_scope(allow_escape=True):
-                    with StreamingRenderer(self.console, self.llm.model_name, render_mode=render_mode) as renderer:
+                    with StreamingRenderer(
+                        self.console,
+                        self.llm.model_name,
+                        render_mode=render_mode,
+                        spinner_name=spinner_name,
+                        theme_name=theme_name,
+                    ) as renderer:
                         async for chunk in self.llm.chat_stream(messages, tools=tools):
                             if self._interrupt_requested:
                                 raise KeyboardInterrupt
@@ -641,6 +1120,28 @@ class ChatSession:
                 for tc in pending_tool_calls:
                     if self.tool_registry.is_internal(tc.function_name):
                         result = await self._execute_internal_tool(tc, rationale=rationale)
+                        if tc.function_name == "switch_session" and result.success and self._new_session_requested:
+                            current_session_id = self._session_id
+                            self._rollback_turn(turn_start)
+                            if current_session_id:
+                                try:
+                                    digest = await self.generate_session_digest(current_session_id, persist=True)
+                                    if digest.get("summary"):
+                                        self.session_store.update_digest(
+                                            current_session_id,
+                                            digest["summary"],
+                                            digest.get("themes", []),
+                                            digest.get("session_type"),
+                                        )
+                                except Exception:
+                                    pass
+                            render_notice(
+                                self.console,
+                                "Changement d'intent détecté. Proposition validée: ouverture d'une nouvelle session dédiée.",
+                                level="info",
+                                title="Session Split",
+                            )
+                            return
                         if result.data and isinstance(result.data, dict) and result.data.get("interrupted"):
                             self._rollback_turn(turn_start)
                             render_notice(self.console, "Action interrompue. Retour au prompt.", level="warning", title="Interruption")
@@ -677,6 +1178,9 @@ class ChatSession:
         except LLMError as e:
             self._rollback_turn(turn_start)
             self.console.print(f"[bold red]LLM error:[/bold red] {e}")
+        except Exception as e:
+            self._rollback_turn(turn_start)
+            self.console.print(f"[bold red]Unexpected error:[/bold red] {e}")
 
     # ------------------------------------------------------------------
     # Internal tool execution with inline confirmation
@@ -688,21 +1192,33 @@ class ChatSession:
         if not tool:
             return ToolResult(success=False, message=f"Unknown tool: {tc.function_name}")
 
-        confirm_all_tools = bool(self.cm.get_nested("cli", "confirm_all_tools", default=True))
-        needs_confirmation = confirm_all_tools or tool.requires_approval
+        legacy_confirm_all = bool(self.cm.get_nested("cli", "confirm_all_tools", default=False))
+        approval = self._resolve_tool_policy(tool)
+        needs_confirmation = legacy_confirm_all or approval["policy"] == "ask"
+        approval_rows = [
+            ("Effective", f"{approval['policy']} ({approval['source']})"),
+            ("Default", approval["default_policy"]),
+            ("Session override", approval["session_override"] or "-"),
+            ("Global override", approval["global_override"] or "-"),
+            ("Protected", str(bool(approval["protected"]))),
+        ]
+        proposal_sections = [("Approval Policy", approval_rows)] + tool.proposal_sections(tc.arguments or {}, self._tool_ctx)
 
         render_tool_proposal(
             self.console,
             tool.display_spec(),
-            tool.proposal_sections(tc.arguments or {}, self._tool_ctx),
+            proposal_sections,
             rationale=rationale,
             requires_approval=needs_confirmation,
         )
 
         if needs_confirmation:
             try:
-                approved = Confirm.ask("Approve tool execution?", console=self.console, default=True)
-            except KeyboardInterrupt:
+                with self._interrupt_scope(allow_escape=False):
+                    approved = Confirm.ask("Approve tool execution?", console=self.console, default=True)
+            except (KeyboardInterrupt, EOFError):
+                return ToolResult(success=False, message="Interrupted by user.", data={"interrupted": True})
+            if self._interrupt_requested:
                 return ToolResult(success=False, message="Interrupted by user.", data={"interrupted": True})
             if not approved:
                 self.console.print("  [dim]Skipped.[/dim]")
@@ -744,6 +1260,47 @@ class ChatSession:
     # Session lifecycle
     # ------------------------------------------------------------------
 
+    async def _refresh_session_digest(self, session_id: Optional[str] = None) -> Dict[str, Any]:
+        sid = session_id or self._session_id
+        if not sid:
+            return {"summary": "", "themes": [], "session_type": "classic"}
+        digest = await self.generate_session_digest(sid, persist=True)
+        if digest.get("summary"):
+            self.session_store.update_digest(
+                sid,
+                digest["summary"],
+                digest.get("themes", []),
+                digest.get("session_type"),
+            )
+        return digest
+
+    async def _finalize_active_session(self) -> None:
+        if not self._session_id or len(self.history) < 2:
+            return
+        try:
+            await self._refresh_session_digest(self._session_id)
+        except Exception:
+            pass
+
+    async def _prepare_programmatic_turn(self) -> None:
+        if self._load_session_id:
+            load_id = self._load_session_id
+            load_last_n = self._load_session_last_n
+            self._load_session_id = None
+            self._load_session_last_n = None
+            self._do_load_session(load_id, last_n=load_last_n)
+
+        if self._new_session_requested:
+            await self._finalize_active_session()
+            seed = self._queued_new_session_seed or {}
+            self._queued_new_session_seed = None
+            self._queued_new_session_message = None
+            self._new_session_requested = False
+            self._do_new_session(seed=seed)
+
+        if not self._session_id:
+            self._do_new_session()
+
     async def _auto_generate_session_summary(self) -> None:
         """Generate a one-line summary after the first real exchange (best-effort)."""
         if not self._session_id or len(self.history) < 2:
@@ -752,19 +1309,26 @@ class ChatSession:
         if not meta or meta.summary:
             return
         try:
-            digest = await self.generate_session_digest(self._session_id, persist=True)
-            if digest.get("summary"):
-                self.session_store.update_digest(self._session_id, digest["summary"], digest.get("themes", []))
+            await self._refresh_session_digest(self._session_id)
         except Exception:
             pass  # Best effort
 
-    def _do_new_session(self) -> None:
+    def _do_new_session(self, seed: Optional[Dict[str, Any]] = None) -> None:
+        seed = seed or {}
+        session_type = self._normalize_session_type(seed.get("session_type"))
+        summary = str(seed.get("summary", "") or "").strip()
+        themes = [str(theme).strip()[:40] for theme in (seed.get("themes") or []) if str(theme).strip()][:8]
         meta = self.session_store.create_session(
             provider=self.llm.provider_name,
             model=self.llm.model_name,
+            session_type=session_type,
+            title=summary or "",
+            summary=summary,
+            themes=themes,
         )
         self._session_id = meta.id
         self.history = []
+        self._session_tool_policy_overrides = {"tools": {}, "categories": {}, "risks": {}}
 
     def _do_load_session(self, session_id: str, last_n: Optional[int] = None) -> None:
         meta = self.session_store.get_session(session_id)
@@ -776,9 +1340,10 @@ class ChatSession:
         messages = self.session_store.load_messages(meta.id, last_n=effective_last_n)
         self.history = messages
         self._session_id = meta.id
+        theme_name = self.cm.get_nested("cli", "theme", default="default")
         render_notice(
             self.console,
-            f"Session [bold]{meta.summary or meta.title}[/bold] resumed with {len(messages)} loaded messages.",
+            f"Session [bold]{meta.summary or meta.title}[/bold] ([dim]{meta.session_type}[/dim]) resumed with {len(messages)} loaded messages.",
             level="success",
             title="Session Resumed",
         )
@@ -796,11 +1361,18 @@ class ChatSession:
                 if m.role == MessageRole.SYSTEM:
                     continue
                 elif m.role == MessageRole.USER:
-                    self.console.print(render_user_panel(m.content))
+                    self.console.print(render_user_panel(m.content, theme_name=theme_name))
                 elif m.role == MessageRole.ASSISTANT:
                     content_renderable = render_content(m.content, render_mode) if m.content else Text("[dim](empty)[/dim]")
                     if m.content:
-                        self.console.print(render_assistant_panel(m.content, self.llm.model_name, render_mode=render_mode))
+                        self.console.print(
+                            render_assistant_panel(
+                                m.content,
+                                self.llm.model_name,
+                                render_mode=render_mode,
+                                theme_name=theme_name,
+                            )
+                        )
                     else:
                         self.console.print(RichPanel(
                             content_renderable,
@@ -887,10 +1459,10 @@ class ChatSession:
 
             if self.cm.get_nested("compaction", "auto_rename", default=True):
                 if self._session_id:
-                    digest = await self.generate_session_digest(self._session_id, persist=True)
-                    if digest.get("summary"):
-                        self.session_store.update_digest(self._session_id, digest["summary"], digest.get("themes", []))
+                    await self._refresh_session_digest(self._session_id)
 
+        except KeyboardInterrupt:
+            self.console.print("[yellow]Compaction interrupted.[/yellow]")
         except Exception as e:
             self.console.print(f"[red]Compaction failed:[/red] {e}")
 
@@ -907,10 +1479,38 @@ class ChatSession:
             return
 
         try:
-            digest = await self.generate_session_digest(self._session_id, persist=True)
-            if digest.get("summary"):
-                self.session_store.update_digest(self._session_id, digest["summary"], digest.get("themes", []))
+            await self._refresh_session_digest(self._session_id)
+            messages = self.session_store.load_messages(self._session_id)
+            transcript = "\n".join(
+                f"[{m.role.value}] {m.content[:300]}"
+                for m in messages
+                if m.role != MessageRole.SYSTEM
+            )[:6000]
+            title_prompt = self.cm.get_nested("prompts", "exit_title", default="").strip()
+            if title_prompt and transcript:
+                raw_title = ""
+                msgs = [
+                    Message(role=MessageRole.SYSTEM, content=title_prompt),
+                    Message(role=MessageRole.USER, content=transcript),
+                ]
+                async for chunk in self.llm.chat_stream(msgs):
+                    raw_title += chunk.delta_content
+                title = raw_title.strip().replace("\n", " ")[:60]
+                if title:
+                    self.session_store.rename_session(self._session_id, title)
 
+            exit_summary_prompt = self.cm.get_nested("prompts", "exit_summary", default="").strip()
+            if exit_summary_prompt and transcript:
+                raw_summary = ""
+                msgs = [
+                    Message(role=MessageRole.SYSTEM, content=exit_summary_prompt),
+                    Message(role=MessageRole.USER, content=transcript),
+                ]
+                async for chunk in self.llm.chat_stream(msgs):
+                    raw_summary += chunk.delta_content
+                summary = raw_summary.strip().replace("\n", " ")[:160]
+                if summary:
+                    self.session_store.update_summary(self._session_id, summary, meta.themes, meta.session_type)
         except Exception:
             pass
 
@@ -924,19 +1524,25 @@ class ChatSession:
         """Generate a digest sentence and key themes for a session."""
         sid = session_id or self._session_id
         if not sid:
-            return {"summary": "", "themes": []}
+            return {"summary": "", "themes": [], "session_type": "classic"}
 
         messages = self.session_store.load_messages(sid, offset=offset, limit=limit)
         if not messages:
-            return {"summary": "", "themes": []}
+            return {"summary": "", "themes": [], "session_type": "classic"}
 
         digest_prompt = self.cm.get_nested(
             "prompts", "session_digest",
             default=(
-                "Return strict JSON with keys summary and themes. "
+                "Return strict JSON with keys summary, themes, and session_type. "
                 "summary must be one short sentence describing the discussion. "
-                "themes must be a short list of key topics."
+                "themes must be a short list of key topics. "
+                "session_type must be either 'classic' for a real task/topic session "
+                "or 'meta' for a session mainly about administration, settings, tooling, or chat management."
             ),
+        )
+        summary_guidance = self.cm.get_nested(
+            "prompts", "session_summary",
+            default="Summarize the user's intent and the discussion topic in one short sentence.",
         )
         transcript = "\n".join(
             f"[{m.role.value}] {m.content[:300]}"
@@ -945,7 +1551,7 @@ class ChatSession:
         )
         raw = ""
         msgs = [
-            Message(role=MessageRole.SYSTEM, content=digest_prompt),
+            Message(role=MessageRole.SYSTEM, content=f"{digest_prompt}\nFor the summary field specifically: {summary_guidance}"),
             Message(role=MessageRole.USER, content=transcript[:6000]),
         ]
         async for chunk in self.llm.chat_stream(msgs):
@@ -953,6 +1559,7 @@ class ChatSession:
 
         summary = ""
         themes: List[str] = []
+        session_type = "classic"
         try:
             start = raw.find("{")
             end = raw.rfind("}")
@@ -961,13 +1568,17 @@ class ChatSession:
             raw_themes = payload.get("themes", [])
             if isinstance(raw_themes, list):
                 themes = [str(theme).strip()[:40] for theme in raw_themes if str(theme).strip()][:8]
+            session_type = self._normalize_session_type(payload.get("session_type"))
         except Exception:
             summary = raw.strip().replace("\n", " ")[:120]
             themes = []
+            transcript_lower = transcript.lower()
+            if any(marker in transcript_lower for marker in ["config", "session", "tool", "validation", "approval", "prompt", "runtime", "meta"]):
+                session_type = "meta"
 
-        digest = {"summary": summary, "themes": themes}
+        digest = {"summary": summary, "themes": themes, "session_type": session_type}
         if persist and summary:
-            self.session_store.update_digest(sid, summary, themes)
+            self.session_store.update_digest(sid, summary, themes, session_type)
         return digest
 
     # ------------------------------------------------------------------
@@ -975,13 +1586,25 @@ class ChatSession:
     # ------------------------------------------------------------------
 
     async def send(self, message: str) -> str:
-        self.history.append(Message(role=MessageRole.USER, content=message))
-        messages = self._messages_with_system()
-        full_content = ""
-        async for chunk in self.llm.chat_stream(messages):
-            full_content += chunk.delta_content
-        self.history.append(Message(role=MessageRole.ASSISTANT, content=full_content))
-        return full_content
+        await self._prepare_programmatic_turn()
+        turn_start = len(self.history)
+        try:
+            user_msg = Message(role=MessageRole.USER, content=message)
+            self.history.append(user_msg)
+            self._persist_message(user_msg)
+            messages = self._messages_with_system()
+            full_content = ""
+            async for chunk in self.llm.chat_stream(messages):
+                full_content += chunk.delta_content
+            assistant_msg = Message(role=MessageRole.ASSISTANT, content=full_content)
+            self.history.append(assistant_msg)
+            self._persist_message(assistant_msg)
+            await self._auto_generate_session_summary()
+            await self._maybe_compact()
+            return full_content
+        except Exception:
+            self._rollback_turn(turn_start)
+            raise
 
     async def send_with_tools(
         self,
@@ -990,40 +1613,72 @@ class ChatSession:
         tool_executor: Callable[[ToolCall], Awaitable[str]],
         max_tool_rounds: int = 10,
     ) -> str:
-        self.history.append(Message(role=MessageRole.USER, content=message))
-        for _round in range(max_tool_rounds):
-            messages = self._messages_with_system()
-            full_content = ""
-            pending_tool_calls: List[ToolCall] = []
-            async for chunk in self.llm.chat_stream(messages, tools=tools):
-                full_content += chunk.delta_content
-                if chunk.tool_calls:
-                    pending_tool_calls.extend(chunk.tool_calls)
-            if not pending_tool_calls:
-                self.history.append(Message(role=MessageRole.ASSISTANT, content=full_content))
-                return full_content
-            self.history.append(Message(
-                role=MessageRole.ASSISTANT, content=full_content,
-                tool_calls=pending_tool_calls,
-            ))
-            for tc in pending_tool_calls:
-                try:
-                    result = await tool_executor(tc)
-                except Exception as exc:
-                    result = f"Error executing tool '{tc.function_name}': {exc}"
-                self.history.append(Message(
-                    role=MessageRole.TOOL, content=result,
-                    tool_call_id=tc.id, name=tc.function_name,
-                ))
-        return full_content  # type: ignore[return-value]
+        await self._prepare_programmatic_turn()
+        turn_start = len(self.history)
+        try:
+            user_msg = Message(role=MessageRole.USER, content=message)
+            self.history.append(user_msg)
+            self._persist_message(user_msg)
+            for _round in range(max_tool_rounds):
+                messages = self._messages_with_system()
+                full_content = ""
+                pending_tool_calls: List[ToolCall] = []
+                async for chunk in self.llm.chat_stream(messages, tools=tools):
+                    full_content += chunk.delta_content
+                    if chunk.tool_calls:
+                        pending_tool_calls.extend(chunk.tool_calls)
+                if not pending_tool_calls:
+                    assistant_msg = Message(role=MessageRole.ASSISTANT, content=full_content)
+                    self.history.append(assistant_msg)
+                    self._persist_message(assistant_msg)
+                    await self._auto_generate_session_summary()
+                    await self._maybe_compact()
+                    return full_content
+                assistant_msg = Message(
+                    role=MessageRole.ASSISTANT, content=full_content,
+                    tool_calls=pending_tool_calls,
+                )
+                self.history.append(assistant_msg)
+                self._persist_message(assistant_msg)
+                for tc in pending_tool_calls:
+                    try:
+                        result = await tool_executor(tc)
+                    except Exception as exc:
+                        result = f"Error executing tool '{tc.function_name}': {exc}"
+                    tool_msg = Message(
+                        role=MessageRole.TOOL, content=result,
+                        tool_call_id=tc.id, name=tc.function_name,
+                    )
+                    self.history.append(tool_msg)
+                    self._persist_message(tool_msg)
+            await self._auto_generate_session_summary()
+            await self._maybe_compact()
+            return full_content  # type: ignore[return-value]
+        except Exception:
+            self._rollback_turn(turn_start)
+            raise
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
-    def _handle_new_session(self) -> None:
+    def _handle_new_session(
+        self,
+        seed: Optional[Dict[str, Any]] = None,
+        carry_over_message: Optional[str] = None,
+    ) -> None:
+        self._queued_new_session_seed = seed or None
+        self._queued_new_session_message = carry_over_message.strip() if carry_over_message else None
         self._new_session_requested = True
 
     def _print_welcome_panel(self) -> None:
-        self.console.print(render_runtime_panel(self.get_runtime_snapshot(), title="k-ai  |  Unified LLM Chat", mode="welcome"))
+        theme_name = self.cm.get_nested("cli", "theme", default="default")
+        self.console.print(
+            render_runtime_panel(
+                self.get_runtime_snapshot(),
+                title="k-ai  |  Unified LLM Chat",
+                mode="welcome",
+                theme_name=theme_name,
+            )
+        )
         self.console.print("[dim]Type /help for commands, or just chat.[/dim]")

@@ -11,6 +11,7 @@ from k_ai.tools.meta import (
     NewSessionTool, LoadSessionTool, ExitSessionTool, RenameSessionTool,
     ListSessionsTool, SessionDigestTool, SessionExtractTool, DeleteSessionTool, ClearScreenTool, SetConfigTool,
     GetConfigTool, ListConfigTool, RuntimeStatusTool, SaveConfigTool,
+    ToolPolicyListTool, ToolPolicySetTool, ToolPolicyResetTool, SwitchSessionTool,
     register_meta_tools,
 )
 from k_ai.tools.memory_tools import MemoryAddTool, MemoryListTool, MemoryRemoveTool
@@ -41,6 +42,9 @@ def ctx(tmp_path):
         request_new_session=MagicMock(),
         request_load_session=MagicMock(),
         request_compact=MagicMock(),
+        get_tool_policy_overview=MagicMock(return_value={"rows": [], "defaults_by_risk": {"low": "auto"}, "protected_tools": [], "counts": {"ask": 0, "auto": 0, "protected": 0, "session_overrides": 0, "global_overrides": 0}}),
+        update_tool_policy=MagicMock(return_value={"target_kind": "tool", "target": "clear_screen", "policy": "auto", "scope": "session", "previous": None, "saved_to": None}),
+        reset_tool_policy=MagicMock(return_value={"target_kind": "tool", "target": "clear_screen", "scope": "session", "previous": "auto", "removed": True, "saved_to": None}),
     )
 
 
@@ -86,7 +90,7 @@ class TestToolRegistry:
     def test_register_meta_tools(self, ctx):
         registry = ToolRegistry()
         register_meta_tools(registry, ctx)
-        assert len(registry.list_tools()) == 15  # all meta/runtime/config tools
+        assert len(registry.list_tools()) == 19  # all meta/runtime/config/admin tools
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +104,13 @@ class TestMetaTools:
         result = await tool.execute({}, ctx)
         assert result.success is True
         ctx.request_new_session.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_new_session_with_type_seed(self, ctx):
+        tool = NewSessionTool()
+        result = await tool.execute({"session_type": "meta", "summary": "Admin tools", "themes": ["config"]}, ctx)
+        assert result.success is True
+        ctx.request_new_session.assert_called_with(seed={"session_type": "meta", "summary": "Admin tools", "themes": ["config"]})
 
     @pytest.mark.asyncio
     async def test_exit_session(self, ctx):
@@ -147,11 +158,15 @@ class TestMetaTools:
     async def test_list_sessions(self, ctx):
         ctx.session_store.create_session()
         ctx.session_store.create_session()
+        first = ctx.session_store.list_sessions(limit=1)[0]
+        ctx.session_store.update_digest(first.id, "Chat sur l'algebre", ["algèbre", "matrices"], "classic")
         tool = ListSessionsTool()
         result = await tool.execute({}, ctx)
         assert result.success is True
         assert result.data is not None
         assert len(result.data["sessions"]) == 2
+        assert "themes=" in result.message
+        assert "type=" in result.message
 
     @pytest.mark.asyncio
     async def test_list_sessions_oldest_order(self, ctx):
@@ -162,6 +177,16 @@ class TestMetaTools:
         assert result.success is True
         assert result.data["order"] == "oldest"
         assert result.data["sessions"][0]["id"] == first.id
+
+    @pytest.mark.asyncio
+    async def test_list_sessions_filters_by_type(self, ctx):
+        classic = ctx.session_store.create_session(session_type="classic")
+        ctx.session_store.create_session(session_type="meta")
+        tool = ListSessionsTool()
+        result = await tool.execute({"session_type": "classic"}, ctx)
+        assert result.success is True
+        assert len(result.data["sessions"]) == 1
+        assert result.data["sessions"][0]["id"] == classic.id
 
     @pytest.mark.asyncio
     async def test_delete_session(self, ctx):
@@ -184,6 +209,12 @@ class TestMetaTools:
         result = await tool.execute({"key": "temperature", "value": "0.5"}, ctx)
         assert result.success is True
         assert ctx.config.get("temperature") == 0.5
+
+    @pytest.mark.asyncio
+    async def test_set_config_rejects_tool_approval_namespace(self, ctx):
+        tool = SetConfigTool()
+        result = await tool.execute({"key": "tool_approval.catalog.clear_screen.default_policy", "value": "ask"}, ctx)
+        assert result.success is False
 
     @pytest.mark.asyncio
     async def test_get_config(self, ctx):
@@ -229,11 +260,44 @@ class TestMetaTools:
     async def test_session_digest_calls_generator(self, ctx):
         meta = ctx.session_store.create_session()
         ctx.get_session_id = MagicMock(return_value=meta.id)
-        ctx.generate_session_digest = AsyncMock(return_value={"summary": "diag matrix", "themes": ["python", "linear algebra"]})
+        ctx.generate_session_digest = AsyncMock(return_value={"summary": "diag matrix", "themes": ["python", "linear algebra"], "session_type": "classic"})
         tool = SessionDigestTool()
         result = await tool.execute({}, ctx)
         assert result.success is True
         assert "diag matrix" in result.message
+        assert "Type: classic" in result.message
+
+    @pytest.mark.asyncio
+    async def test_switch_session_requests_seeded_new_session(self, ctx):
+        ctx.get_history = MagicMock(return_value=[Message(role=MessageRole.USER, content="nouveau sujet")])
+        tool = SwitchSessionTool()
+        result = await tool.execute(
+            {"summary": "Nouveau sujet", "themes": ["python"], "session_type": "classic", "reason": "intent shift"},
+            ctx,
+        )
+        assert result.success is True
+        ctx.request_new_session.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_tool_policy_list(self, ctx):
+        tool = ToolPolicyListTool()
+        result = await tool.execute({}, ctx)
+        assert result.success is True
+        ctx.get_tool_policy_overview.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_tool_policy_set(self, ctx):
+        tool = ToolPolicySetTool()
+        result = await tool.execute({"target": "clear_screen", "policy": "auto"}, ctx)
+        assert result.success is True
+        ctx.update_tool_policy.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_tool_policy_reset(self, ctx):
+        tool = ToolPolicyResetTool()
+        result = await tool.execute({"target": "clear_screen"}, ctx)
+        assert result.success is True
+        ctx.reset_tool_policy.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

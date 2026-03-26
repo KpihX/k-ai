@@ -9,12 +9,15 @@ can propose) or is a UI-only shortcut.  This ensures uniform behaviour:
 import json
 import os
 from datetime import datetime
-from typing import TYPE_CHECKING, Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List
 
 from rich.panel import Panel
 from rich.prompt import Confirm
 from rich.syntax import Syntax
 from rich.table import Table
+
+from .config import ConfigManager
+from .ui_theme import resolve_syntax_theme
 
 if TYPE_CHECKING:
     from .session import ChatSession
@@ -31,7 +34,8 @@ SLASH_COMMANDS = [
     "/digest", "/extract",
     "/history", "/model", "/provider", "/system",
     "/set", "/settings", "/status",
-    "/config show", "/config save", "/config get",
+    "/tools",
+    "/config show", "/config save", "/config get", "/config sections",
     "/save", "/tokens",
     "/memory list", "/memory add", "/memory remove",
     "/doctor",
@@ -48,9 +52,9 @@ SLASH_COMMANDS = [
 _HELP: dict[str, str] = {
     "/help": "Show this help message.",
     "/exit, /quit, /bye": "Exit the chat session.",
-    "/new": "Start a new chat session.",
+    "/new [classic|meta]": "Start a new chat session, optionally seeding its type.",
     "/load <id>": "Resume a previous session by ID (or prefix).",
-    "/sessions": "List recent sessions.",
+    "/sessions [recent|oldest] [classic|meta]": "List sessions with optional order/type filters.",
     "/rename <title>": "Rename the current session.",
     "/delete <id>": "Permanently delete a session.",
     "/compact": "Compress conversation history (summarise old messages).",
@@ -65,9 +69,11 @@ _HELP: dict[str, str] = {
     "/set <key> <value>": "Live-edit any config key.",
     "/settings [prefix]": "List active config keys (optionally filtered by prefix).",
     "/status": "Full runtime transparency: provider, context window, tokens, limits.",
-    "/config show [key]": "Inspect one active config key or the full merged config.",
+    "/tools": "Inspect or change tool approval policies.",
+    "/config show [key|section:<name> ...]": "Inspect active config or built-in config sections.",
     "/config save [path]": "Persist the active merged config to disk.",
-    "/config get [path]": "Export the default config template.",
+    "/config get [path] [section ...]": "Export the full default config or only selected sections.",
+    "/config sections": "List available built-in config sections.",
     "/save [filename]": "Save conversation to a JSON file.",
     "/tokens": "Show cumulative session token usage.",
     "/memory list": "List all memory entries.",
@@ -109,7 +115,7 @@ class CommandHandler:
         Dispatch a slash command.
         Returns False when the session should exit, True otherwise.
         """
-        parts = text.lstrip("/").split(maxsplit=2)
+        parts = text.lstrip("/").split()
         if not parts:
             return True
 
@@ -140,6 +146,7 @@ class CommandHandler:
             "set": self._set,
             "settings": self._settings,
             "status": self._status,
+            "tools": self._tools,
             "config": self._config,
             "save": self._save,
             "tokens": self._tokens,
@@ -166,8 +173,13 @@ class CommandHandler:
         return False
 
     async def _new(self, args: List[str]) -> bool:
-        self.session._do_new_session()
-        self.console.print("[green]New session started.[/green]")
+        seed = {}
+        if args and args[0].lower() in {"classic", "meta"}:
+            seed["session_type"] = args[0].lower()
+        await self.session._finalize_active_session()
+        self.session._do_new_session(seed=seed or None)
+        session_type = seed.get("session_type", "classic")
+        self.console.print(f"[green]New {session_type} session started.[/green]")
         return True
 
     async def _load(self, args: List[str]) -> bool:
@@ -185,8 +197,22 @@ class CommandHandler:
     async def _sessions(self, args: List[str]) -> bool:
         from .ui import render_sessions_table
         max_recent = self.session.cm.get_nested("sessions", "max_recent", default=10)
-        sessions = self.session.session_store.list_sessions(limit=max_recent)
-        render_sessions_table(self.console, sessions)
+        order = "recent"
+        session_type = None
+        for arg in args:
+            lowered = arg.lower()
+            if lowered in {"oldest", "last", "bottom", "recent"}:
+                order = "oldest" if lowered in {"oldest", "last", "bottom"} else "recent"
+            elif lowered in {"classic", "meta"}:
+                session_type = lowered
+        title = "Sessions" if order == "recent" else "Sessions (Oldest First)"
+        if session_type:
+            title += f" [{session_type}]"
+        raw_limit = self.session.session_store.session_count() if session_type else max_recent
+        sessions = self.session.session_store.list_sessions(limit=raw_limit, order=order)
+        if session_type:
+            sessions = [session for session in sessions if session.session_type == session_type][:max_recent]
+        render_sessions_table(self.console, sessions, title=title)
         return True
 
     async def _rename(self, args: List[str]) -> bool:
@@ -407,28 +433,124 @@ class CommandHandler:
     async def _status(self, args: List[str]) -> bool:
         return await self._run_internal_tool("runtime_status", {"mode": "full"})
 
+    async def _tools(self, args: List[str]) -> bool:
+        if not args or args[0].lower() in {"list", "show", "status"}:
+            payload: Dict[str, object] = {}
+            if args:
+                if len(args) > 1 and args[1].lower() in {"ask", "auto"}:
+                    payload["policy"] = args[1].lower()
+                elif len(args) > 1 and args[1].lower() in {"default", "session", "global", "protected"}:
+                    payload["source"] = args[1].lower()
+            return await self._run_internal_tool("tool_policy_list", payload)
+
+        sub = args[0].lower()
+        if sub in {"ask", "auto"}:
+            if len(args) < 2:
+                self.console.print("[yellow]Usage:[/yellow] /tools ask|auto <target> [session|global] [tool|category|risk]")
+                return True
+            payload: Dict[str, object] = {
+                "target": args[1],
+                "policy": sub,
+                "scope": args[2] if len(args) > 2 else "session",
+                "target_kind": args[3] if len(args) > 3 else "tool",
+            }
+            return await self._run_internal_tool("tool_policy_set", payload)
+
+        if sub == "reset":
+            if len(args) < 2:
+                self.console.print("[yellow]Usage:[/yellow] /tools reset <target> [session|global] [tool|category|risk]")
+                return True
+            payload = {
+                "target": args[1],
+                "scope": args[2] if len(args) > 2 else "session",
+                "target_kind": args[3] if len(args) > 3 else "tool",
+            }
+            return await self._run_internal_tool("tool_policy_reset", payload)
+
+        self.console.print(
+            "[yellow]Usage:[/yellow]\n"
+            "  /tools show [ask|auto|default|session|global|protected]\n"
+            "  /tools ask <target> [session|global] [tool|category|risk]\n"
+            "  /tools auto <target> [session|global] [tool|category|risk]\n"
+            "  /tools reset <target> [session|global] [tool|category|risk]"
+        )
+        return True
+
     async def _config(self, args: List[str]) -> bool:
         sub = args[0].lower() if args else "get"
+        known_sections = {item["name"] for item in ConfigManager.list_default_sections()}
+        syntax_theme = resolve_syntax_theme(self.session.cm.get_nested("cli", "theme", default="default"))
         if sub == "show":
-            key = args[1] if len(args) > 1 else ""
+            extra = args[1:]
+            section_names = []
+            key = ""
+            for item in extra:
+                lowered = item.lower()
+                if lowered.startswith("section:"):
+                    section_names.append(lowered.split(":", 1)[1])
+                elif lowered in known_sections:
+                    section_names.append(lowered)
+                elif not key:
+                    key = item
+                else:
+                    self.console.print("[yellow]Usage:[/yellow] /config show [key] | /config show section:<name> [section:<name> ...]")
+                    return True
+            if section_names:
+                try:
+                    yaml_str = self.session.cm.get_default_yaml(sections=section_names)
+                    title = "Default Config [" + ", ".join(ConfigManager.normalize_default_sections(section_names)) + "]"
+                    self.console.print(Panel(
+                        Syntax(yaml_str, "yaml", theme=syntax_theme),
+                        title=f"[bold cyan]{title}[/bold cyan]",
+                        border_style="cyan",
+                    ))
+                except Exception as e:
+                    self.console.print(f"[bold red]Error:[/bold red] {e}")
+                return True
             payload = {"key": key} if key else {}
             return await self._run_internal_tool("get_config", payload)
         elif sub == "save":
             payload = {"path": args[1]} if len(args) > 1 else {}
             return await self._run_internal_tool("save_config", payload)
+        elif sub in {"sections", "list"}:
+            table = Table(title="Config Sections", header_style="bold cyan")
+            table.add_column("Section", style="cyan", no_wrap=True)
+            table.add_column("File", style="magenta")
+            table.add_column("Description", style="white")
+            for item in ConfigManager.list_default_sections():
+                table.add_row(item["name"], item["file"], item["description"])
+            self.console.print(table)
+            return True
         elif sub == "get":
-            target = args[1] if len(args) > 1 else "config.yaml"
+            extra = args[1:]
+            target = "config.yaml"
+            section_names: List[str] = []
+            if extra:
+                first = extra[0]
+                lowered = first.lower()
+                if lowered in known_sections:
+                    section_names = [item.lower() for item in extra]
+                else:
+                    target = first
+                    section_names = [item.lower() for item in extra[1:]]
             try:
                 if os.path.exists(target):
                     if not Confirm.ask(f"Overwrite '{target}'?", console=self.console, default=False):
                         return True
                 with open(target, "w", encoding="utf-8") as f:
-                    f.write(self.session.cm.get_default_yaml())
-                self.console.print(f"[green]Default config saved to '{target}'.[/green]")
+                    f.write(self.session.cm.get_default_yaml(sections=section_names))
+                suffix = ""
+                if section_names:
+                    normalized = ConfigManager.normalize_default_sections(section_names)
+                    suffix = f" ({', '.join(normalized)})"
+                self.console.print(f"[green]Default config saved to '{target}'{suffix}.[/green]")
             except Exception as e:
                 self.console.print(f"[bold red]Error:[/bold red] {e}")
         else:
-            self.console.print("[yellow]Usage:[/yellow] /config show [key] | /config save [path] | /config get [path]")
+            self.console.print(
+                "[yellow]Usage:[/yellow] /config show [key] | /config show section:<name> [section:<name> ...] | "
+                "/config save [path] | /config get [path] [section ...] | /config sections"
+            )
         return True
 
     async def _save(self, args: List[str]) -> bool:

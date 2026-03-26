@@ -17,6 +17,9 @@ The format is based on Keep a Changelog.
 - Session ordering support for `recent` and `oldest`.
 - `scripts/purge.sh` for full uninstall/purge of runtime artifacts.
 - Make targets for install, purge, test, check, and push.
+- Split built-in config fragments under `src/k_ai/defaults/defaults.d/`.
+- Partial config export/show for individual built-in sections.
+- Google OAuth token loading with persisted token-file refresh support.
 
 ### Changed
 
@@ -26,7 +29,9 @@ The format is based on Keep a Changelog.
 - Tool proposal/result rendering is now specialized per tool type.
 - Runtime/token stats now fall back to estimated counts when provider usage is unavailable.
 - Slash commands are aligned with the same runtime/config tool layer used by the LLM.
-- Install script now installs the editable CLI entrypoint and keeps setup idempotent.
+- Install script now prefers `make check` during verification and keeps setup idempotent.
+- Programmatic `send()` and `send_with_tools()` now follow the same session lifecycle guarantees as the interactive CLI.
+- CLI theming/spinner config is now actually consumed by the runtime UI.
 
 ### Fixed
 
@@ -36,6 +41,8 @@ The format is based on Keep a Changelog.
 - Interrupt handling for prompt input, generation, and tool execution.
 - Incorrect interpretation of “oldest sessions” as “most recent sessions”.
 - Session token totals not being synchronized when providers omitted usage counters.
+- Declared-but-unused config knobs around prompts/UI/tool approvals.
+- OAuth provider declaration drift where Google was present in config but not implemented in code.
 
 ## [0.1.0] - 2026-03-25
 

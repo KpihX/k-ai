@@ -9,7 +9,6 @@ subscripts, accents, and common math structures.
 Ported from k_ui.render.scratch — self-contained, no external deps.
 """
 import re
-from typing import Optional
 
 from rich.text import Text
 

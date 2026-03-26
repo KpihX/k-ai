@@ -15,6 +15,7 @@ import json
 from typing import TYPE_CHECKING, Any, Callable, Awaitable, Dict, List, Optional
 
 from ..models import ToolResult
+from ..ui_theme import resolve_syntax_theme
 
 if TYPE_CHECKING:
     from ..config import ConfigManager
@@ -58,6 +59,9 @@ class ToolContext:
     apply_config_change: Optional[Callable[..., Dict[str, Any]]] = None
     generate_session_digest: Optional[Callable[..., Awaitable[dict[str, Any]]]] = None
     get_runtime_snapshot: Optional[Callable[..., Dict[str, Any]]] = None
+    get_tool_policy_overview: Optional[Callable[..., Dict[str, Any]]] = None
+    update_tool_policy: Optional[Callable[..., Dict[str, Any]]] = None
+    reset_tool_policy: Optional[Callable[..., Dict[str, Any]]] = None
     is_interrupt_requested: Optional[Callable[[], bool]] = None
 
 
@@ -90,7 +94,8 @@ class InternalTool(ABC):
         from rich.syntax import Syntax
 
         payload = json.dumps(arguments or {}, indent=2, ensure_ascii=False, sort_keys=True)
-        return [("Arguments", Syntax(payload, "json", theme="monokai", line_numbers=False, word_wrap=True))]
+        syntax_theme = resolve_syntax_theme(ctx.config.get_nested("cli", "theme", default="default"))
+        return [("Arguments", Syntax(payload, "json", theme=syntax_theme, line_numbers=False, word_wrap=True))]
 
     def result_renderable(self, result: ToolResult, max_display_length: int, ctx: ToolContext) -> Any:
         """Renderable body for the tool result panel."""
@@ -100,9 +105,10 @@ class InternalTool(ABC):
         msg = result.message
         if len(msg) > max_display_length:
             msg = msg[:max_display_length] + "\n...(truncated)"
+        syntax_theme = resolve_syntax_theme(ctx.config.get_nested("cli", "theme", default="default"))
 
         if not result.success and ("Traceback" in msg or "Error" in msg):
-            return Syntax(msg, "pytb", theme="monokai", word_wrap=True)
+            return Syntax(msg, "pytb", theme=syntax_theme, word_wrap=True)
         return Text(msg) if msg else Text("[dim](no output)[/dim]")
 
     def to_openai_tool(self) -> Dict[str, Any]:

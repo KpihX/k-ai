@@ -1,0 +1,117 @@
+# ┌─────────────────────────────────────────────────────────────────────────┐
+# │  k-ai  —  Default Configuration                                         │
+# │                                                                          │
+# │  Built-in defaults are split into topical fragments for faster,          │
+# │  cleaner maintenance. Export with:  k-ai config get -o my_config.yaml    │
+# └─────────────────────────────────────────────────────────────────────────┘
+
+# ==============================================================================
+# Active LLM Settings
+# ==============================================================================
+
+# Default provider used when the user does not force one with --provider or
+# via /provider in chat. Must match a key under no_auth, api_key, or oauth.
+provider: "mistral"
+
+# Optional model override. Leave empty to use the provider's default_model.
+model: ""
+
+# Sampling temperature:
+#   0.0-0.3  deterministic / code / analysis
+#   0.7      balanced default
+#   1.0+     more exploratory / creative
+temperature: 0.7
+
+# Max completion tokens requested from the backend for a single answer.
+# This is a hard runtime knob and can be changed live from chat.
+max_tokens: 8192
+
+# Stream tokens live in the terminal. False waits for the full answer first.
+stream: true
+
+# Search order when a provider exists in several auth sections.
+# Example: gemini can exist under api_key and oauth.
+provider_search_priority:
+  - "no_auth"
+  - "api_key"
+  - "oauth"
+
+
+# ==============================================================================
+# No-Auth Providers
+# ==============================================================================
+
+# OpenAI-compatible providers that do not require credentials.
+# Each provider entry should define:
+#   base_url       API root including /v1 when relevant
+#   default_model  model used when `model: ""`
+#   context_window approximate maximum input context
+no_auth:
+  ollama:
+    # Typical local endpoint exposed by `ollama serve`.
+    base_url: "http://localhost:11434/v1"
+    # Safe small default for local usage; override freely.
+    default_model: "phi4-mini:latest"
+    context_window: 32768
+
+
+# ==============================================================================
+# API-Key Providers
+# ==============================================================================
+
+# Cloud providers authenticated through environment variables.
+# Resolution order for the key is handled elsewhere:
+#   .env -> current environment -> login shell environment
+api_key:
+  mistral:
+    # Name of the environment variable holding the provider key.
+    api_key_env_var: "MISTRAL_API_KEY"
+    base_url: "https://api.mistral.ai/v1"
+    default_model: "mistral-medium-latest"
+    context_window: 128000
+
+  openai:
+    api_key_env_var: "OPENAI_API_KEY"
+    default_model: "gpt-4o"
+    context_window: 128000
+
+  groq:
+    api_key_env_var: "GROQ_API_KEY"
+    base_url: "https://api.groq.com/openai/v1"
+    default_model: "qwen/qwen3-32b"
+    context_window: 131072
+
+  gemini:
+    api_key_env_var: "GOOGLE_API_KEY"
+    default_model: "gemini-2.5-flash"
+    context_window: 1000000
+
+  anthropic:
+    api_key_env_var: "ANTHROPIC_API_KEY"
+    default_model: "claude-sonnet-4-6"
+    context_window: 200000
+
+  dashscope:
+    api_key_env_var: "DASHSCOPE_API_KEY"
+    default_model: "qwen-turbo"
+    context_window: 131072
+
+  xai:
+    api_key_env_var: "GROK_API_KEY"
+    default_model: "grok-3-fast-beta"
+    context_window: 131072
+
+
+# ==============================================================================
+# OAuth Providers
+# ==============================================================================
+
+# Browser-login providers. Useful when API-key auth is not desired.
+oauth:
+  gemini:
+    oauth_provider_name: "google"
+    oauth_scopes:
+      - "https://www.googleapis.com/auth/cloud-platform"
+    token_path: "~/.k-ai/tokens/google_oauth.json"
+    default_model: "gemini-2.5-flash"
+    context_window: 1000000

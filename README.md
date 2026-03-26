@@ -1,35 +1,54 @@
 # k-ai
 
-`k-ai` is a terminal-first LLM chat CLI with persistent sessions, runtime transparency, live config management, internal tools, and session-aware retrieval.
+`k-ai` is a terminal-first LLM chat system with persistent sessions, runtime transparency, live config mutation, internal tools, and a Python package API.
 
-## What It Does
+It is designed around one principle: the chat loop, the slash commands, and the programmatic API should all act on the same session/config/runtime model.
 
-- Rich interactive chat UI with streaming responses and tool proposals/results.
-- Persistent session store in JSONL with digest generation: summary + themes.
-- Full runtime transparency in the UI: provider, model, context window, compaction threshold, token stats, active limits, config persistence path.
-- Live config management from chat: provider, model, `max_tokens`, UI limits, tool settings, and nested config keys.
-- Internal tools for session lifecycle, config, memory, Python, shell, web search, and QMD-based history/document retrieval.
-- QMD session retrieval restricted to the `k-ai` collection to avoid irrelevant cross-collection noise.
-- Safer interactive flow with human validation for tool calls and interruption handling for prompt, streaming, and tool execution.
+## Core Model
 
-## Current State
+```text
+                 ┌─────────────────────────────────────┐
+                 │           Built-in Defaults         │
+                 │   src/k_ai/defaults/defaults.d/     │
+                 └─────────────────┬───────────────────┘
+                                   │ merge
+                 ┌─────────────────▼───────────────────┐
+                 │          ConfigManager               │
+                 │  override file + live edits + CLI    │
+                 └─────────────────┬───────────────────┘
+                                   │
+        ┌──────────────────────────▼──────────────────────────┐
+        │                    ChatSession                       │
+        │  prompt loop · tools · digest · compaction · UI     │
+        └───────────────┬───────────────────────┬─────────────┘
+                        │                       │
+            ┌───────────▼──────────┐   ┌───────▼────────┐
+            │ SessionStore          │   │ MemoryStore     │
+            │ ~/.k-ai/sessions/*.jsonl│  │ ~/.k-ai/MEMORY │
+            └──────────────────────┘   └────────────────┘
+```
 
-- Boot flow shows recent sessions immediately.
-- Boot assistant no longer re-asks for the session list; it may only suggest a direct resume.
-- Session windows are explicit: load last `N`, extract `offset/limit`, refresh digest/themes on current or previous sessions.
-- Runtime token stats fall back to estimates when the provider does not return usage counters.
-- Test suite currently passes with `316` tests.
+## Features
+
+- Persistent chat sessions with `summary`, `themes`, and `session_type`.
+- Rich runtime transparency: provider, model, auth mode, token source, context window, compaction threshold, limits.
+- Human-in-the-loop tool approvals with per-tool governance.
+- Full config management from chat, slash commands, or Python.
+- Sandboxed Python and shell tools.
+- QMD-backed history/document retrieval restricted to the `k-ai` session collection when appropriate.
+- Robust interruption handling for prompt input, generation, and tool execution.
+- Split default config fragments with cached loading for better maintainability and lower parse overhead.
 
 ## Quick Start
 
 ```bash
 git clone https://github.com/kpihx/k-ai.git
 cd k-ai
-./scripts/install.sh
+make install
 k-ai chat
 ```
 
-Development setup:
+Development:
 
 ```bash
 uv sync --dev
@@ -37,19 +56,105 @@ uv run pytest -q
 uv run k-ai chat
 ```
 
-## Chat Capabilities
+## Installation and Removal
 
-Session management:
+Install:
 
-- `/sessions`
+```bash
+make install
+# or directly:
+./scripts/install.sh
+```
+
+Purge runtime state:
+
+```bash
+make purge
+# or directly:
+./scripts/purge.sh
+```
+
+Make targets:
+
+```bash
+make install
+make purge
+make check
+make test
+make build
+```
+
+## CLI Usage
+
+### Interactive chat
+
+```bash
+k-ai chat
+k-ai chat --provider mistral
+k-ai chat --provider openai --model gpt-4o
+k-ai chat --config ~/.k-ai/config.yaml
+k-ai chat --temperature 0.2 --max-tokens 4096
+```
+
+### Config CLI
+
+Show the full built-in default template:
+
+```bash
+k-ai config show
+```
+
+List built-in config fragments:
+
+```bash
+k-ai config sections
+```
+
+Show only selected built-in fragments:
+
+```bash
+k-ai config show --section ui
+k-ai config show --section models --section governance
+```
+
+Export the full default config:
+
+```bash
+k-ai config get -o my-config.yaml
+```
+
+Export only one or several sections to build a minimal override file:
+
+```bash
+k-ai config get -o prompts.yaml --section ui
+k-ai config get -o providers-and-tools.yaml --section models --section governance
+```
+
+OAuth note:
+
+- `oauth.gemini` is implemented through a Google token JSON file.
+- `token_path` should point to a persisted token containing at least `access_token`.
+- If the token is expired, `refresh_token`, `client_id`, and `client_secret` are used to refresh it automatically.
+
+Run diagnostics:
+
+```bash
+k-ai doctor
+```
+
+## Slash Commands
+
+Session lifecycle:
+
+- `/sessions [recent|oldest] [classic|meta]`
 - `/load <id> [last_n]`
 - `/extract <id> [offset] [limit]`
 - `/digest [id]`
-- `/delete <id>`
 - `/compact`
-- `/reset`
+- `/delete <id>`
+- `/new [classic|meta]`
 
-Runtime/config management:
+Runtime/config:
 
 - `/status`
 - `/tokens`
@@ -58,87 +163,162 @@ Runtime/config management:
 - `/model [name]`
 - `/provider [name] [model]`
 - `/config show [key]`
+- `/config show section:<name> [section:<name> ...]`
+- `/config get [path] [section ...]`
 - `/config save [path]`
-- `/config get [path]`
+- `/config sections`
 
-Memory and search:
+Tools and memory:
 
+- `/tools show [ask|auto|default|session|global|protected]`
+- `/tools ask|auto <target> [session|global] [tool|category|risk]`
+- `/tools reset <target> [session|global] [tool|category|risk]`
 - `/memory list|add|remove`
 - `/qmd query|search|get|ls|status|update|embed|cleanup`
 
-All of these can also be triggered naturally by the model via internal tools.
+Everything above can also be triggered by the model through internal tools when appropriate.
+
+## Config Layout
+
+Built-in defaults are split into four fragments:
+
+```text
+src/k_ai/defaults/defaults.d/
+├── 00-models.yaml
+├── 10-ui-prompts.yaml
+├── 20-sessions-memory.yaml
+└── 30-runtime-governance.yaml
+```
+
+Section names exposed in CLI:
+
+- `models`
+- `ui`
+- `sessions`
+- `governance`
+
+Recommended override strategy:
+
+```text
+1. Export only the sections you want to change.
+2. Edit that smaller YAML file.
+3. Pass it with --config or save it as ~/.k-ai/config.yaml.
+4. Keep runtime-only experiments in chat via /set or the config tools.
+```
+
+## Package Usage
+
+### Defaults only
+
+```python
+from k_ai import ConfigManager, ChatSession
+import asyncio
+
+cm = ConfigManager()
+session = ChatSession(cm)
+asyncio.run(session.send("Bonjour"))
+```
+
+### Custom override file
+
+```python
+from k_ai import ConfigManager, ChatSession
+
+cm = ConfigManager(override_path="~/.k-ai/config.yaml")
+session = ChatSession(cm, provider="mistral")
+```
+
+You can also keep several smaller override files and choose one at startup:
+
+```python
+cm = ConfigManager(override_path="~/profiles/k-ai-prompts.yaml")
+```
+
+### Inline overrides
+
+```python
+cm = ConfigManager(
+    override_path="~/.k-ai/config.yaml",
+    temperature=0.2,
+    max_tokens=4096,
+)
+```
+
+### Export only one built-in section
+
+```python
+from k_ai import ConfigManager
+
+yaml_text = ConfigManager.get_default_yaml(sections=["ui"])
+print(yaml_text)
+```
+
+### List built-in sections
+
+```python
+from k_ai import ConfigManager
+
+for section in ConfigManager.list_default_sections():
+    print(section["name"], section["file"])
+```
+
+### Agentic programmatic call with tools
+
+```python
+import asyncio
+from k_ai import ConfigManager, ChatSession, ToolCall
+
+cm = ConfigManager()
+session = ChatSession(cm)
+
+tools = [{
+    "type": "function",
+    "function": {
+        "name": "get_weather",
+        "description": "Get current weather",
+        "parameters": {
+            "type": "object",
+            "properties": {"location": {"type": "string"}},
+            "required": ["location"],
+        },
+    },
+}]
+
+async def executor(tc: ToolCall) -> str:
+    if tc.function_name == "get_weather":
+        return f"22°C in {tc.arguments['location']}"
+    raise ValueError(tc.function_name)
+
+result = asyncio.run(session.send_with_tools("Weather in Paris?", tools, executor))
+print(result)
+```
 
 ## Runtime Transparency
 
-The UI exposes:
+The terminal runtime panel exposes:
 
-- Active provider/model/auth mode.
-- Context window usage and remaining capacity.
-- Compaction threshold and current history depth.
-- Token stats with source labeling:
-  `provider` when usage is returned by the backend.
-  `estimated` when usage must be inferred from message sizes.
-- Tool display/history truncation limits.
-- Config persistence target.
+- current provider / model / auth mode
+- context usage and remaining capacity
+- compaction threshold
+- cumulative tokens
+- token source: `provider` or `estimated`
+- render mode
+- tool result display/history limits
+- config persistence path
+- current session id / type
 
-Relevant config keys:
+This is UI-only telemetry; it does not consume model tokens.
 
-```yaml
-provider: "mistral"
-model: ""
-temperature: 0.7
-max_tokens: 8192
+## Robustness Notes
 
-cli:
-  render_mode: "rich"
-  show_runtime_stats: true
-  runtime_stats_mode: "compact"
-  tool_result_max_display: 500
-  tool_result_max_history: 4000
-  confirm_all_tools: true
+- `Ctrl+C` at prompt: first press cancels input, second press exits.
+- `Ctrl+C` during generation or tool execution: returns control to the prompt.
+- Boot greeting failures do not create a session.
+- Programmatic `send()` / `send_with_tools()` now rollback the whole turn on LLM failure instead of leaving partial persisted turns.
+- Digest/compaction/exit summarization are best-effort; if the provider fails, the session remains usable and the main conversation state is preserved.
+- Tool approval overrides are validated strictly against the built-in tool catalog, so malformed config fails fast instead of silently drifting.
 
-config:
-  persist_path: "~/.k-ai/config.yaml"
-```
-
-## Installation
-
-The installer:
-
-- syncs Python dependencies with `uv`
-- installs the editable CLI entrypoint
-- creates `~/.k-ai/`
-- initializes memory/session storage
-- creates the Python sandbox for `python_exec`
-- installs/configures QMD when available
-- configures the `k-ai` QMD collection
-- runs `k-ai doctor`
-
-Run:
-
-```bash
-./scripts/install.sh
-```
-
-To completely remove installed state:
-
-```bash
-./scripts/purge.sh
-```
-
-## Make Targets
-
-```bash
-make help
-make install
-make purge
-make test
-make check
-make build
-make push
-```
-
-## File Layout
+## Runtime State on Disk
 
 ```text
 ~/.k-ai/
@@ -147,27 +327,8 @@ make push
 ├── sandbox/
 └── sessions/
     ├── index.json
-    └── <session>.jsonl
+    └── <session-id>.jsonl
 ```
-
-Repo layout:
-
-```text
-src/k_ai/
-test/
-scripts/
-README.md
-CHANGELOG.md
-TODO.md
-Makefile
-```
-
-## Notes
-
-- `Ctrl+C` during prompt input returns control once, exits on the second press.
-- `Ctrl+C` during generation/tool execution interrupts the current action and returns to the prompt.
-- `Esc` is also handled during non-prompt interruption scopes, but terminal behavior is less uniform than `Ctrl+C`.
-- Tool proposals remain human-validated by default.
 
 ## License
 

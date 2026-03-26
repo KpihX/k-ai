@@ -144,6 +144,7 @@ class SessionMetadata(BaseModel):
     """Persistent metadata for a single chat session."""
 
     id: str
+    session_type: str = "classic"
     title: str = ""
     summary: str = ""
     created_at: str = ""

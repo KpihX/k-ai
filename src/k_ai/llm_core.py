@@ -168,7 +168,7 @@ class LiteLLMDriver(LLMProvider):
         blocking according to the resolved ``stream`` setting.
 
         Resolution order for every param (last wins):
-          1. Built-in default_config.yaml
+          1. Built-in default fragments under src/k_ai/defaults/defaults.d/
           2. User override file
           3. Inline ConfigManager kwargs
           4. Per-call LLMConfig (this argument)
@@ -429,4 +429,3 @@ def get_provider(
         raise  # already a typed error — do not re-wrap
     except Exception as e:
         raise LLMError(f"Failed to get provider: {e}") from e
-

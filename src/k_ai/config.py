@@ -2,7 +2,7 @@
 """
 Configuration management for k-ai.
 Handles loading, merging, and live editing of configuration with a clear override hierarchy:
-  1. Built-in defaults  (src/k_ai/defaults/default_config.yaml)
+  1. Built-in defaults  (src/k_ai/defaults/defaults.d/*.yaml)
   2. User config file   (--config path, or override_path=...)
   3. Inline kwargs      (ConfigManager(temperature=0.9, provider="openai"))
 """
@@ -10,9 +10,15 @@ import copy
 import yaml
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-DEFAULT_CONFIG_FILENAME = "default_config.yaml"
+DEFAULT_CONFIG_DIRNAME = "defaults.d"
+DEFAULT_CONFIG_SECTIONS: Tuple[Tuple[str, str, str], ...] = (
+    ("models", "00-models.yaml", "Provider, model, temperature, auth-backed provider definitions."),
+    ("ui", "10-ui-prompts.yaml", "CLI rendering, runtime transparency, and prompt templates."),
+    ("sessions", "20-sessions-memory.yaml", "Session persistence, compaction, and memory defaults."),
+    ("governance", "30-runtime-governance.yaml", "Config persistence, tool approval catalog, and tool runtime settings."),
+)
 
 # Sentinel used by get_nested() to distinguish "key absent" from "key present
 # with a null value" — a plain None would be ambiguous in the latter case.
@@ -21,7 +27,7 @@ _SENTINEL = object()
 
 @lru_cache(maxsize=8)
 def _load_yaml(path: Path) -> Dict[str, Any]:
-    """Load and parse a YAML file from disk (no caching — callers deep-copy as needed)."""
+    """Load and parse a YAML file from disk (cached by absolute path)."""
     if not path.exists():
         raise FileNotFoundError(f"Configuration file not found at: {path}")
     with open(path, "r", encoding="utf-8") as f:
@@ -29,6 +35,55 @@ def _load_yaml(path: Path) -> Dict[str, Any]:
     if not isinstance(config, dict):
         raise TypeError(f"Configuration at {path} must be a YAML mapping, got {type(config).__name__}.")
     return config
+
+
+def _deep_merge_dicts(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
+    """Recursively merge `overlay` into `base` in-place. `overlay` wins."""
+    for key, value in overlay.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            _deep_merge_dicts(base[key], value)
+        else:
+            base[key] = value
+    return base
+
+
+@lru_cache(maxsize=4)
+def _discover_yaml_fragments(root: Path) -> Tuple[Path, ...]:
+    """Return ordered YAML fragments from a config root path."""
+    if root.is_file():
+        return (root,)
+    if not root.exists():
+        raise FileNotFoundError(f"Configuration defaults not found at: {root}")
+    files = tuple(
+        sorted(
+            path for path in root.iterdir()
+            if path.is_file() and path.suffix.lower() in {".yaml", ".yml"}
+        )
+    )
+    if not files:
+        raise FileNotFoundError(f"No YAML defaults found in: {root}")
+    return files
+
+
+@lru_cache(maxsize=4)
+def _load_yaml_tree(root: Path) -> Dict[str, Any]:
+    """Load and merge a YAML file or an ordered directory of YAML fragments."""
+    merged: Dict[str, Any] = {}
+    for path in _discover_yaml_fragments(root):
+        _deep_merge_dicts(merged, _load_yaml(path))
+    return merged
+
+
+@lru_cache(maxsize=4)
+def _concat_yaml_tree(root: Path) -> str:
+    """Concatenate ordered YAML fragment sources into one exportable config text."""
+    chunks = [path.read_text(encoding="utf-8").rstrip() for path in _discover_yaml_fragments(root)]
+    return "\n\n".join(chunk for chunk in chunks if chunk).rstrip() + "\n"
+
+
+def _concat_yaml_files(paths: Tuple[Path, ...]) -> str:
+    chunks = [path.read_text(encoding="utf-8").rstrip() for path in paths]
+    return "\n\n".join(chunk for chunk in chunks if chunk).rstrip() + "\n"
 
 
 class ConfigManager:
@@ -54,7 +109,9 @@ class ConfigManager:
     """
 
     def __init__(self, override_path: Optional[str] = None, **kwargs: Any):
-        self.default_config_path = Path(__file__).parent / "defaults" / DEFAULT_CONFIG_FILENAME
+        self.default_config_path = Path(__file__).parent / "defaults" / DEFAULT_CONFIG_DIRNAME
+        self.default_config_files = list(_discover_yaml_fragments(self.default_config_path))
+        self.default_config_sections = self._build_default_section_index(self.default_config_path)
         self.override_path = Path(override_path).expanduser() if override_path else None
         self._kwargs: Dict[str, Any] = kwargs
 
@@ -65,10 +122,36 @@ class ConfigManager:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _build_default_section_index(root: Path) -> Dict[str, Dict[str, Any]]:
+        files_by_name = {path.name: path for path in _discover_yaml_fragments(root)}
+        index: Dict[str, Dict[str, Any]] = {}
+        missing: List[str] = []
+        for section_name, filename, description in DEFAULT_CONFIG_SECTIONS:
+            path = files_by_name.get(filename)
+            if path is None:
+                missing.append(filename)
+                continue
+            index[section_name] = {
+                "name": section_name,
+                "file": path,
+                "description": description,
+            }
+        if missing:
+            raise FileNotFoundError(
+                "Missing built-in config fragments: " + ", ".join(sorted(missing))
+            )
+        extra = sorted(set(files_by_name) - {filename for _, filename, _ in DEFAULT_CONFIG_SECTIONS})
+        if extra:
+            raise ValueError(
+                "Unregistered built-in config fragments found in defaults.d: " + ", ".join(extra)
+            )
+        return index
+
     def _load_and_merge(self) -> None:
         """Build self.config from all layers (deepcopy avoids mutating on-disk data)."""
         # Layer 1: package defaults
-        self.config = copy.deepcopy(_load_yaml(self.default_config_path))
+        self.config = copy.deepcopy(_load_yaml_tree(self.default_config_path))
 
         # Layer 2: user override file
         if self.override_path and self.override_path.exists():
@@ -81,12 +164,7 @@ class ConfigManager:
     @staticmethod
     def _deep_merge(base: Dict, overlay: Dict) -> Dict:
         """Recursively merge `overlay` into `base` in-place. `overlay` wins."""
-        for key, value in overlay.items():
-            if isinstance(value, dict) and isinstance(base.get(key), dict):
-                ConfigManager._deep_merge(base[key], value)
-            else:
-                base[key] = value
-        return base
+        return _deep_merge_dicts(base, overlay)
 
     # ------------------------------------------------------------------
     # Read API
@@ -173,6 +251,34 @@ class ConfigManager:
         node[leaf] = value
         return node[leaf]
 
+    def delete_path(self, key: str) -> bool:
+        """Delete a dot-notation path if it exists. Returns True when removed."""
+        if not key:
+            return False
+        parts = key.split(".")
+        node = self.config
+        parents: List[tuple[Dict[str, Any], str]] = []
+        for part in parts[:-1]:
+            next_node = node.get(part)
+            if not isinstance(next_node, dict):
+                return False
+            parents.append((node, part))
+            node = next_node
+
+        leaf = parts[-1]
+        if leaf not in node:
+            return False
+        del node[leaf]
+
+        # Prune empty nested mappings created only for this path.
+        for parent, part in reversed(parents):
+            child = parent.get(part)
+            if isinstance(child, dict) and not child:
+                del parent[part]
+            else:
+                break
+        return True
+
     @staticmethod
     def _coerce(value: Any, existing: Any) -> Any:
         """Try to cast `value` to the type of `existing` when `value` is a string."""
@@ -203,10 +309,52 @@ class ConfigManager:
         )
 
     @classmethod
-    def get_default_yaml(cls) -> str:
-        """Return the raw content of the built-in default config file."""
-        path = Path(__file__).parent / "defaults" / DEFAULT_CONFIG_FILENAME
-        return path.read_text(encoding="utf-8")
+    def list_default_sections(cls) -> List[Dict[str, str]]:
+        """Return the available default config sections in load/export order."""
+        root = Path(__file__).parent / "defaults" / DEFAULT_CONFIG_DIRNAME
+        index = cls._build_default_section_index(root)
+        return [
+            {
+                "name": name,
+                "file": data["file"].name,
+                "description": data["description"],
+            }
+            for name, _, _ in DEFAULT_CONFIG_SECTIONS
+            for data in [index[name]]
+        ]
+
+    @classmethod
+    def normalize_default_sections(cls, sections: Optional[List[str]] = None) -> List[str]:
+        """Normalize a requested set of config sections."""
+        available = cls.list_default_sections()
+        ordered_names = [item["name"] for item in available]
+        index = set(ordered_names)
+        if not sections:
+            return ordered_names
+        normalized: List[str] = []
+        seen: set[str] = set()
+        for section in sections:
+            name = str(section or "").strip().lower()
+            if not name or name == "all":
+                continue
+            if name not in index:
+                available = ", ".join(sorted(index))
+                raise ValueError(f"Unknown config section: {section}. Available: {available}")
+            if name not in seen:
+                normalized.append(name)
+                seen.add(name)
+        return normalized or ordered_names
+
+    @classmethod
+    def get_default_yaml(cls, sections: Optional[List[str]] = None) -> str:
+        """Return the built-in default config template assembled from ordered fragments."""
+        root = Path(__file__).parent / "defaults" / DEFAULT_CONFIG_DIRNAME
+        if not sections:
+            return _concat_yaml_tree(root)
+        index = cls._build_default_section_index(root)
+        ordered = cls.normalize_default_sections(sections)
+        paths = tuple(index[name]["file"] for name in ordered)
+        return _concat_yaml_files(paths)
 
     def save_active_yaml(self, path: Optional[str] = None) -> Path:
         """Persist the active merged configuration to disk and return the written path."""

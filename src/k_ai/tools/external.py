@@ -11,6 +11,7 @@ from typing import Any, Dict
 
 from ..models import ToolResult
 from ..secrets import resolve_secret
+from ..ui_theme import resolve_syntax_theme
 from .base import InternalTool, ToolContext, ToolRegistry
 
 
@@ -147,7 +148,8 @@ class PythonExecTool(InternalTool):
         from rich.syntax import Syntax
 
         code = arguments.get("code", "")
-        return [("Python Code", Syntax(code, "python", theme="monokai", line_numbers=True, word_wrap=True))]
+        syntax_theme = resolve_syntax_theme(ctx.config.get_nested("cli", "theme", default="default"))
+        return [("Python Code", Syntax(code, "python", theme=syntax_theme, line_numbers=True, word_wrap=True))]
 
     def result_renderable(self, result: ToolResult, max_display_length: int, ctx: ToolContext) -> Any:
         from rich.syntax import Syntax
@@ -156,7 +158,8 @@ class PythonExecTool(InternalTool):
         if len(msg) > max_display_length:
             msg = msg[:max_display_length] + "\n...(truncated)"
         lexer = "text" if result.success else "pytb"
-        return Syntax(msg or "(no output)", lexer, theme="monokai", word_wrap=True)
+        syntax_theme = resolve_syntax_theme(ctx.config.get_nested("cli", "theme", default="default"))
+        return Syntax(msg or "(no output)", lexer, theme=syntax_theme, word_wrap=True)
 
     @staticmethod
     def _sandbox_dir(ctx: ToolContext) -> str:
@@ -300,7 +303,8 @@ class ShellExecTool(InternalTool):
         from rich.syntax import Syntax
 
         command = arguments.get("command", "")
-        return [("Shell Command", Syntax(command, "bash", theme="monokai", line_numbers=False, word_wrap=True))]
+        syntax_theme = resolve_syntax_theme(ctx.config.get_nested("cli", "theme", default="default"))
+        return [("Shell Command", Syntax(command, "bash", theme=syntax_theme, line_numbers=False, word_wrap=True))]
 
     def result_renderable(self, result: ToolResult, max_display_length: int, ctx: ToolContext) -> Any:
         from rich.syntax import Syntax
@@ -308,7 +312,8 @@ class ShellExecTool(InternalTool):
         msg = result.message
         if len(msg) > max_display_length:
             msg = msg[:max_display_length] + "\n...(truncated)"
-        return Syntax(msg or "(no output)", "text", theme="monokai", word_wrap=True)
+        syntax_theme = resolve_syntax_theme(ctx.config.get_nested("cli", "theme", default="default"))
+        return Syntax(msg or "(no output)", "text", theme=syntax_theme, word_wrap=True)
 
     async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
         tool_cfg = ctx.config.get_nested("tools", "shell_exec", default={})

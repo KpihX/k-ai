@@ -10,6 +10,7 @@ from typing import Any, Dict
 import yaml
 
 from ..models import ToolResult
+from ..ui_theme import resolve_syntax_theme
 from .base import InternalTool, ToolContext, ToolRegistry
 
 
@@ -41,6 +42,10 @@ def _resolve_session_id(raw: str, ctx: ToolContext) -> str | None:
     return meta.id if meta else None
 
 
+def _session_summary(meta) -> str:
+    return meta.summary or (meta.title if meta.title != meta.id else "(untitled)")
+
+
 # ---------------------------------------------------------------------------
 # Tool implementations
 # ---------------------------------------------------------------------------
@@ -51,14 +56,82 @@ class NewSessionTool(InternalTool):
     category = "session"
     danger_level = "medium"
     accent_color = "blue"
-    description = "Start a new chat session, clearing the current context."
-    parameters_schema = {"type": "object", "properties": {}, "required": []}
+    description = "Start a new chat session, clearing the current context. Optional seed metadata can define the new session type/summary/themes."
+    parameters_schema = {
+        "type": "object",
+        "properties": {
+            "session_type": {"type": "string", "enum": ["classic", "meta"], "description": "Optional session type for the new session."},
+            "summary": {"type": "string", "description": "Optional one-line summary to seed the new session metadata."},
+            "themes": {"type": "array", "items": {"type": "string"}, "description": "Optional seed themes for the new session."},
+        },
+        "required": [],
+    }
     requires_approval = True
 
     async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
         if ctx.request_new_session:
-            ctx.request_new_session()
+            ctx.request_new_session(seed={
+                "session_type": arguments.get("session_type", "classic"),
+                "summary": arguments.get("summary", ""),
+                "themes": arguments.get("themes", []),
+            })
         return ToolResult(success=True, message="New session started.")
+
+
+class SwitchSessionTool(InternalTool):
+    name = "switch_session"
+    display_name = "Switch To New Session"
+    category = "session"
+    danger_level = "medium"
+    accent_color = "blue"
+    description = (
+        "Finalize the current session and continue the current user request inside a new, semantically cleaner session. "
+        "Use this proactively when the user clearly switches to a different dominant intent."
+    )
+    parameters_schema = {
+        "type": "object",
+        "properties": {
+            "summary": {"type": "string", "description": "Short summary of the new session topic."},
+            "themes": {"type": "array", "items": {"type": "string"}, "description": "Key themes for the new session."},
+            "session_type": {"type": "string", "enum": ["classic", "meta"], "description": "Type for the new session."},
+            "reason": {"type": "string", "description": "Brief reason why a new session would keep topics cleaner."},
+        },
+        "required": ["summary", "session_type"],
+    }
+    requires_approval = True
+
+    async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
+        history = ctx.get_history() if ctx.get_history else []
+        carry_message = ""
+        for message in reversed(history or []):
+            if message.role.value == "user" and message.content.strip():
+                carry_message = message.content
+                break
+
+        seed = {
+            "summary": str(arguments.get("summary", "") or "").strip(),
+            "themes": arguments.get("themes", []) or [],
+            "session_type": str(arguments.get("session_type", "classic") or "classic"),
+        }
+        reason = str(arguments.get("reason", "") or "").strip()
+        if ctx.request_new_session:
+            ctx.request_new_session(seed=seed, carry_over_message=carry_message)
+        message = f"Switching to a new {seed['session_type']} session: {seed['summary']}"
+        if reason:
+            message += f"\nReason: {reason}"
+        return ToolResult(success=True, message=message, data={"seed": seed, "reason": reason, "carry_over_message": bool(carry_message)})
+
+    def proposal_sections(self, arguments: Dict[str, Any], ctx: ToolContext) -> list[tuple[str, Any]]:
+        from rich.table import Table
+
+        table = Table(show_header=False, box=None, padding=(0, 1))
+        table.add_column("field", style="dim")
+        table.add_column("value")
+        table.add_row("New type", str(arguments.get("session_type", "classic")))
+        table.add_row("Summary", str(arguments.get("summary", "")))
+        table.add_row("Themes", ", ".join(arguments.get("themes", []) or []) or "-")
+        table.add_row("Reason", str(arguments.get("reason", "") or "-"))
+        return [("Session Switch", table)]
 
 
 class LoadSessionTool(InternalTool):
@@ -156,10 +229,14 @@ class ListSessionsTool(InternalTool):
     danger_level = "low"
     accent_color = "blue"
     description = (
-        "List recent chat sessions. Each session shows its position number (#1, #2...) "
-        "and its unique ID (8-char hex). IMPORTANT: when referring to a session in other "
+        "List chat sessions. Each session shows its position number (#1, #2...) "
+        "and its unique ID (8-char hex), summary, themes, and message count. IMPORTANT: when referring to a session in other "
         "tools (delete, load, rename), always use the 8-char hex ID, NOT the position number. "
-        "If the user asks for the oldest sessions, set order='oldest'."
+        "The visible session table is ordered newest first from top to bottom. "
+        "If the user asks for the oldest sessions, or refers to the last/bottom rows "
+        "of the visible table, set order='oldest' instead of using limit=N on recent ordering. "
+        "Example: in French, 'supprime les 3 derniers chats' means the 3 bottom rows of the "
+        "visible table, not the top 3 most recent sessions."
     )
     parameters_schema = {
         "type": "object",
@@ -173,6 +250,11 @@ class ListSessionsTool(InternalTool):
                 "description": "Session order: 'recent' for newest first, 'oldest' for oldest first.",
                 "enum": ["recent", "oldest"],
             },
+            "session_type": {
+                "type": "string",
+                "description": "Optional filter by session type.",
+                "enum": ["classic", "meta"],
+            },
         },
         "required": [],
     }
@@ -182,19 +264,28 @@ class ListSessionsTool(InternalTool):
         max_recent = ctx.config.get_nested("sessions", "max_recent", default=10)
         limit = arguments.get("limit", max_recent)
         order = str(arguments.get("order", "recent") or "recent").lower()
+        filter_type = str(arguments.get("session_type", "") or "").strip().lower() or None
         if order not in {"recent", "oldest"}:
             order = "recent"
-        sessions = ctx.session_store.list_sessions(limit=limit, order=order)
+        raw_limit = ctx.session_store.session_count() if filter_type in {"classic", "meta"} else limit
+        sessions = ctx.session_store.list_sessions(limit=raw_limit, order=order)
+        if filter_type in {"classic", "meta"}:
+            sessions = [session for session in sessions if session.session_type == filter_type][:limit]
         if not sessions:
             return ToolResult(success=True, message="No sessions found.", data=[])
         lines = []
         for i, s in enumerate(sessions, 1):
-            summary = s.summary or (s.title if s.title != s.id else "(untitled)")
-            lines.append(f"#{i} ID={s.id[:8]} \"{summary}\" ({s.message_count} msgs)")
+            summary = _session_summary(s)
+            themes = ", ".join(s.themes[:5]) if s.themes else "-"
+            updated = s.updated_at[:10] if s.updated_at else "?"
+            lines.append(
+                f"#{i} session={s.id[:8]} type={s.session_type} summary={summary!r} themes={themes!r} "
+                f"msgs={s.message_count} updated={updated} order={order}"
+            )
         return ToolResult(
             success=True,
             message="\n".join(lines),
-            data={"order": order, "sessions": [s.model_dump() for s in sessions]},
+            data={"order": order, "session_type": filter_type or "", "sessions": [s.model_dump() for s in sessions]},
         )
 
     def result_renderable(self, result: ToolResult, max_display_length: int, ctx: ToolContext) -> Any:
@@ -206,14 +297,23 @@ class ListSessionsTool(InternalTool):
         if not sessions:
             return Text("No sessions found.")
         order = payload.get("order", "recent") if isinstance(payload, dict) else "recent"
-        table = Table(show_header=True, header_style="bold", border_style="blue", title=f"Order: {order}")
+        title = f"Order: {order}"
+        filter_type = payload.get("session_type", "") if isinstance(payload, dict) else ""
+        if filter_type:
+            title += f"  |  type: {filter_type}"
+        table = Table(show_header=True, header_style="bold", border_style="blue", title=title)
         table.add_column("#", style="dim", width=3)
-        table.add_column("ID", style="cyan", width=10)
+        table.add_column("Session", style="cyan", width=10)
+        table.add_column("Type", width=8)
         table.add_column("Summary")
+        table.add_column("Themes", min_width=24)
         table.add_column("Msgs", justify="right", width=5)
+        table.add_column("Updated", width=12)
         for i, session in enumerate(sessions, 1):
             summary = session["summary"] or (session["title"] if session["title"] != session["id"] else "(untitled)")
-            table.add_row(str(i), session["id"][:8], summary, str(session["message_count"]))
+            themes = ", ".join((session.get("themes") or [])[:4]) or "-"
+            updated = (session.get("updated_at") or "")[:10] or "?"
+            table.add_row(str(i), session["id"][:8], session.get("session_type", "classic"), summary, themes, str(session["message_count"]), updated)
         return table
 
 
@@ -297,7 +397,11 @@ class SessionDigestTool(InternalTool):
     category = "session"
     danger_level = "medium"
     accent_color = "blue"
-    description = "Generate or refresh the summary sentence and key themes for the current or a previous session."
+    description = (
+        "Generate or refresh the summary sentence and key themes for the current or a previous session. "
+        "Use this when the user explicitly asks to summarize or refresh session metadata, or when summary/themes "
+        "are genuinely missing and needed. Do not call it just to restate metadata already visible in list_sessions."
+    )
     parameters_schema = {
         "type": "object",
         "properties": {
@@ -322,7 +426,8 @@ class SessionDigestTool(InternalTool):
         digest = await ctx.generate_session_digest(session_id=session_id, persist=persist)
         summary = digest.get("summary", "")
         themes = digest.get("themes", [])
-        msg = f"{summary}\nThemes: {', '.join(themes) if themes else '-'}"
+        session_type = digest.get("session_type", "classic")
+        msg = f"{summary}\nType: {session_type}\nThemes: {', '.join(themes) if themes else '-'}"
         return ToolResult(success=True, message=msg, data=digest)
 
     def result_renderable(self, result: ToolResult, max_display_length: int, ctx: ToolContext) -> Any:
@@ -332,6 +437,7 @@ class SessionDigestTool(InternalTool):
         table = Table(show_header=False, box=None, padding=(0, 1))
         table.add_column("field", style="dim", no_wrap=True)
         table.add_column("value")
+        table.add_row("Type", str(data.get("session_type", "classic")))
         table.add_row("Summary", str(data.get("summary", "")))
         table.add_row("Themes", ", ".join(data.get("themes", [])) or "-")
         return table
@@ -429,6 +535,11 @@ class SetConfigTool(InternalTool):
 
     async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
         key = arguments.get("key", "")
+        if key == "tool_approval" or str(key).startswith("tool_approval."):
+            return ToolResult(
+                success=False,
+                message="Use the dedicated tool policy admin tools instead of set_config for tool_approval.*",
+            )
         raw_value = arguments.get("value", "")
         value = raw_value
         if isinstance(raw_value, str):
@@ -532,7 +643,8 @@ class GetConfigTool(InternalTool):
             table.add_row("Value", repr(data.get("value", None)))
             return table
         payload = yaml.dump(data.get("value", {}), allow_unicode=True, sort_keys=False)
-        return Syntax(payload, "yaml", theme="monokai", line_numbers=False, word_wrap=True)
+        syntax_theme = resolve_syntax_theme(ctx.config.get_nested("cli", "theme", default="default"))
+        return Syntax(payload, "yaml", theme=syntax_theme, line_numbers=False, word_wrap=True)
 
 
 class ListConfigTool(InternalTool):
@@ -639,6 +751,224 @@ class RuntimeStatusTool(InternalTool):
         return render_runtime_panel(data.get("snapshot", {}), title="Runtime Transparency", mode=data.get("mode", "compact"))
 
 
+class ToolPolicyListTool(InternalTool):
+    name = "tool_policy_list"
+    display_name = "Show Tool Policies"
+    category = "tool-admin"
+    danger_level = "critical"
+    accent_color = "yellow"
+    description = (
+        "Inspect effective approval policies for every internal tool, including default risk policy, "
+        "session overrides, global overrides, protected tools, and the final effective policy."
+    )
+    parameters_schema = {
+        "type": "object",
+        "properties": {
+            "policy": {"type": "string", "enum": ["ask", "auto"], "description": "Optional filter by effective policy."},
+            "source": {
+                "type": "string",
+                "enum": ["default", "session", "global", "protected"],
+                "description": "Optional filter by the source of the effective policy.",
+            },
+        },
+        "required": [],
+    }
+    requires_approval = True
+
+    async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
+        if not ctx.get_tool_policy_overview:
+            return ToolResult(success=False, message="Tool policy overview is unavailable.")
+        policy = str(arguments.get("policy", "") or "").strip().lower() or None
+        source = str(arguments.get("source", "") or "").strip().lower() or None
+        overview = ctx.get_tool_policy_overview(filter_policy=policy, filter_source=source)
+        counts = overview.get("counts", {})
+        msg = (
+            f"ask={counts.get('ask', 0)} auto={counts.get('auto', 0)} "
+            f"session_overrides={counts.get('session_overrides', 0)} "
+            f"global_overrides={counts.get('global_overrides', 0)} "
+            f"protected={counts.get('protected', 0)}"
+        )
+        return ToolResult(success=True, message=msg, data=overview)
+
+    def result_renderable(self, result: ToolResult, max_display_length: int, ctx: ToolContext) -> Any:
+        from rich.console import Group
+        from rich.table import Table
+
+        data = result.data or {}
+        counts = data.get("counts", {})
+        defaults = data.get("defaults_by_risk", {})
+        summary = Table(show_header=False, box=None, padding=(0, 1))
+        summary.add_column("field", style="dim", no_wrap=True)
+        summary.add_column("value")
+        summary.add_row("Ask", str(counts.get("ask", 0)))
+        summary.add_row("Auto", str(counts.get("auto", 0)))
+        summary.add_row("Session overrides", str(counts.get("session_overrides", 0)))
+        summary.add_row("Global overrides", str(counts.get("global_overrides", 0)))
+        summary.add_row("Protected", str(counts.get("protected", 0)))
+        summary.add_row(
+            "Risk defaults",
+            ", ".join(f"{risk}={policy}" for risk, policy in defaults.items()) or "-",
+        )
+
+        table = Table(show_header=True, header_style="bold", border_style="yellow")
+        table.add_column("Tool", style="cyan", width=18)
+        table.add_column("Category", width=12)
+        table.add_column("Risk", width=9)
+        table.add_column("Default", width=8)
+        table.add_column("Session", width=8)
+        table.add_column("Global", width=8)
+        table.add_column("Effective", width=9)
+        table.add_column("Source", width=10)
+        table.add_column("Protected", width=10)
+        for row in data.get("rows", []):
+            table.add_row(
+                row["tool"],
+                row["category"],
+                row["risk"],
+                row["default_policy"],
+                row.get("session_override") or "-",
+                row.get("global_override") or "-",
+                row["effective_policy"],
+                row["source"],
+                "yes" if row["protected"] else "no",
+            )
+        return Group(summary, table)
+
+
+class ToolPolicySetTool(InternalTool):
+    name = "tool_policy_set"
+    display_name = "Set Tool Policy"
+    category = "tool-admin"
+    danger_level = "critical"
+    accent_color = "yellow"
+    description = (
+        "Change approval policy for a tool, category, or risk level. "
+        "Policies are 'ask' or 'auto'. Scope can be 'session' or 'global'. "
+        "Protected admin tools always require approval and cannot be changed."
+    )
+    parameters_schema = {
+        "type": "object",
+        "properties": {
+            "target_kind": {"type": "string", "enum": ["tool", "category", "risk"], "description": "What target to change."},
+            "target": {"type": "string", "description": "Tool name, category name, or risk level."},
+            "policy": {"type": "string", "enum": ["ask", "auto"], "description": "Desired approval policy."},
+            "scope": {"type": "string", "enum": ["session", "global"], "description": "Where the override applies."},
+            "persist": {"type": "boolean", "description": "For global scope, persist to config file immediately."},
+        },
+        "required": ["target", "policy"],
+    }
+    requires_approval = True
+
+    async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
+        if not ctx.update_tool_policy:
+            return ToolResult(success=False, message="Tool policy updates are unavailable.")
+        target_kind = str(arguments.get("target_kind", "tool") or "tool")
+        target = str(arguments.get("target", "") or "")
+        policy = str(arguments.get("policy", "") or "")
+        scope = str(arguments.get("scope", "session") or "session")
+        persist = arguments.get("persist")
+        try:
+            change = ctx.update_tool_policy(target_kind=target_kind, target=target, policy=policy, scope=scope, persist=persist)
+        except Exception as e:
+            return ToolResult(success=False, message=str(e))
+        msg = f"{change['scope']} {change['target_kind']} '{change['target']}' -> {change['policy']}"
+        if change.get("saved_to"):
+            msg += f"\nSaved to {change['saved_to']}"
+        return ToolResult(success=True, message=msg, data=change)
+
+    def proposal_sections(self, arguments: Dict[str, Any], ctx: ToolContext) -> list[tuple[str, Any]]:
+        from rich.table import Table
+
+        table = Table(show_header=False, box=None, padding=(0, 1))
+        table.add_column("field", style="dim")
+        table.add_column("value")
+        table.add_row("Target kind", str(arguments.get("target_kind", "tool")))
+        table.add_row("Target", str(arguments.get("target", "")))
+        table.add_row("Policy", str(arguments.get("policy", "")))
+        table.add_row("Scope", str(arguments.get("scope", "session")))
+        table.add_row("Persist", str(arguments.get("persist", True)))
+        return [("Policy Change", table)]
+
+    def result_renderable(self, result: ToolResult, max_display_length: int, ctx: ToolContext) -> Any:
+        from rich.table import Table
+
+        data = result.data or {}
+        table = Table(show_header=False, box=None, padding=(0, 1))
+        table.add_column("field", style="dim", no_wrap=True)
+        table.add_column("value")
+        table.add_row("Target", f"{data.get('target_kind', '')}:{data.get('target', '')}")
+        table.add_row("Scope", str(data.get("scope", "")))
+        table.add_row("Previous", str(data.get("previous") or "-"))
+        table.add_row("Applied", str(data.get("policy") or "-"))
+        table.add_row("Saved", str(data.get("saved_to") or "-"))
+        return table
+
+
+class ToolPolicyResetTool(InternalTool):
+    name = "tool_policy_reset"
+    display_name = "Reset Tool Policy"
+    category = "tool-admin"
+    danger_level = "critical"
+    accent_color = "yellow"
+    description = (
+        "Remove a session or global override for a tool, category, or risk level, "
+        "falling back to the next effective policy source. Protected admin tools cannot be changed."
+    )
+    parameters_schema = {
+        "type": "object",
+        "properties": {
+            "target_kind": {"type": "string", "enum": ["tool", "category", "risk"], "description": "What target to reset."},
+            "target": {"type": "string", "description": "Tool name, category name, or risk level."},
+            "scope": {"type": "string", "enum": ["session", "global"], "description": "Where the override should be removed."},
+            "persist": {"type": "boolean", "description": "For global scope, persist to config file immediately."},
+        },
+        "required": ["target"],
+    }
+    requires_approval = True
+
+    async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
+        if not ctx.reset_tool_policy:
+            return ToolResult(success=False, message="Tool policy reset is unavailable.")
+        target_kind = str(arguments.get("target_kind", "tool") or "tool")
+        target = str(arguments.get("target", "") or "")
+        scope = str(arguments.get("scope", "session") or "session")
+        persist = arguments.get("persist")
+        try:
+            change = ctx.reset_tool_policy(target_kind=target_kind, target=target, scope=scope, persist=persist)
+        except Exception as e:
+            return ToolResult(success=False, message=str(e))
+        msg = f"Reset {change['scope']} {change['target_kind']} '{change['target']}'"
+        if change.get("saved_to"):
+            msg += f"\nSaved to {change['saved_to']}"
+        return ToolResult(success=True, message=msg, data=change)
+
+    def proposal_sections(self, arguments: Dict[str, Any], ctx: ToolContext) -> list[tuple[str, Any]]:
+        from rich.table import Table
+
+        table = Table(show_header=False, box=None, padding=(0, 1))
+        table.add_column("field", style="dim")
+        table.add_column("value")
+        table.add_row("Target kind", str(arguments.get("target_kind", "tool")))
+        table.add_row("Target", str(arguments.get("target", "")))
+        table.add_row("Scope", str(arguments.get("scope", "session")))
+        table.add_row("Persist", str(arguments.get("persist", True)))
+        return [("Policy Reset", table)]
+
+    def result_renderable(self, result: ToolResult, max_display_length: int, ctx: ToolContext) -> Any:
+        from rich.table import Table
+
+        data = result.data or {}
+        table = Table(show_header=False, box=None, padding=(0, 1))
+        table.add_column("field", style="dim", no_wrap=True)
+        table.add_column("value")
+        table.add_row("Target", f"{data.get('target_kind', '')}:{data.get('target', '')}")
+        table.add_row("Scope", str(data.get("scope", "")))
+        table.add_row("Previous", str(data.get("previous") or "-"))
+        table.add_row("Removed", str(bool(data.get("removed", False))))
+        table.add_row("Saved", str(data.get("saved_to") or "-"))
+        return table
+
+
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
@@ -647,12 +977,16 @@ def register_meta_tools(registry: ToolRegistry, ctx: ToolContext) -> None:
     """Register all meta/session tools."""
     for tool_cls in [
         NewSessionTool,
+        SwitchSessionTool,
         LoadSessionTool,
         ExitSessionTool,
         RenameSessionTool,
         ListSessionsTool,
         SessionExtractTool,
         SessionDigestTool,
+        ToolPolicyListTool,
+        ToolPolicySetTool,
+        ToolPolicyResetTool,
         DeleteSessionTool,
         CompactSessionTool,
         ClearScreenTool,

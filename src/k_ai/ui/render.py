@@ -16,8 +16,8 @@ from rich.text import Text
 
 from ..models import CompletionChunk, SessionMetadata, ToolResult, TokenUsage
 from ..tools.base import ToolDisplaySpec
+from ..ui_theme import resolve_ui_theme
 from .markdown import render_content
-
 
 _STATUS_STYLES = {
     "info": ("cyan", "Info"),
@@ -30,10 +30,12 @@ _DANGER_STYLES = {
     "low": ("cyan", "Low risk"),
     "medium": ("yellow", "Requires attention"),
     "high": ("red", "High impact"),
+    "critical": ("magenta", "Always ask"),
 }
 
 
-def render_assistant_panel(content: str, model_name: str, render_mode: str = "rich", usage: Optional[TokenUsage] = None) -> Panel:
+def render_assistant_panel(content: str, model_name: str, render_mode: str = "rich", usage: Optional[TokenUsage] = None, theme_name: str = "default") -> Panel:
+    theme = resolve_ui_theme(theme_name)
     subtitle = None
     if usage and usage.total_tokens:
         subtitle = f"[dim]{usage.prompt_tokens} in / {usage.completion_tokens} out[/dim]"
@@ -41,24 +43,26 @@ def render_assistant_panel(content: str, model_name: str, render_mode: str = "ri
         render_content(content, render_mode),
         title=f"[bold green]Assistant[/bold green] [dim]{model_name}[/dim]",
         subtitle=subtitle,
-        border_style="green",
+        border_style=str(theme.get("assistant_border", "green")),
         expand=True,
         padding=(0, 1),
     )
 
 
-def render_user_panel(content: str) -> Panel:
+def render_user_panel(content: str, theme_name: str = "default") -> Panel:
+    theme = resolve_ui_theme(theme_name)
     return Panel(
         render_content(content, "rich"),
         title="[bold white]User[/bold white]",
-        border_style="bright_black",
-        style="on #1f2329",
+        border_style=str(theme.get("user_border", "bright_black")),
+        style=str(theme.get("user_style", "on #1f2329")),
         expand=True,
         padding=(0, 1),
     )
 
 
-def render_runtime_panel(snapshot: dict, title: str = "Runtime Transparency", mode: str = "compact") -> Panel:
+def render_runtime_panel(snapshot: dict, title: str = "Runtime Transparency", mode: str = "compact", theme_name: str = "default") -> Panel:
+    theme = resolve_ui_theme(theme_name)
     context_used = int(snapshot.get("estimated_context_tokens", 0) or 0)
     context_total = int(snapshot.get("context_window", 0) or 0)
     context_pct = float(snapshot.get("context_percent", 0.0) or 0.0)
@@ -88,20 +92,20 @@ def render_runtime_panel(snapshot: dict, title: str = "Runtime Transparency", mo
     body.add_row(
         "Session",
         snapshot.get("session_id")[:8] if snapshot.get("session_id") else "(none)",
-        "Auth",
-        str(snapshot.get("auth_mode", "n/a")),
+        "Type",
+        str(snapshot.get("session_type", "") or "-"),
     )
     body.add_row(
         "Context",
         f"{context_used:,} / {context_total:,} tok  ({context_pct:.1f}%)",
-        "Remaining",
-        f"{int(snapshot.get('remaining_context_tokens', 0) or 0):,} tok",
+        "Auth",
+        str(snapshot.get("auth_mode", "n/a")),
     )
     body.add_row(
         "Compaction",
         f"{threshold_tokens:,} tok  ({threshold_pct}%)" if threshold_tokens else "disabled",
-        "History",
-        f"{int(snapshot.get('history_messages', 0) or 0)} msgs",
+        "Remaining",
+        f"{int(snapshot.get('remaining_context_tokens', 0) or 0):,} tok",
     )
     body.add_row(
         "Tokens",
@@ -109,11 +113,14 @@ def render_runtime_panel(snapshot: dict, title: str = "Runtime Transparency", mo
         f"{int(snapshot.get('completion_tokens', 0) or 0):,} out / "
         f"{int(snapshot.get('total_tokens', 0) or 0):,} total"
         + (" [dim](estimated)[/dim]" if snapshot.get("token_source") == "estimated" else ""),
-        "Stream",
-        str(snapshot.get("stream")),
+        "History",
+        f"{int(snapshot.get('history_messages', 0) or 0)} msgs",
     )
+    body.add_row("Stream", str(snapshot.get("stream")), "", "")
 
     if mode in {"full", "welcome"}:
+        approval_counts = snapshot.get("approval_counts", {}) or {}
+        defaults = snapshot.get("approval_defaults", {}) or {}
         body.add_row(
             "Render",
             str(snapshot.get("render_mode", "rich")),
@@ -121,8 +128,8 @@ def render_runtime_panel(snapshot: dict, title: str = "Runtime Transparency", mo
             f"display {snapshot.get('tool_result_max_display')} / history {snapshot.get('tool_result_max_history')}",
         )
         body.add_row(
-            "Confirm tools",
-            str(snapshot.get("confirm_all_tools")),
+            "Approvals",
+            ", ".join(f"{risk}={policy}" for risk, policy in defaults.items()) or "-",
             "Persist path",
             str(snapshot.get("persist_path", "")),
         )
@@ -131,6 +138,12 @@ def render_runtime_panel(snapshot: dict, title: str = "Runtime Transparency", mo
             str(snapshot.get("token_source", "unknown")),
             "Provider usage",
             f"{int(snapshot.get('provider_total_tokens', 0) or 0):,} total",
+        )
+        body.add_row(
+            "Policy counts",
+            f"ask {approval_counts.get('ask', 0)} / auto {approval_counts.get('auto', 0)}",
+            "Overrides",
+            f"session {approval_counts.get('session_overrides', 0)} / global {approval_counts.get('global_overrides', 0)}",
         )
 
     parts = [header, Rule(style="dim"), body]
@@ -145,18 +158,19 @@ def render_runtime_panel(snapshot: dict, title: str = "Runtime Transparency", mo
     return Panel(
         Group(*parts),
         title=f"[bold cyan]{title}[/bold cyan]",
-        border_style="cyan",
+        border_style=str(theme.get("runtime_border", "cyan")),
         expand=True,
         padding=(0, 1),
     )
 
 
-def render_thinking_panel(content: str, render_mode: str = "rich", active: bool = False) -> Panel:
+def render_thinking_panel(content: str, render_mode: str = "rich", active: bool = False, theme_name: str = "default") -> Panel:
+    theme = resolve_ui_theme(theme_name)
     return Panel(
         render_content(content, render_mode),
         title="[bold yellow]Reasoning[/bold yellow]",
         subtitle="[dim]streaming[/dim]" if active else None,
-        border_style="yellow",
+        border_style=str(theme.get("thinking_border", "yellow")),
         expand=True,
         padding=(0, 1),
     )
@@ -179,10 +193,12 @@ class StreamingRenderer:
     This avoids the double-print bug where __exit__ would re-print.
     """
 
-    def __init__(self, console: Console, model_name: str, render_mode: str = "rich"):
+    def __init__(self, console: Console, model_name: str, render_mode: str = "rich", spinner_name: str = "dots", theme_name: str = "default"):
         self.console = console
         self.model_name = model_name
         self.render_mode = render_mode
+        self.spinner_name = spinner_name or "dots"
+        self.theme_name = theme_name or "default"
 
         self.full_content: str = ""
         self.full_thought: str = ""
@@ -193,8 +209,12 @@ class StreamingRenderer:
         self._live: Optional[Live] = None
 
     def __enter__(self) -> "StreamingRenderer":
+        try:
+            spinner = Spinner(self.spinner_name, text="[dim]Generating...[/dim]")
+        except Exception:
+            spinner = Spinner("dots", text="[dim]Generating...[/dim]")
         self._live = Live(
-            Spinner("dots", text="[dim]Generating...[/dim]"),
+            spinner,
             console=self.console,
             refresh_per_second=15,
             transient=True,  # Spinner disappears when content starts
@@ -215,7 +235,7 @@ class StreamingRenderer:
         # If thinking was shown but never committed (no content followed),
         # print the thinking panel statically.
         if self.full_thought and not self._thinking_committed:
-            self.console.print(render_thinking_panel(self.full_thought, self.render_mode))
+            self.console.print(render_thinking_panel(self.full_thought, self.render_mode, theme_name=self.theme_name))
 
         # Content panel: only print if we never switched to non-transient Live.
         # Once _content_started is True, the Live was non-transient and content
@@ -245,7 +265,7 @@ class StreamingRenderer:
             # Commit thinking if present
             if has_thought and not self._thinking_committed:
                 self._live.stop()
-                self.console.print(render_thinking_panel(self.full_thought, self.render_mode))
+                self.console.print(render_thinking_panel(self.full_thought, self.render_mode, theme_name=self.theme_name))
                 self._thinking_committed = True
             else:
                 # No thinking — stop the transient spinner
@@ -266,7 +286,7 @@ class StreamingRenderer:
         if has_content:
             self._live.update(self._content_panel())
         elif has_thought:
-            self._live.update(render_thinking_panel(self.full_thought, self.render_mode, active=True))
+            self._live.update(render_thinking_panel(self.full_thought, self.render_mode, active=True, theme_name=self.theme_name))
 
     def _content_panel(self) -> Panel:
         return render_assistant_panel(
@@ -274,6 +294,7 @@ class StreamingRenderer:
             self.model_name,
             render_mode=self.render_mode,
             usage=self.last_usage,
+            theme_name=self.theme_name,
         )
 
 
@@ -297,16 +318,20 @@ def render_sessions_table(
         border_style="dim",
     )
     table.add_column("#", style="dim", width=3)
-    table.add_column("ID", style="cyan", width=10)
+    table.add_column("Session", style="cyan", width=10)
+    table.add_column("Type", width=8)
     table.add_column("Summary", min_width=42)
+    table.add_column("Themes", min_width=24)
     table.add_column("Msgs", justify="right", width=5)
     table.add_column("Updated", width=12)
 
     for i, s in enumerate(sessions, 1):
         summary_source = s.summary or (s.title if s.title != s.id else "")
         summary = (summary_source[:86] + "...") if len(summary_source) > 86 else (summary_source or "[dim]-[/dim]")
+        themes_source = ", ".join(s.themes[:4]) if s.themes else "-"
+        themes = (themes_source[:40] + "...") if len(themes_source) > 40 else themes_source
         updated = s.updated_at[:10] if s.updated_at else "?"
-        table.add_row(str(i), s.id[:8], summary, str(s.message_count), updated)
+        table.add_row(str(i), s.id[:8], s.session_type, summary, themes, str(s.message_count), updated)
 
     console.print(table)
 
@@ -393,6 +418,13 @@ def render_tool_proposal(
         ))
 
     for section_title, content in sections:
+        if isinstance(content, list) and all(isinstance(row, tuple) and len(row) == 2 for row in content):
+            kv = Table(show_header=False, box=None, padding=(0, 1))
+            kv.add_column("field", style="dim", no_wrap=True)
+            kv.add_column("value")
+            for key, value in content:
+                kv.add_row(str(key), str(value))
+            content = kv
         parts.append(Panel(
             content,
             title=f"[bold white]{section_title}[/bold white]",
@@ -403,9 +435,9 @@ def render_tool_proposal(
 
     danger_color, danger_label = _DANGER_STYLES.get(spec.danger_level, _DANGER_STYLES["low"])
     validation = (
-        "[yellow]Validation required[/yellow] [dim]Press Enter/Y to approve, N to cancel[/dim]"
+        "[yellow]Validation required[/yellow] [dim]Press Enter/Y to approve, N to cancel, Ctrl+C to interrupt[/dim]"
         if requires_approval else
-        "[dim]Auto-execution[/dim]"
+        "[dim]Auto-approved by policy[/dim]"
     )
     header = Group(
         Text.from_markup(

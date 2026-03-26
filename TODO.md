@@ -11,11 +11,15 @@
 - [x] Add interrupt handling for prompt, generation, and tool execution.
 - [x] Add installation finalization and purge workflow.
 - [x] Refresh README, CHANGELOG, TODO, scripts, and Makefile.
+- [x] Split built-in config into sectioned YAML fragments with cached loading.
+- [x] Expose config sections from CLI and slash commands.
+- [x] Remove or wire every previously orphaned config option.
+- [x] Implement Google OAuth token loading/refresh for declared OAuth config.
+- [x] Align programmatic API rollback/finalization with interactive session semantics.
 
 ## Next candidates
 
 - [ ] Add a dedicated visual hint in the streaming UI for `Ctrl+C` / `Esc` interruption.
 - [ ] Improve per-provider token estimation quality beyond character-based heuristics.
-- [ ] Add richer session list columns for themes and persisted token totals.
 - [ ] Add snapshot/export command for runtime transparency as JSON/YAML.
 - [ ] Add integration tests for interruption behavior in an interactive PTY.

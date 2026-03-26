@@ -49,18 +49,25 @@ class SessionStore:
         self,
         provider: str = "",
         model: str = "",
+        *,
+        session_type: str = "classic",
+        title: str = "",
+        summary: str = "",
+        themes: Optional[List[str]] = None,
     ) -> SessionMetadata:
         """Create a new session and return its metadata."""
         now = datetime.now(timezone.utc).isoformat()
         session_id = uuid.uuid4().hex[:12]
         meta = SessionMetadata(
             id=session_id,
-            title=session_id,
+            session_type=session_type or "classic",
+            title=title or session_id,
+            summary=summary,
             created_at=now,
             updated_at=now,
             provider=provider,
             model=model,
-            themes=[],
+            themes=list(themes or []),
         )
         self._index.append(meta)
         self._save_index()
@@ -95,20 +102,34 @@ class SessionStore:
         self._save_index()
         return True
 
-    def update_summary(self, session_id: str, summary: str, themes: Optional[List[str]] = None) -> bool:
-        """Update a session's summary/themes. Returns True if found."""
+    def update_summary(
+        self,
+        session_id: str,
+        summary: str,
+        themes: Optional[List[str]] = None,
+        session_type: Optional[str] = None,
+    ) -> bool:
+        """Update a session's summary/themes/type. Returns True if found."""
         meta = self.get_session(session_id)
         if not meta:
             return False
         meta.summary = summary
         if themes is not None:
             meta.themes = list(themes)
+        if session_type:
+            meta.session_type = session_type
         meta.updated_at = datetime.now(timezone.utc).isoformat()
         self._save_index()
         return True
 
-    def update_digest(self, session_id: str, summary: str, themes: Optional[List[str]] = None) -> bool:
-        """Keep session title/summary/themes synchronized from a digest sentence."""
+    def update_digest(
+        self,
+        session_id: str,
+        summary: str,
+        themes: Optional[List[str]] = None,
+        session_type: Optional[str] = None,
+    ) -> bool:
+        """Keep session title/summary/themes/type synchronized from a digest sentence."""
         meta = self.get_session(session_id)
         if not meta:
             return False
@@ -117,6 +138,8 @@ class SessionStore:
         meta.summary = digest
         if themes is not None:
             meta.themes = list(themes)
+        if session_type:
+            meta.session_type = session_type
         meta.updated_at = datetime.now(timezone.utc).isoformat()
         self._save_index()
         return True

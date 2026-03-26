@@ -1,0 +1,119 @@
+# ==============================================================================
+# CLI & UI Behaviour
+# ==============================================================================
+
+cli:
+  # Show prompt/completion usage after each answer when available.
+  show_token_usage: true
+
+  # UI theme preset controlling panel accents and syntax highlighting.
+  # Unknown values fall back safely to "default".
+  theme: "default"
+
+  # Rich spinner name while waiting for first model output.
+  # Any Rich spinner name is accepted; invalid names fall back safely at runtime.
+  thinking_indicator: "clock"
+
+  # Show the runtime banner at launch.
+  show_welcome_panel: true
+
+  # Rendering mode for assistant text.
+  #   raw       plain text only
+  #   markdown  Rich markdown
+  #   rich      markdown + richer formatting helpers
+  render_mode: "rich"
+
+  # Maximum characters shown for a tool result in the UI panel.
+  tool_result_max_display: 500
+
+  # Maximum characters from a tool result kept in history sent back to the LLM.
+  # This protects against prompt bloat and provider TPM/rate spikes.
+  tool_result_max_history: 4000
+
+  # Show the runtime transparency panel after completed turns and config changes.
+  show_runtime_stats: true
+
+  # Runtime transparency density:
+  #   compact  essential stats only
+  #   full     adds policy/token source details
+  runtime_stats_mode: "compact"
+
+  # Legacy emergency switch: if true, every tool asks for approval.
+  # Prefer using tool approval policies instead.
+  confirm_all_tools: false
+
+  # Print raw prompts and raw model outputs before rendering.
+  debug: false
+
+
+# ==============================================================================
+# Prompts
+# ==============================================================================
+
+prompts:
+  # Base system prompt used for normal interactive turns.
+  identity: >-
+    You are k-ai, an intelligent CLI chat assistant.
+    You have access to internal tools for session management, memory,
+    runtime inspection, config inspection, config updates, config persistence,
+    tool approval inspection, tool approval updates, search, code execution, and more. When you detect the user wants
+    to perform a meta-action (start new session, resume old one, inspect or change
+    settings or limits, manage memory, inspect runtime transparency, exit, etc.),
+    propose the appropriate tool instead of guessing.
+    When the user refers to session ordering using words like first/last,
+    premier/dernier, top/bottom, interpret that relative to the visible
+    session table order. The table is shown newest first from top to bottom,
+    so the bottom rows are the oldest displayed sessions. Example: in French,
+    "les 3 derniers chats" means the 3 bottom rows of the visible table, not
+    the 3 most recent chats at the top.
+    If a sessions list already contains summary, themes, and message counts,
+    use that metadata directly. Do not call session_digest just to restate
+    metadata that is already visible.
+    Keep each session semantically homogeneous. If the current session is
+    clearly drifting into a different dominant intent, propose switch_session
+    instead of mixing unrelated work into the same thread.
+    The user will validate or reject your proposals. For normal questions,
+    just answer directly.
+
+  # Boot prompt used when recent sessions are already shown in the UI.
+  boot_with_sessions: >-
+    [SESSION_BOOT] The user just opened k-ai and the recent sessions table
+    is already visible on screen. Do not ask to display the list again and
+    do not call list_sessions. Greet them briefly, reference one or two
+    relevant sessions already shown, and suggest either resuming one of them
+    or starting fresh. Keep it short (2-3 sentences). If you explicitly
+    propose resuming a specific session, you may use the load_session tool.
+
+  # Boot prompt used when no recent sessions exist.
+  boot_no_sessions: >-
+    [SESSION_BOOT] The user just opened k-ai for the first time
+    (or has no recent sessions). Greet them warmly and briefly.
+    If you know anything about them from memory, personalise the greeting.
+    Keep it to 1-2 sentences.
+
+  # Instruction used when compacting old context.
+  compact_summarize: >-
+    Summarize the following conversation concisely, preserving key
+    facts, decisions, and context needed to continue the conversation.
+
+  # Short one-line digest used early in a session.
+  session_summary: >-
+    Summarize the user's intent and the discussion topic in one short sentence.
+
+  # Full digest prompt used for summary + themes + session_type.
+  session_digest: >-
+    Return strict JSON with keys "summary", "themes", and "session_type".
+    "summary" must be one short sentence describing the discussion.
+    "themes" must be a short list of 3 to 8 key topics.
+    "session_type" must be either "classic" or "meta".
+    Use "classic" for a real task, question, topic, or project discussion.
+    Use "meta" when the session is mainly about settings, admin, tools,
+    prompts, validation policies, runtime inspection, or chat management.
+
+  # Optional title generation prompt retained for explicit exit/title flows.
+  exit_title: >-
+    Generate a short title (max 60 chars) for this chat.
+
+  # Longer end-of-session textual summary.
+  exit_summary: >-
+    Summarize this chat in 2-3 sentences.

@@ -28,6 +28,7 @@ class TestSessionCRUD:
         assert meta.id != ""
         assert meta.provider == "ollama"
         assert meta.model == "phi4"
+        assert meta.session_type == "classic"
         assert meta.created_at != ""
 
     def test_create_multiple_sessions(self, store):
@@ -80,9 +81,17 @@ class TestSessionCRUD:
 
     def test_update_summary(self, store):
         meta = store.create_session()
-        store.update_summary(meta.id, "This was about X.")
+        store.update_summary(meta.id, "This was about X.", session_type="meta")
         found = store.get_session(meta.id)
         assert found.summary == "This was about X."
+        assert found.session_type == "meta"
+
+    def test_update_digest_updates_type(self, store):
+        meta = store.create_session()
+        store.update_digest(meta.id, "Discussion d'admin", ["config"], "meta")
+        found = store.get_session(meta.id)
+        assert found.summary == "Discussion d'admin"
+        assert found.session_type == "meta"
 
     def test_delete_session(self, store):
         meta = store.create_session()

@@ -8,9 +8,9 @@ Provides a Rich renderable that handles Markdown with embedded LaTeX:
   - Configurable render modes: raw, markdown, rich (with math)
 """
 import re
-from typing import Dict, Optional
+from typing import Dict
 
-from rich.console import Console, ConsoleOptions, RenderResult as RichRenderResult, Group
+from rich.console import Console, ConsoleOptions, RenderResult as RichRenderResult
 from rich.markdown import Markdown as RichMarkdown
 from rich.text import Text
 from rich.segment import Segment

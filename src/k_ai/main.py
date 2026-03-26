@@ -4,15 +4,17 @@ Main CLI entry point for k-ai.
 """
 import asyncio
 import os
-from typing import Optional
+from typing import List, Optional
 
 import typer
 from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
+from rich.table import Table
 
 from .config import ConfigManager
 from .session import ChatSession
+from .ui_theme import resolve_syntax_theme
 
 console = Console()
 
@@ -75,32 +77,49 @@ def chat(
 def config_cmd(
     action: str = typer.Argument(
         "get",
-        help="Action: [cyan]get[/cyan] (export template) or [cyan]show[/cyan] (print).",
+        help="Action: [cyan]get[/cyan], [cyan]show[/cyan], or [cyan]sections[/cyan].",
     ),
     output: Optional[str] = typer.Option(
         None, "--output", "-o", help="Destination file for config get.",
+    ),
+    section: List[str] = typer.Option(
+        None, "--section", "-s", help="Restrict to one or more built-in config sections.",
     ),
 ):
     """Manage the k-ai configuration file."""
     try:
         cm = ConfigManager()
+        sections = list(section or [])
+        syntax_theme = resolve_syntax_theme(cm.get_nested("cli", "theme", default="default"))
         if action == "get":
             target = output or "config.yaml"
             if os.path.exists(target) and not output:
                 console.print(f"[yellow]'{target}' already exists.[/yellow]")
                 raise typer.Exit(1)
             with open(target, "w", encoding="utf-8") as f:
-                f.write(cm.get_default_yaml())
-            console.print(f"[green]Default config saved to '{target}'.[/green]")
+                f.write(cm.get_default_yaml(sections=sections))
+            suffix = f" ({', '.join(ConfigManager.normalize_default_sections(sections))})" if sections else ""
+            console.print(f"[green]Default config saved to '{target}'{suffix}.[/green]")
         elif action == "show":
-            yaml_str = cm.get_default_yaml()
+            yaml_str = cm.get_default_yaml(sections=sections)
+            title = "Default Config"
+            if sections:
+                title += " [" + ", ".join(ConfigManager.normalize_default_sections(sections)) + "]"
             console.print(Panel(
-                Syntax(yaml_str, "yaml", theme="monokai"),
-                title="[bold cyan]Default Config[/bold cyan]",
+                Syntax(yaml_str, "yaml", theme=syntax_theme),
+                title=f"[bold cyan]{title}[/bold cyan]",
                 border_style="cyan",
             ))
+        elif action in {"sections", "list"}:
+            table = Table(title="Config Sections", header_style="bold cyan")
+            table.add_column("Section", style="cyan", no_wrap=True)
+            table.add_column("File", style="magenta")
+            table.add_column("Description", style="white")
+            for item in cm.list_default_sections():
+                table.add_row(item["name"], item["file"], item["description"])
+            console.print(table)
         else:
-            console.print(f"[red]Unknown action:[/red] '{action}'. Use get or show.")
+            console.print(f"[red]Unknown action:[/red] '{action}'. Use get, show, or sections.")
             raise typer.Exit(1)
     except typer.Exit:
         raise

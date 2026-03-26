@@ -87,6 +87,45 @@ class TestLiteLLMDriverInit:
             driver = LiteLLMDriver(cm2, provider_name="custom")
         assert driver.api_key == "hardcoded-key"
 
+    def test_google_oauth_loader_reads_valid_token_file(self, tmp_path, cm):
+        token_file = tmp_path / "google.json"
+        token_file.write_text(
+            '{"access_token":"oauth-token","expires_at":"2999-01-01T00:00:00+00:00","scopes":["https://www.googleapis.com/auth/cloud-platform"]}',
+            encoding="utf-8",
+        )
+        cm2 = ConfigManager()
+        cm2.config.setdefault("oauth", {})["gemini"] = {
+            "oauth_provider_name": "google",
+            "oauth_scopes": ["https://www.googleapis.com/auth/cloud-platform"],
+            "token_path": str(token_file),
+            "default_model": "gemini-2.5-flash",
+            "context_window": 1000000,
+        }
+        driver = LiteLLMDriver(cm2, provider_name="gemini", auth_mode="oauth")
+        assert driver.api_key == "oauth-token"
+
+    def test_google_oauth_loader_refreshes_expired_token(self, tmp_path, cm):
+        token_file = tmp_path / "google.json"
+        token_file.write_text(
+            '{"access_token":"expired","refresh_token":"rt","client_id":"cid","client_secret":"secret","token_uri":"https://oauth2.googleapis.com/token","expires_at":"2000-01-01T00:00:00+00:00","scopes":["https://www.googleapis.com/auth/cloud-platform"]}',
+            encoding="utf-8",
+        )
+        cm2 = ConfigManager()
+        cm2.config.setdefault("oauth", {})["gemini"] = {
+            "oauth_provider_name": "google",
+            "oauth_scopes": ["https://www.googleapis.com/auth/cloud-platform"],
+            "token_path": str(token_file),
+            "default_model": "gemini-2.5-flash",
+            "context_window": 1000000,
+        }
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {"access_token": "fresh-token", "expires_in": 3600}
+        with patch("k_ai.auth.httpx.post", return_value=mock_resp):
+            driver = LiteLLMDriver(cm2, provider_name="gemini", auth_mode="oauth")
+        assert driver.api_key == "fresh-token"
+        assert "fresh-token" in token_file.read_text(encoding="utf-8")
+
 
 # ===========================================================================
 # Model string routing (the LiteLLM openai/ prefix fix)

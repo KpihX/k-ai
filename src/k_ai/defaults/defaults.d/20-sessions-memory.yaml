@@ -1,0 +1,49 @@
+# ==============================================================================
+# Sessions
+# ==============================================================================
+
+sessions:
+  # Directory containing the session index and per-session JSONL logs.
+  directory: "~/.k-ai/sessions"
+
+  # Number of recent sessions shown on boot and in default listings.
+  max_recent: 10
+
+  # When resuming a session:
+  #   0  => load full history
+  #   N  => load only the last N messages into active context
+  load_last_n: 0
+
+  # Number of recent messages echoed in the terminal after /load.
+  preview_last_n: 10
+
+  # Default extraction window for explicit session slicing.
+  extract_limit: 12
+
+
+# ==============================================================================
+# Context Compaction
+# ==============================================================================
+
+compaction:
+  # Auto-compaction trigger expressed as % of provider context window.
+  # Set 0 to disable automatic compaction entirely.
+  trigger_percent: 80
+
+  # Number of recent messages preserved verbatim during compaction.
+  keep_last_n: 10
+
+  # Refresh digest metadata after compaction.
+  auto_rename: true
+
+
+# ==============================================================================
+# Memory
+# ==============================================================================
+
+memory:
+  # External read-only memory file injected into the system prompt.
+  external_file: "~/.agents/KERNEL.md"
+
+  # Internal mutable memory store managed by k-ai tools.
+  internal_file: "~/.k-ai/MEMORY.json"

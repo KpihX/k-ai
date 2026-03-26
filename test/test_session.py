@@ -3,12 +3,13 @@
 Tests for ChatSession: programmatic API (send, send_with_tools), history
 management, provider reload, and system-prompt handling.
 """
+from contextlib import contextmanager
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from k_ai import ConfigManager
 from k_ai.session import ChatSession
-from k_ai.models import Message, MessageRole, ToolCall, TokenUsage, CompletionChunk
+from k_ai.models import Message, MessageRole, ToolCall, ToolResult, TokenUsage, CompletionChunk
 from k_ai.exceptions import LLMError, ContextLengthExceededError
 
 
@@ -104,23 +105,64 @@ class TestSend:
         assert len(session.history) == 4  # user, assistant, user, assistant
 
     @pytest.mark.asyncio
+    async def test_send_creates_and_persists_session(self, session):
+        session.llm = mock_llm([CompletionChunk(delta_content="pong")])
+        await session.send("ping")
+        assert session._session_id is not None
+        saved = session.session_store.load_messages(session._session_id)
+        assert [m.role for m in saved] == [MessageRole.USER, MessageRole.ASSISTANT]
+
+    @pytest.mark.asyncio
+    async def test_send_honors_queued_new_session(self, session):
+        session.llm = mock_llm([CompletionChunk(delta_content="first")])
+        await session.send("hello")
+        original = session._session_id
+
+        session._handle_new_session(seed={"session_type": "meta", "summary": "Admin"})
+        session.llm = mock_llm([CompletionChunk(delta_content="second")])
+        await session.send("adjuste le config")
+
+        assert session._session_id != original
+        old_meta = session.session_store.get_session(original)
+        new_meta = session.session_store.get_session(session._session_id)
+        assert old_meta is not None and old_meta.summary
+        assert new_meta is not None
+        assert new_meta.session_type == "meta"
+        assert new_meta.summary == "Admin"
+
+    @pytest.mark.asyncio
+    async def test_send_rolls_back_on_llm_failure(self, session):
+        async def failing_stream(messages, config=None, tools=None):
+            raise RuntimeError("provider down")
+            yield
+
+        session.llm.chat_stream = failing_stream
+        with pytest.raises(RuntimeError):
+            await session.send("hello")
+        assert session.history == []
+        if session._session_id:
+            assert session.session_store.load_messages(session._session_id) == []
+
+    @pytest.mark.asyncio
     async def test_send_history_passed_to_llm(self, session):
         """The LLM must receive the full history on each call."""
-        received_msgs = []
+        calls = []
 
         async def tracking_stream(messages, config=None, tools=None):
-            received_msgs.extend(messages)
+            calls.append(list(messages))
             yield CompletionChunk(delta_content="ok")
 
         session.llm.chat_stream = tracking_stream
         # Pre-populate history
+        session._do_new_session()
         session.history.append(Message(role=MessageRole.USER, content="first"))
         session.history.append(Message(role=MessageRole.ASSISTANT, content="reply"))
         await session.send("second")
         # history: system (always) + 2 pre-populated + new user = 4
-        assert len(received_msgs) == 4
-        assert received_msgs[0].role == MessageRole.SYSTEM
-        assert received_msgs[-1].content == "second"
+        first_call = calls[0]
+        assert len(first_call) == 4
+        assert first_call[0].role == MessageRole.SYSTEM
+        assert first_call[-1].content == "second"
 
 
 # ===========================================================================
@@ -200,6 +242,73 @@ class TestRuntimeConfig:
         tokens = session.get_token_snapshot()
         assert tokens["token_source"] == "estimated"
         assert tokens["total_tokens"] > 0
+
+
+class TestToolPolicies:
+    def test_tool_catalog_covers_all_registered_tools(self, session):
+        catalog_names = set(session._tool_catalog_entries().keys())
+        registry_names = set(session.tool_registry.get_names())
+        assert catalog_names == registry_names
+
+    def test_default_policy_follows_risk(self, session):
+        clear_screen = session.tool_registry.get("clear_screen")
+        delete_session = session.tool_registry.get("delete_session")
+        assert clear_screen.danger_level == "low"
+        assert delete_session.danger_level == "high"
+        assert session._resolve_tool_policy(clear_screen)["policy"] == "auto"
+        assert session._resolve_tool_policy(delete_session)["policy"] == "ask"
+
+    def test_session_override_takes_precedence(self, session):
+        change = session.update_tool_policy("tool", "delete_session", "auto", scope="session")
+        assert change["policy"] == "auto"
+        delete_session = session.tool_registry.get("delete_session")
+        resolved = session._resolve_tool_policy(delete_session)
+        assert resolved["policy"] == "auto"
+        assert resolved["source"] == "session"
+
+    def test_global_risk_override_applies(self, session):
+        session.update_tool_policy("risk", "medium", "auto", scope="global", persist=False)
+        load_session = session.tool_registry.get("load_session")
+        resolved = session._resolve_tool_policy(load_session)
+        assert resolved["policy"] == "auto"
+        assert resolved["source"] == "global"
+
+    def test_protected_tool_policy_cannot_be_changed(self, session):
+        with pytest.raises(ValueError):
+            session.update_tool_policy("tool", "tool_policy_set", "auto", scope="session")
+        protected = session.tool_registry.get("tool_policy_set")
+        resolved = session._resolve_tool_policy(protected)
+        assert resolved["policy"] == "ask"
+        assert resolved["source"] == "protected"
+
+    def test_invalid_global_override_bucket_raises(self, session):
+        session.cm.set("tool_approval.global_overrides.invalid", {"clear_screen": "auto"})
+        with pytest.raises(ValueError):
+            session._tool_policy_global_overrides()
+
+    def test_invalid_global_override_target_raises(self, session):
+        session.cm.set("tool_approval.global_overrides.tools.unknown_tool", "auto")
+        with pytest.raises(ValueError):
+            session._tool_policy_global_overrides()
+
+    @pytest.mark.asyncio
+    async def test_low_risk_tool_auto_executes_without_confirm(self, session):
+        session.console = MagicMock()
+        session._tool_ctx.console = session.console
+        tc = ToolCall(id="c1", function_name="clear_screen", arguments={})
+        with patch("k_ai.session.Confirm.ask", side_effect=AssertionError("Confirm should not be called")):
+            result = await session._execute_internal_tool(tc)
+        assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_protected_admin_tool_still_requests_confirmation(self, session):
+        session.console = MagicMock()
+        session._tool_ctx.console = session.console
+        tc = ToolCall(id="c1", function_name="tool_policy_list", arguments={})
+        with patch("k_ai.session.Confirm.ask", return_value=False) as confirm:
+            result = await session._execute_internal_tool(tc)
+        assert confirm.called
+        assert result.success is False
 
 
 # ===========================================================================
@@ -372,6 +481,21 @@ class TestSendWithTools:
         await session.send_with_tools("run both", tools=[], tool_executor=executor)
         assert set(called_fns) == {"fn1", "fn2"}
 
+    @pytest.mark.asyncio
+    async def test_send_with_tools_rolls_back_on_llm_failure(self, session):
+        async def failing_stream(messages, config=None, tools=None):
+            raise RuntimeError("provider down")
+            yield
+
+        session.llm.chat_stream = failing_stream
+
+        async def executor(tc: ToolCall) -> str:
+            return "ok"
+
+        with pytest.raises(RuntimeError):
+            await session.send_with_tools("boom", tools=[], tool_executor=executor)
+        assert session.history == []
+
 
 # ===========================================================================
 # reload_provider
@@ -445,6 +569,15 @@ class TestBootFlow:
         assert session._session_id is not None
         meta = session.session_store.get_session(session._session_id)
         assert meta is not None
+        assert meta.session_type == "classic"
+
+    def test_lazy_session_creation_on_new_with_seed(self, session):
+        session._do_new_session(seed={"session_type": "meta", "summary": "Admin runtime", "themes": ["config"]})
+        meta = session.session_store.get_session(session._session_id)
+        assert meta is not None
+        assert meta.session_type == "meta"
+        assert meta.summary == "Admin runtime"
+        assert "config" in meta.themes
 
     def test_persist_message_skipped_when_no_session(self, session):
         """Messages are NOT persisted if no session is active."""
@@ -557,6 +690,94 @@ class TestTurnRollback:
         assert len(normalized) < len(huge_result)
         assert normalized.endswith("...(truncated for history)")
 
+    @pytest.mark.asyncio
+    async def test_execute_internal_tool_ctrl_c_on_confirm_returns_interrupted(self, session):
+        session.console = MagicMock()
+        session._tool_ctx.console = session.console
+        tc = ToolCall(id="c1", function_name="delete_session", arguments={"session_id": "deadbeef"})
+
+        with patch("k_ai.session.Confirm.ask", side_effect=KeyboardInterrupt):
+            result = await session._execute_internal_tool(tc)
+
+        assert result.data["interrupted"] is True
+
+    @pytest.mark.asyncio
+    async def test_execute_internal_tool_detects_interrupt_flag_after_confirm(self, session):
+        session.console = MagicMock()
+        session._tool_ctx.console = session.console
+        tc = ToolCall(id="c1", function_name="delete_session", arguments={"session_id": "deadbeef"})
+
+        @contextmanager
+        def interrupted_scope(*args, **kwargs):
+            session._interrupt_requested = False
+            try:
+                yield
+            finally:
+                session._interrupt_requested = True
+
+        with patch.object(session, "_interrupt_scope", interrupted_scope):
+            with patch("k_ai.session.Confirm.ask", return_value=True):
+                result = await session._execute_internal_tool(tc)
+
+        assert result.data["interrupted"] is True
+
+    @pytest.mark.asyncio
+    async def test_process_message_stops_batch_after_interrupted_tool(self, session):
+        tc1 = ToolCall(id="c1", function_name="clear_screen", arguments={})
+        tc2 = ToolCall(id="c2", function_name="clear_screen", arguments={})
+
+        async def _stream(messages, config=None, tools=None):
+            yield CompletionChunk(tool_calls=[tc1, tc2], finish_reason="tool_calls")
+
+        session.llm.chat_stream = _stream
+        session._do_new_session()
+        session.console = MagicMock()
+        session._tool_ctx.console = session.console
+        session._execute_internal_tool = AsyncMock(
+            return_value=ToolResult(success=False, message="Interrupted by user.", data={"interrupted": True})
+        )
+
+        await session._process_message("batch")
+
+        session._execute_internal_tool.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_switch_session_rolls_back_current_turn_and_queues_new_session(self, session):
+        session._do_new_session(seed={"session_type": "meta", "summary": "Admin"})
+        old = Message(role=MessageRole.USER, content="ancien sujet")
+        session.history.append(old)
+        session._persist_message(old)
+        turn_start = len(session.history)
+
+        tc = ToolCall(
+            id="c1",
+            function_name="switch_session",
+            arguments={"summary": "Nouveau sujet", "themes": ["python"], "session_type": "classic"},
+        )
+
+        async def _stream(messages, config=None, tools=None):
+            yield CompletionChunk(tool_calls=[tc], finish_reason="tool_calls")
+
+        async def _execute(tool_call, rationale=""):
+            session._handle_new_session(
+                seed={"summary": "Nouveau sujet", "themes": ["python"], "session_type": "classic"},
+                carry_over_message="nouveau sujet",
+            )
+            return ToolResult(success=True, message="switch")
+
+        session.llm.chat_stream = _stream
+        session.console = MagicMock()
+        session._tool_ctx.console = session.console
+        session._execute_internal_tool = AsyncMock(side_effect=_execute)
+        session.generate_session_digest = AsyncMock(return_value={"summary": "Admin", "themes": ["config"], "session_type": "meta"})
+
+        await session._process_message("nouveau sujet")
+
+        assert session._new_session_requested is True
+        assert session._queued_new_session_message == "nouveau sujet"
+        assert len(session.history) == turn_start
+        assert session.history[-1].content == "ancien sujet"
+
 
 class TestPersistenceConsistency:
     def test_reset_history_rewrites_session_file(self, session):
@@ -636,7 +857,7 @@ class TestSessionDigest:
 
         async def digest_stream(messages, config=None, tools=None):
             yield CompletionChunk(
-                delta_content='{"summary":"Diagonalisation de matrices en Python","themes":["python","algebre lineaire"]}',
+                delta_content='{"summary":"Diagonalisation de matrices en Python","themes":["python","algebre lineaire"],"session_type":"classic"}',
                 finish_reason="stop",
             )
 
@@ -644,8 +865,55 @@ class TestSessionDigest:
         digest = await session.generate_session_digest(sid, persist=True)
         assert digest["summary"] == "Diagonalisation de matrices en Python"
         assert "python" in digest["themes"]
+        assert digest["session_type"] == "classic"
         meta = session.session_store.get_session(sid)
         assert meta.summary == digest["summary"]
+        assert meta.session_type == "classic"
+
+    @pytest.mark.asyncio
+    async def test_generate_session_digest_includes_session_summary_guidance(self, session):
+        session._do_new_session()
+        sid = session._session_id
+        session.session_store.save_message(sid, Message(role=MessageRole.USER, content="Parlons de diagonalisation et Python"))
+        seen_system = []
+
+        async def digest_stream(messages, config=None, tools=None):
+            seen_system.append(messages[0].content)
+            yield CompletionChunk(
+                delta_content='{"summary":"Diagonalisation de matrices en Python","themes":["python"],"session_type":"classic"}',
+                finish_reason="stop",
+            )
+
+        session.llm.chat_stream = digest_stream
+        await session.generate_session_digest(sid, persist=False)
+        assert "For the summary field specifically" in seen_system[0]
+        assert "Summarize the user's intent" in seen_system[0]
+
+    @pytest.mark.asyncio
+    async def test_auto_rename_on_exit_uses_exit_prompts(self, session):
+        session._do_new_session()
+        sid = session._session_id
+        session.session_store.save_message(sid, Message(role=MessageRole.USER, content="Sujet test"))
+        session.session_store.save_message(sid, Message(role=MessageRole.ASSISTANT, content="Réponse test"))
+        session.history = session.session_store.load_messages(sid)
+
+        call_idx = 0
+
+        async def stream(messages, config=None, tools=None):
+            nonlocal call_idx
+            payloads = [
+                '{"summary":"Résumé court","themes":["test"],"session_type":"classic"}',
+                "Titre final",
+                "Résumé final de sortie",
+            ]
+            yield CompletionChunk(delta_content=payloads[call_idx], finish_reason="stop")
+            call_idx += 1
+
+        session.llm.chat_stream = stream
+        await session._auto_rename_on_exit()
+        meta = session.session_store.get_session(sid)
+        assert meta.title == "Titre final"
+        assert meta.summary == "Résumé final de sortie"
 
 
 class TestReloadProvider:

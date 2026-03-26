@@ -5,13 +5,10 @@ QMD, tools, and dependencies.
 """
 import shutil
 import sys
-from pathlib import Path
-from typing import List, Tuple
 
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
-from rich.text import Text
 
 from .config import ConfigManager
 from .memory import MemoryStore, load_external_memory

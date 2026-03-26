@@ -220,6 +220,16 @@ class TestGetAllDump:
         assert "oauth" in text
         assert "ollama" in text
 
+    def test_get_default_yaml_can_export_single_section(self):
+        text = ConfigManager.get_default_yaml(sections=["ui"])
+        assert "cli:" in text
+        assert "prompts:" in text
+        assert "provider:" not in text
+
+    def test_list_default_sections_returns_named_fragments(self):
+        sections = ConfigManager.list_default_sections()
+        assert [section["name"] for section in sections] == ["models", "ui", "sessions", "governance"]
+
     def test_flatten_returns_dot_notation(self, cm):
         flat = cm.flatten("cli")
         assert "cli.show_token_usage" in flat
@@ -238,13 +248,18 @@ class TestGetAllDump:
 class TestLruCache:
     def test_cache_hits_on_repeated_loads(self):
         _load_yaml.cache_clear()
-        path = Path(__file__).parent.parent / "src" / "k_ai" / "defaults" / "default_config.yaml"
+        path = ConfigManager().default_config_files[0]
         _load_yaml(path)
         _load_yaml(path)
         _load_yaml(path)
         info = _load_yaml.cache_info()
         assert info.hits >= 2
         assert info.misses == 1
+
+    def test_defaults_are_split_into_multiple_fragments(self):
+        cm = ConfigManager()
+        assert cm.default_config_path.name == "defaults.d"
+        assert len(cm.default_config_files) >= 2
 
     def test_deepcopy_prevents_cache_mutation(self):
         """Mutating one ConfigManager must not affect a second one."""
