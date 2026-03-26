@@ -175,6 +175,18 @@ tool_approval:
         default_policy: ask
         protected: true
         description: Remove a session/global approval override and fall back to the next source.
+      tool_capability_list:
+        category: tool-admin
+        risk: low
+        default_policy: auto
+        protected: false
+        description: List the high-level tool capability groups that can be enabled or disabled live.
+      tool_capability_set:
+        category: tool-admin
+        risk: high
+        default_policy: ask
+        protected: false
+        description: Enable or disable one mutable tool capability group such as exa, python, shell, or qmd.
 
     memory:
       memory_add:
@@ -346,14 +358,21 @@ tool_approval:
 # ==============================================================================
 
 tools:
-  # Public web search through Exa.
-  exa_search:
+  # Runtime capability switches are separate from tool_approval:
+  #   - tools.<capability>.enabled controls whether the LLM/UI can use a family
+  #   - tool_approval controls ask/auto policy only for tools that are enabled
+  # This avoids contradictory "enabled in one place, approval elsewhere" logic.
+
+  # High-level capability switch for Exa-backed public web search.
+  # Controls the exa_search tool family.
+  exa:
     enabled: true
     api_key_env_var: "EXA_API_KEY"
     num_results: 5
 
-  # Sandboxed Python execution.
-  python_exec:
+  # High-level capability switch for the sandboxed Python runtime.
+  # Controls python_exec + python_sandbox_* tools.
+  python:
     enabled: true
     timeout: 30
     install_timeout: 300
@@ -369,13 +388,16 @@ tools:
       - "seaborn"
       - "scikit-learn"
 
-  # Sandboxed shell execution.
-  shell_exec:
+  # High-level capability switch for sandboxed shell execution.
+  # Controls the shell_exec tool.
+  shell:
     enabled: true
     timeout: 30
 
-  # QMD search defaults used by search-oriented tools.
-  qmd_search:
+  # High-level capability switch for all QMD-backed knowledge tools.
+  # Controls qmd_query, qmd_search, qmd_vsearch, qmd_get, collections, context,
+  # status/update/embed/cleanup, and related helpers.
+  qmd:
     enabled: true
     limit: 5
     query_timeout: 180

@@ -189,6 +189,32 @@ class TestCommandHandler:
         assert tool_call.arguments["source"] == "global"
 
     @pytest.mark.asyncio
+    async def test_tools_capabilities_routes_through_capability_list_tool(self, session_for_commands):
+        handler = CommandHandler(session_for_commands)
+        session_for_commands._execute_internal_tool = AsyncMock(
+            return_value=ToolResult(success=True, message="ok")
+        )
+
+        await handler.handle("/tools capabilities")
+
+        tool_call = session_for_commands._execute_internal_tool.await_args.args[0]
+        assert tool_call.function_name == "tool_capability_list"
+        assert tool_call.arguments == {}
+
+    @pytest.mark.asyncio
+    async def test_tools_disable_routes_through_capability_set_tool(self, session_for_commands):
+        handler = CommandHandler(session_for_commands)
+        session_for_commands._execute_internal_tool = AsyncMock(
+            return_value=ToolResult(success=True, message="ok")
+        )
+
+        await handler.handle("/tools disable python")
+
+        tool_call = session_for_commands._execute_internal_tool.await_args.args[0]
+        assert tool_call.function_name == "tool_capability_set"
+        assert tool_call.arguments == {"capability": "python", "enabled": False}
+
+    @pytest.mark.asyncio
     async def test_tools_auto_routes_through_policy_set_tool(self, session_for_commands):
         handler = CommandHandler(session_for_commands)
         session_for_commands._execute_internal_tool = AsyncMock(

@@ -177,21 +177,33 @@ def _check_tools(cm: ConfigManager, console: Console) -> None:
     # Python
     py = shutil.which("python3")
     table.add_row(_icon(bool(py)), f"python3: {py or 'not found'}")
+    python_cfg = cm.get_nested("tools", "python", default={})
+    table.add_row(
+        _icon(python_cfg.get("enabled", True)),
+        f"python: {'enabled' if python_cfg.get('enabled', True) else 'disabled'}"
+    )
 
     # Exa
-    exa_cfg = cm.get_nested("tools", "exa_search", default={})
+    exa_cfg = cm.get_nested("tools", "exa", default={})
     if exa_cfg.get("enabled", False):
         env_var = exa_cfg.get("api_key_env_var", "EXA_API_KEY")
         key, _ = resolve_secret(env_var)
-        table.add_row(_icon(bool(key)), f"exa_search: {env_var} {'found' if key else 'missing'}")
+        table.add_row(_icon(bool(key)), f"exa: {env_var} {'found' if key else 'missing'}")
     else:
-        table.add_row("[dim]--[/dim]", "exa_search: disabled")
+        table.add_row("[dim]--[/dim]", "exa: disabled")
 
     # Shell
-    shell_cfg = cm.get_nested("tools", "shell_exec", default={})
+    shell_cfg = cm.get_nested("tools", "shell", default={})
     table.add_row(
         _icon(shell_cfg.get("enabled", True)),
-        f"shell_exec: {'enabled' if shell_cfg.get('enabled', True) else 'disabled'}"
+        f"shell: {'enabled' if shell_cfg.get('enabled', True) else 'disabled'}"
+    )
+
+    # QMD
+    qmd_cfg = cm.get_nested("tools", "qmd", default={})
+    table.add_row(
+        _icon(qmd_cfg.get("enabled", True)),
+        f"qmd: {'enabled' if qmd_cfg.get('enabled', True) else 'disabled'}"
     )
 
     console.print(Panel(table, title="[bold cyan]Tools[/bold cyan]", border_style="cyan"))

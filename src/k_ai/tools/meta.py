@@ -11,6 +11,7 @@ from typing import Any, Dict
 import yaml
 
 from ..models import ToolResult
+from ..tool_capabilities import normalize_capability_name
 from ..ui_theme import resolve_syntax_theme
 from .base import InternalTool, ToolContext, ToolRegistry
 
@@ -740,7 +741,7 @@ class ListConfigTool(InternalTool):
     parameters_schema = {
         "type": "object",
         "properties": {
-            "prefix": {"type": "string", "description": "Optional prefix, e.g. 'cli' or 'tools.python_exec'."},
+            "prefix": {"type": "string", "description": "Optional prefix, e.g. 'cli' or 'tools.python'."},
             "limit": {"type": "integer", "description": "Maximum number of entries to show."},
         },
         "required": [],
@@ -1052,6 +1053,105 @@ class ToolPolicyResetTool(InternalTool):
         return table
 
 
+class ToolCapabilityListTool(InternalTool):
+    name = "tool_capability_list"
+    display_name = "Show Tool Capabilities"
+    category = "tool-admin"
+    danger_level = "low"
+    accent_color = "cyan"
+    description = (
+        "List the high-level tool capability groups that can be enabled or disabled live. "
+        "This controls availability, not approval policy."
+    )
+    parameters_schema = {"type": "object", "properties": {}, "required": []}
+    requires_approval = False
+
+    async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
+        if not ctx.get_tool_capability_overview:
+            return ToolResult(success=False, message="Tool capability overview is unavailable.")
+        overview = ctx.get_tool_capability_overview()
+        counts = overview.get("counts", {})
+        msg = (
+            f"enabled={counts.get('enabled', 0)} "
+            f"disabled={counts.get('disabled', 0)} "
+            f"mutable={counts.get('mutable', 0)}"
+        )
+        return ToolResult(success=True, message=msg, data=overview)
+
+    def result_renderable(self, result: ToolResult, max_display_length: int, ctx: ToolContext) -> Any:
+        from rich.table import Table
+
+        table = Table(show_header=True, header_style="bold", border_style="cyan")
+        table.add_column("Capability", style="cyan", width=12)
+        table.add_column("Enabled", width=8)
+        table.add_column("Mutable", width=8)
+        table.add_column("Tools", min_width=28)
+        table.add_column("Description")
+        for row in (result.data or {}).get("rows", []):
+            table.add_row(
+                row["capability"],
+                "yes" if row["enabled"] else "no",
+                "yes" if row["mutable"] else "no",
+                ", ".join(row["tools"]),
+                row["description"],
+            )
+        return table
+
+
+class ToolCapabilitySetTool(InternalTool):
+    name = "tool_capability_set"
+    display_name = "Set Tool Capability"
+    category = "tool-admin"
+    danger_level = "high"
+    accent_color = "yellow"
+    description = (
+        "Enable or disable one high-level tool capability group such as exa, python, shell, or qmd. "
+        "Protected admin approval rules are not changed by this tool."
+    )
+    parameters_schema = {
+        "type": "object",
+        "properties": {
+            "capability": {"type": "string", "description": "Capability group name: exa, python, shell, or qmd."},
+            "enabled": {"type": "boolean", "description": "Desired state."},
+            "persist": {"type": "boolean", "description": "Persist the capability change to the active config file."},
+        },
+        "required": ["capability", "enabled"],
+    }
+    requires_approval = True
+
+    async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
+        if not ctx.update_tool_capability:
+            return ToolResult(success=False, message="Tool capability updates are unavailable.")
+        capability = str(arguments.get("capability", "") or "")
+        enabled = bool(arguments.get("enabled", False))
+        persist = arguments.get("persist")
+        try:
+            change = ctx.update_tool_capability(capability=capability, enabled=enabled, persist=persist)
+        except Exception as e:
+            return ToolResult(success=False, message=str(e))
+        msg = f"Capability '{change['capability']}' -> {'enabled' if change['enabled'] else 'disabled'}"
+        if change.get("saved_to"):
+            msg += f"\nSaved to {change['saved_to']}"
+        return ToolResult(success=True, message=msg, data=change)
+
+    def proposal_sections(self, arguments: Dict[str, Any], ctx: ToolContext) -> list[tuple[str, Any]]:
+        capability = str(arguments.get("capability", "") or "")
+        try:
+            capability = normalize_capability_name(capability)
+        except Exception:
+            pass
+        return [
+            (
+                "Capability Change",
+                [
+                    ("Capability", capability or "-"),
+                    ("Enabled", str(bool(arguments.get("enabled", False)))),
+                    ("Persist", str(arguments.get("persist", True))),
+                ],
+            )
+        ]
+
+
 # ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
@@ -1069,7 +1169,9 @@ def register_meta_tools(registry: ToolRegistry, ctx: ToolContext) -> None:
         SessionExtractTool,
         SessionDigestTool,
         ToolPolicyListTool,
+        ToolCapabilityListTool,
         ToolPolicySetTool,
+        ToolCapabilitySetTool,
         ToolPolicyResetTool,
         DeleteSessionTool,
         CompactSessionTool,

@@ -13,6 +13,7 @@ from typing import Any, Dict, List
 
 from ..models import ToolResult
 from ..secrets import resolve_secret
+from ..tool_capabilities import capability_enabled
 from ..ui_theme import resolve_syntax_theme
 from .base import InternalTool, ToolContext, ToolRegistry
 
@@ -33,7 +34,7 @@ class ExaSearchTool(InternalTool):
             },
             "num_results": {
                 "type": "integer",
-                "description": "Number of results (default from config tools.exa_search.num_results).",
+                "description": "Number of results (default from config tools.exa.num_results).",
             },
         },
         "required": ["query"],
@@ -41,8 +42,8 @@ class ExaSearchTool(InternalTool):
     requires_approval = False
 
     async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
-        tool_cfg = ctx.config.get_nested("tools", "exa_search", default={})
-        if not tool_cfg.get("enabled", False):
+        tool_cfg = ctx.config.get_nested("tools", "exa", default={})
+        if not capability_enabled(ctx.config, "exa"):
             return ToolResult(success=False, message="exa_search is disabled in config.")
 
         api_key_var = tool_cfg.get("api_key_env_var", "EXA_API_KEY")
@@ -166,13 +167,13 @@ class PythonExecTool(InternalTool):
     @staticmethod
     def _sandbox_dir(ctx: ToolContext) -> str:
         return str(ctx.config.get_nested(
-            "tools", "python_exec", "sandbox_dir",
+            "tools", "python", "sandbox_dir",
             default="~/.k-ai/sandbox",
         ))
 
     @classmethod
     def _default_packages(cls, ctx: ToolContext) -> List[str]:
-        raw = ctx.config.get_nested("tools", "python_exec", "default_packages", default=cls._FALLBACK_DEFAULT_PACKAGES)
+        raw = ctx.config.get_nested("tools", "python", "default_packages", default=cls._FALLBACK_DEFAULT_PACKAGES)
         if not isinstance(raw, list):
             return list(cls._FALLBACK_DEFAULT_PACKAGES)
         packages: List[str] = []
@@ -256,8 +257,8 @@ class PythonExecTool(InternalTool):
         return str(python)
 
     async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
-        tool_cfg = ctx.config.get_nested("tools", "python_exec", default={})
-        if not tool_cfg.get("enabled", True):
+        tool_cfg = ctx.config.get_nested("tools", "python", default={})
+        if not capability_enabled(ctx.config, "python"):
             return ToolResult(success=False, message="python_exec is disabled in config.")
 
         code = arguments.get("code", "")
@@ -311,7 +312,7 @@ class PythonSandboxPackagesTool(InternalTool):
     @staticmethod
     async def _run_pip(ctx: ToolContext, args: List[str], timeout: int | None = None) -> tuple[int, str, str]:
         _, pip = await PythonSandboxPackagesTool._ensure_ready(ctx)
-        effective_timeout = int(timeout or ctx.config.get_nested("tools", "python_exec", "install_timeout", default=300))
+        effective_timeout = int(timeout or ctx.config.get_nested("tools", "python", "install_timeout", default=300))
         proc = await asyncio.create_subprocess_exec(
             pip, *args,
             stdout=asyncio.subprocess.PIPE,
@@ -342,8 +343,8 @@ class PythonSandboxListPackagesTool(PythonSandboxPackagesTool):
     requires_approval = False
 
     async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
-        tool_cfg = ctx.config.get_nested("tools", "python_exec", default={})
-        if not tool_cfg.get("enabled", True):
+        tool_cfg = ctx.config.get_nested("tools", "python", default={})
+        if not capability_enabled(ctx.config, "python"):
             return ToolResult(success=False, message="python_exec is disabled in config.")
         try:
             code, stdout, stderr = await self._run_pip(ctx, ["list", "--format=json"])
@@ -467,8 +468,8 @@ class ShellExecTool(InternalTool):
         return Syntax(msg or "(no output)", "text", theme=syntax_theme, word_wrap=True)
 
     async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
-        tool_cfg = ctx.config.get_nested("tools", "shell_exec", default={})
-        if not tool_cfg.get("enabled", True):
+        tool_cfg = ctx.config.get_nested("tools", "shell", default={})
+        if not capability_enabled(ctx.config, "shell"):
             return ToolResult(success=False, message="shell_exec is disabled in config.")
 
         command = arguments.get("command", "")

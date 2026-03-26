@@ -22,6 +22,42 @@
 # - The runtime config lives elsewhere (~/.k-ai/config.yaml); this file is only
 #   for installation-time defaults and interaction.
 
+# Bootstrap strategy before k-ai itself is installed.
+bootstrap:
+  # Preferred mode for this project. When uv is available, the installer uses it
+  # for syncing dependencies and creating the user-facing command shim.
+  # If set to false, the installer skips uv on purpose and uses the isolated
+  # bootstrap virtualenv path below instead.
+  prefer_uv: true
+
+  # If uv is missing, ask whether it should be installed automatically.
+  # Cases shown to the user:
+  #   yes -> install uv now, then continue with the preferred uv workflow
+  #   no  -> skip uv and continue with the isolated pip fallback below
+  offer_uv_install: true
+
+  # Default answer for the "Install uv now?" question.
+  # true  -> pressing Enter accepts uv installation
+  # false -> pressing Enter keeps the fallback path
+  install_uv_by_default: true
+
+  # If uv remains unavailable, allow the installer to fall back to an isolated
+  # virtualenv dedicated to k-ai. This avoids polluting the system Python.
+  allow_pip_fallback: true
+
+  # Isolated fallback environment used when uv is unavailable or declined.
+  # It contains the editable k-ai install plus test/runtime dependencies needed
+  # by the installer. This is NOT the dedicated Python capability sandbox.
+  bootstrap_venv: "~/.k-ai/bootstrap-cli"
+
+  # Where the fallback launcher script should be written when uv is not used.
+  # The installer creates `k-ai` here and points it to the isolated bootstrap
+  # environment above.
+  bin_dir: "~/.local/bin"
+
+  # Official uv installer used by the automatic uv installation path.
+  uv_installer_url: "https://astral.sh/uv/install.sh"
+
 # Global installer behavior.
 interactive:
   # If true, the installer will ask questions whenever the corresponding
@@ -36,11 +72,37 @@ interactive:
   # extra sandbox packages until the user provides an empty line.
   allow_extra_python_packages: true
 
+  # In interactive mode, the installer explains the available choices before
+  # prompts that have multiple meaningful cases (uv install, editor strategy,
+  # package selection, extra package loop).
+  # This is currently a documentation promise for the UX, not a separate toggle
+  # consumed by the runtime.
+
 
 # Where runtime state will live after installation.
 runtime_store:
   # Root runtime directory used by k-ai for config, memory, sessions, sandbox.
   home_dir: "~/.k-ai"
+
+
+# Initial high-level tool capabilities written into ~/.k-ai/config.yaml.
+# These are the live-switchable families that the user can later manage via the
+# chat/runtime layer:
+#   /tools capabilities
+#   /tools enable <exa|python|shell|qmd>
+#   /tools disable <exa|python|shell|qmd>
+capabilities:
+  # Public web search through the Exa API.
+  exa: true
+
+  # Sandboxed Python execution plus sandbox package management.
+  python: true
+
+  # Sandboxed shell command execution.
+  shell: true
+
+  # QMD-backed knowledge and history retrieval tools.
+  qmd: true
 
 
 # Editor behavior for `k-ai config edit` and `/config edit`.
@@ -61,11 +123,11 @@ python_sandbox:
   # If true, create the sandbox virtualenv during install.
   enabled: true
 
-  # Path of the python_exec sandbox virtualenv.
+  # Path of the dedicated Python capability sandbox virtualenv.
   sandbox_dir: "~/.k-ai/sandbox"
 
   # Default package set proposed at installation time.
-  # These are also persisted into tools.python_exec.default_packages so that a
+  # These are also persisted into tools.python.default_packages so that a
   # future sandbox rebuild keeps the same baseline.
   default_packages:
     - "numpy"

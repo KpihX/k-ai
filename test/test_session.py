@@ -694,14 +694,14 @@ class TestBootFlow:
 class TestDisabledToolFiltering:
     def test_disabled_tools_excluded_from_active(self, session):
         """Tools with enabled:false in config must NOT appear in LLM definitions."""
-        session.cm.config.setdefault("tools", {})["exa_search"] = {"enabled": False}
+        session.cm.config.setdefault("tools", {})["exa"] = {"enabled": False}
         active = session._get_active_tools()
         names = {t["function"]["name"] for t in active}
         assert "exa_search" not in names
 
     def test_enabled_tools_included(self, session):
         """Tools with enabled:true must appear."""
-        session.cm.config.setdefault("tools", {})["python_exec"] = {"enabled": True}
+        session.cm.config.setdefault("tools", {})["python"] = {"enabled": True}
         active = session._get_active_tools()
         names = {t["function"]["name"] for t in active}
         assert "python_exec" in names
@@ -710,6 +710,14 @@ class TestDisabledToolFiltering:
         """With no disabled tools, all tools are in the list."""
         active = session._get_active_tools()
         assert len(active) == len(session.tool_registry.list_tools())
+
+    @pytest.mark.asyncio
+    async def test_disabled_capability_blocks_direct_tool_execution(self, session):
+        session.cm.config.setdefault("tools", {})["qmd"] = {"enabled": False}
+        tc = ToolCall(id="c1", function_name="qmd_search", arguments={"query": "abc"})
+        result = await session._execute_internal_tool(tc)
+        assert result.success is False
+        assert "disabled" in result.message
 
 
 class TestDebugMode:

@@ -65,6 +65,8 @@ class ToolContext:
     get_tool_policy_overview: Optional[Callable[..., Dict[str, Any]]] = None
     update_tool_policy: Optional[Callable[..., Dict[str, Any]]] = None
     reset_tool_policy: Optional[Callable[..., Dict[str, Any]]] = None
+    get_tool_capability_overview: Optional[Callable[..., Dict[str, Any]]] = None
+    update_tool_capability: Optional[Callable[..., Dict[str, Any]]] = None
     is_interrupt_requested: Optional[Callable[[], bool]] = None
 
 

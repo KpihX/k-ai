@@ -51,6 +51,7 @@ from .ui import (
 )
 from .commands import CommandHandler, SLASH_COMMANDS
 from .exceptions import LLMError, ProviderAuthenticationError, ContextLengthExceededError
+from .tool_capabilities import capability_enabled, capability_for_tool, list_capabilities, normalize_capability_name
 
 
 # Max rounds in the agentic tool loop per user message
@@ -132,6 +133,8 @@ class ChatSession:
             get_tool_policy_overview=self.get_tool_policy_overview,
             update_tool_policy=self.update_tool_policy,
             reset_tool_policy=self.reset_tool_policy,
+            get_tool_capability_overview=self.get_tool_capability_overview,
+            update_tool_capability=self.update_tool_capability,
             is_interrupt_requested=lambda: self._interrupt_requested,
         )
         self.tool_registry: ToolRegistry = create_registry(self._tool_ctx)
@@ -144,17 +147,13 @@ class ChatSession:
 
     def _get_active_tools(self) -> list:
         """Return OpenAI tool definitions excluding disabled tools."""
-        disabled = set()
-        tools_cfg = self.cm.get_nested("tools", default={})
-        if isinstance(tools_cfg, dict):
-            for name, cfg in tools_cfg.items():
-                if isinstance(cfg, dict) and not cfg.get("enabled", True):
-                    disabled.add(name)
-        # Map config names to tool names (e.g. exa_search, python_exec)
         return [
             t.to_openai_tool() for t in self.tool_registry.list_tools()
-            if t.name not in disabled
+            if self.is_tool_enabled(t.name)
         ]
+
+    def is_tool_enabled(self, tool_name: str) -> bool:
+        return capability_enabled(self.cm, capability_for_tool(tool_name) or tool_name) if capability_for_tool(tool_name) else True
 
     @property
     def _debug(self) -> bool:
@@ -252,6 +251,7 @@ class ChatSession:
             "runtime_stats_mode": self.cm.get_nested("cli", "runtime_stats_mode", default="compact"),
             "approval_defaults": tool_policy["defaults_by_risk"],
             "approval_counts": tool_policy["counts"],
+            "tool_capabilities": self.get_tool_capability_overview()["rows"],
             "prompt_tokens": token_snapshot["prompt_tokens"],
             "completion_tokens": token_snapshot["completion_tokens"],
             "total_tokens": token_snapshot["total_tokens"],
@@ -284,6 +284,53 @@ class ChatSession:
                 )
             raise
         return {"key": key, "old_value": current, "value": applied, "saved_to": saved_to}
+
+    def get_tool_capability_overview(self) -> Dict[str, Any]:
+        rows: list[dict[str, Any]] = []
+        for item in list_capabilities():
+            enabled = capability_enabled(self.cm, item["name"])
+            rows.append(
+                {
+                    "capability": item["name"],
+                    "label": item["label"],
+                    "enabled": enabled,
+                    "mutable": bool(item["mutable"]),
+                    "tools": list(item["tools"]),
+                    "description": item["description"],
+                }
+            )
+        return {
+            "rows": rows,
+            "counts": {
+                "enabled": sum(1 for row in rows if row["enabled"]),
+                "disabled": sum(1 for row in rows if not row["enabled"]),
+                "mutable": sum(1 for row in rows if row["mutable"]),
+            },
+        }
+
+    def update_tool_capability(
+        self,
+        capability: str,
+        enabled: bool,
+        persist: bool | None = None,
+    ) -> Dict[str, Any]:
+        normalized = normalize_capability_name(capability)
+        current = capability_enabled(self.cm, normalized)
+        saved_to: Optional[str] = None
+        should_persist = True if persist is None else bool(persist)
+        try:
+            self.cm.set(f"tools.{normalized}.enabled", bool(enabled))
+            if should_persist:
+                saved_to = str(self.cm.save_active_yaml())
+        except Exception:
+            self.cm.set(f"tools.{normalized}.enabled", current)
+            raise
+        return {
+            "capability": normalized,
+            "previous": current,
+            "enabled": bool(enabled),
+            "saved_to": saved_to,
+        }
 
     def save_active_config(self, path: Optional[str] = None) -> str:
         return str(self.cm.save_active_yaml(path))
@@ -1314,6 +1361,14 @@ class ChatSession:
         tool = self.tool_registry.get(tc.function_name)
         if not tool:
             return ToolResult(success=False, message=f"Unknown tool: {tc.function_name}")
+        if not self.is_tool_enabled(tool.name):
+            capability = capability_for_tool(tool.name)
+            if capability:
+                return ToolResult(
+                    success=False,
+                    message=f"{tool.name} is unavailable because the '{capability}' capability is disabled.",
+                )
+            return ToolResult(success=False, message=f"{tool.name} is disabled in config.")
 
         legacy_confirm_all = bool(self.cm.get_nested("cli", "confirm_all_tools", default=False))
         approval = self._resolve_tool_policy(tool)

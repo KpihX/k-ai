@@ -12,7 +12,8 @@ from k_ai.tools.meta import (
     NewSessionTool, LoadSessionTool, ExitSessionTool, RenameSessionTool,
     ListSessionsTool, SessionDigestTool, SessionExtractTool, DeleteSessionTool, ClearScreenTool, SetConfigTool,
     GetConfigTool, ListConfigTool, RuntimeStatusTool, SaveConfigTool,
-    ToolPolicyListTool, ToolPolicySetTool, ToolPolicyResetTool, SwitchSessionTool, InitSystemTool,
+    ToolPolicyListTool, ToolPolicySetTool, ToolPolicyResetTool, ToolCapabilityListTool, ToolCapabilitySetTool,
+    SwitchSessionTool, InitSystemTool,
     register_meta_tools,
 )
 from k_ai.tools.memory_tools import MemoryAddTool, MemoryListTool, MemoryRemoveTool
@@ -35,7 +36,7 @@ from k_ai.config import ConfigManager
 def ctx(tmp_path, monkeypatch):
     """Build a ToolContext with real stores but mocked callbacks."""
     cm = ConfigManager()
-    cm.set("tools.python_exec.sandbox_dir", str(tmp_path / "sandbox"))
+    cm.set("tools.python.sandbox_dir", str(tmp_path / "sandbox"))
     mem = MemoryStore(tmp_path / "MEMORY.json")
     mem.load()
     ss = SessionStore(tmp_path / "sessions")
@@ -57,6 +58,8 @@ def ctx(tmp_path, monkeypatch):
         get_tool_policy_overview=MagicMock(return_value={"rows": [], "defaults_by_risk": {"low": "auto"}, "protected_tools": [], "counts": {"ask": 0, "auto": 0, "protected": 0, "session_overrides": 0, "global_overrides": 0}}),
         update_tool_policy=MagicMock(return_value={"target_kind": "tool", "target": "clear_screen", "policy": "auto", "scope": "session", "previous": None, "saved_to": None}),
         reset_tool_policy=MagicMock(return_value={"target_kind": "tool", "target": "clear_screen", "scope": "session", "previous": "auto", "removed": True, "saved_to": None}),
+        get_tool_capability_overview=MagicMock(return_value={"rows": [{"capability": "python", "enabled": True, "mutable": True, "tools": ["python_exec"], "description": "Sandboxed Python"}], "counts": {"enabled": 1, "disabled": 0, "mutable": 1}}),
+        update_tool_capability=MagicMock(return_value={"capability": "python", "enabled": False, "previous": True, "saved_to": None}),
     )
 
 
@@ -102,7 +105,7 @@ class TestToolRegistry:
     def test_register_meta_tools(self, ctx):
         registry = ToolRegistry()
         register_meta_tools(registry, ctx)
-        assert len(registry.list_tools()) == 20  # all meta/runtime/config/admin tools
+        assert len(registry.list_tools()) == 22  # all meta/runtime/config/admin tools
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +142,20 @@ class TestMetaTools:
         assert ctx.config.get_nested("prompts", "assistant_name") == "K-Prime"
         assert any(entry.text == "Preferred user name: Ivann." for entry in ctx.memory.list_entries())
         ctx.complete_init.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_tool_capability_list(self, ctx):
+        tool = ToolCapabilityListTool()
+        result = await tool.execute({}, ctx)
+        assert result.success is True
+        assert result.data["counts"]["enabled"] == 1
+
+    @pytest.mark.asyncio
+    async def test_tool_capability_set(self, ctx):
+        tool = ToolCapabilitySetTool()
+        result = await tool.execute({"capability": "python", "enabled": False}, ctx)
+        assert result.success is True
+        ctx.update_tool_capability.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_exit_session(self, ctx):
@@ -383,7 +400,7 @@ class TestMemoryTools:
 class TestExternalTools:
     @pytest.mark.asyncio
     async def test_python_exec_disabled(self, ctx):
-        ctx.config.set("tools.python_exec.enabled", "false")
+        ctx.config.set("tools.python.enabled", "false")
         tool = PythonExecTool()
         result = await tool.execute({"code": "print(1)"}, ctx)
         assert result.success is False
@@ -460,7 +477,7 @@ class TestQmdTools:
             return True, "[]"
 
         monkeypatch.setattr("k_ai.tools.qmd._run_qmd", fake_run_qmd)
-        ctx.config.set("tools.qmd_search.query_timeout", 180)
+        ctx.config.set("tools.qmd.query_timeout", 180)
 
         tool = QmdQueryTool()
         result = await tool.execute({"query": "miami open"}, ctx)

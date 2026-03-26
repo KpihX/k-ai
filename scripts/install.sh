@@ -41,8 +41,36 @@ prompt_line() {
   printf '%s' "${reply}"
 }
 
+expand_path() {
+  python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).expanduser())' "$1"
+}
+
+ensure_venv() {
+  local venv_path="$1"
+  if [[ ! -x "${venv_path}/bin/python" ]]; then
+    python3 -m venv "${venv_path}"
+  fi
+}
+
+install_uv_binary() {
+  local installer_url="$1"
+  local installer_shell=""
+  if command -v curl >/dev/null 2>&1; then
+    installer_shell="curl -LsSf '${installer_url}' | sh"
+  elif command -v wget >/dev/null 2>&1; then
+    installer_shell="wget -qO- '${installer_url}' | sh"
+  else
+    warn "Neither curl nor wget is available, so uv cannot be installed automatically."
+    return 1
+  fi
+  sh -c "${installer_shell}"
+  export PATH="${HOME}/.local/bin:${PATH}"
+  command -v uv >/dev/null 2>&1
+}
+
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 DEFAULT_INSTALL_PROFILE="${PROJECT_DIR}/install/install.yaml"
+DEFAULT_PROFILE_LOADER_VENV="${HOME}/.cache/k-ai-installer-profile"
 INSTALL_PROFILE_ARG=""
 
 while [[ $# -gt 0 ]]; do
@@ -69,6 +97,41 @@ if [[ -n "${INSTALL_PROFILE_ARG}" && "${INSTALL_PROFILE_ARG}" != "defaults" ]]; 
   INSTALL_PROFILE="${INSTALL_PROFILE_ARG}"
 fi
 
+PROFILE_LOADER_PYTHON="python3"
+INSTALL_BACKEND=""
+BOOTSTRAP_VENV=""
+BOOTSTRAP_BIN_DIR=""
+SELECTED_PACKAGES=()
+EDITOR_CHOICE=""
+
+run_profile_python() {
+  "${PROFILE_LOADER_PYTHON}" "$@"
+}
+
+run_managed_python() {
+  if [[ "${INSTALL_BACKEND}" == "uv" ]]; then
+    uv run python "$@"
+  else
+    "${BOOTSTRAP_VENV}/bin/python" "$@"
+  fi
+}
+
+run_managed_pytest() {
+  if [[ "${INSTALL_BACKEND}" == "uv" ]]; then
+    uv run pytest -q "$@"
+  else
+    "${BOOTSTRAP_VENV}/bin/python" -m pytest -q "$@"
+  fi
+}
+
+run_managed_kai() {
+  if [[ "${INSTALL_BACKEND}" == "uv" ]]; then
+    uv run k-ai "$@"
+  else
+    "${BOOTSTRAP_VENV}/bin/python" -m k_ai.main "$@"
+  fi
+}
+
 step "Checking prerequisites"
 
 if ! command -v python3 >/dev/null 2>&1; then
@@ -85,18 +148,21 @@ if [[ "${PY_MAJOR}" -lt 3 || "${PY_MINOR}" -lt 12 ]]; then
 fi
 ok "Python ${PY_VERSION}"
 
-if command -v uv >/dev/null 2>&1; then
-  ok "uv $(uv --version 2>/dev/null | head -1)"
-else
-  fail "uv not found. Install uv first: https://docs.astral.sh/uv/"
-  exit 1
-fi
-
 if [[ ! -f "${INSTALL_PROFILE}" ]]; then
   fail "Install profile not found: ${INSTALL_PROFILE}"
   exit 1
 fi
 ok "Install profile ${INSTALL_PROFILE}"
+
+if python3 -c 'import yaml' >/dev/null 2>&1; then
+  ok "System Python already provides PyYAML for loading install profiles"
+else
+  PROFILE_LOADER_VENV="$(expand_path "${DEFAULT_PROFILE_LOADER_VENV}")"
+  ensure_venv "${PROFILE_LOADER_VENV}"
+  "${PROFILE_LOADER_VENV}/bin/python" -m pip install -q --upgrade pip pyyaml
+  PROFILE_LOADER_PYTHON="${PROFILE_LOADER_VENV}/bin/python"
+  ok "Prepared isolated profile loader env at ${PROFILE_LOADER_VENV}"
+fi
 
 if command -v bun >/dev/null 2>&1; then
   ok "bun $(bun --version 2>/dev/null)"
@@ -106,19 +172,15 @@ else
   warn "Neither bun nor npm found. QMD auto-install will be skipped."
 fi
 
-step "Syncing Python dependencies"
-
-cd "${PROJECT_DIR}"
-uv sync --dev
-uv tool install --editable "${PROJECT_DIR}" --force >/dev/null
-ok "Editable CLI installed"
-
 step "Loading installation profile"
 
 eval "$(
-  INSTALL_PROFILE="${INSTALL_PROFILE}" uv run python - <<'PY'
-import os, shlex, yaml
+  INSTALL_PROFILE="${INSTALL_PROFILE}" run_profile_python - <<'PY'
+import os
+import shlex
 from pathlib import Path
+
+import yaml
 
 path = Path(os.environ["INSTALL_PROFILE"]).expanduser()
 data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
@@ -127,7 +189,9 @@ def q(value: str) -> str:
     return shlex.quote(str(value))
 
 interactive = data.get("interactive", {}) or {}
+bootstrap = data.get("bootstrap", {}) or {}
 runtime_store = data.get("runtime_store", {}) or {}
+capabilities = data.get("capabilities", {}) or {}
 editor = data.get("editor", {}) or {}
 python_sandbox = data.get("python_sandbox", {}) or {}
 qmd = data.get("qmd", {}) or {}
@@ -142,7 +206,18 @@ for item in python_sandbox.get("default_packages", []) or []:
 print(f"INSTALL_INTERACTIVE={q(str(bool(interactive.get('enabled', True))).lower())}")
 print(f"INSTALL_ASK_DEFAULT_PACKAGES={q(str(bool(interactive.get('ask_default_python_packages_one_by_one', True))).lower())}")
 print(f"INSTALL_ALLOW_EXTRA_PACKAGES={q(str(bool(interactive.get('allow_extra_python_packages', True))).lower())}")
+print(f"BOOTSTRAP_PREFER_UV={q(str(bool(bootstrap.get('prefer_uv', True))).lower())}")
+print(f"BOOTSTRAP_OFFER_UV_INSTALL={q(str(bool(bootstrap.get('offer_uv_install', True))).lower())}")
+print(f"BOOTSTRAP_INSTALL_UV_BY_DEFAULT={q(str(bool(bootstrap.get('install_uv_by_default', True))).lower())}")
+print(f"BOOTSTRAP_ALLOW_PIP_FALLBACK={q(str(bool(bootstrap.get('allow_pip_fallback', True))).lower())}")
+print(f"BOOTSTRAP_VENV_DIR={q(bootstrap.get('bootstrap_venv', '~/.k-ai/bootstrap-cli'))}")
+print(f"BOOTSTRAP_BIN_DIR={q(bootstrap.get('bin_dir', '~/.local/bin'))}")
+print(f"BOOTSTRAP_UV_INSTALLER_URL={q(bootstrap.get('uv_installer_url', 'https://astral.sh/uv/install.sh'))}")
 print(f"K_AI_DIR={q(runtime_store.get('home_dir', '~/.k-ai'))}")
+print(f"CAP_EXA={q(str(bool(capabilities.get('exa', True))).lower())}")
+print(f"CAP_PYTHON={q(str(bool(capabilities.get('python', True))).lower())}")
+print(f"CAP_SHELL={q(str(bool(capabilities.get('shell', True))).lower())}")
+print(f"CAP_QMD={q(str(bool(capabilities.get('qmd', True))).lower())}")
 print(f"EDITOR_PREFERRED={q(editor.get('preferred', ''))}")
 print(f"EDITOR_OFFER_MICRO={q(str(bool(editor.get('offer_micro_install', True))).lower())}")
 print(f"EDITOR_FALLBACK={q(editor.get('fallback', 'nano'))}")
@@ -158,14 +233,86 @@ print(f"VERIFY_RUN_DOCTOR={q(str(bool(verification.get('run_doctor', True))).low
 PY
 )"
 
-K_AI_DIR="$(python3 -c 'from pathlib import Path; import os; print(Path(os.environ["K_AI_DIR"]).expanduser())' 2>/dev/null)"
+K_AI_DIR="$(expand_path "${K_AI_DIR}")"
 SESSIONS_DIR="${K_AI_DIR}/sessions"
-SANDBOX_DIR="$(python3 -c 'from pathlib import Path; import os; print(Path(os.environ["PYTHON_SANDBOX_DIR"]).expanduser())' 2>/dev/null)"
 MEMORY_FILE="${K_AI_DIR}/MEMORY.json"
 CONFIG_FILE="${K_AI_DIR}/config.yaml"
 HOOK_FILE="${K_AI_DIR}/.git/hooks/post-commit"
-EDITOR_CHOICE=""
-SELECTED_PACKAGES=()
+SANDBOX_DIR="$(expand_path "${PYTHON_SANDBOX_DIR}")"
+BOOTSTRAP_VENV="$(expand_path "${BOOTSTRAP_VENV_DIR}")"
+BOOTSTRAP_BIN_DIR="$(expand_path "${BOOTSTRAP_BIN_DIR}")"
+
+step "Selecting installation backend"
+
+if [[ "${BOOTSTRAP_PREFER_UV}" != "true" ]]; then
+  if [[ "${BOOTSTRAP_ALLOW_PIP_FALLBACK}" != "true" ]]; then
+    fail "The install profile disables uv and also disables the isolated pip fallback."
+    exit 1
+  fi
+  INSTALL_BACKEND="bootstrap"
+  warn "Install profile prefers the isolated bootstrap backend instead of uv"
+elif command -v uv >/dev/null 2>&1; then
+  INSTALL_BACKEND="uv"
+  ok "uv $(uv --version 2>/dev/null | head -1)"
+else
+  warn "uv is not currently available."
+  info "Preferred path: install uv now and use it for dependency sync and command shims."
+  info "Fallback path: keep uv absent and use an isolated bootstrap virtualenv at ${BOOTSTRAP_VENV}."
+
+  if [[ "${BOOTSTRAP_OFFER_UV_INSTALL}" == "true" ]]; then
+    INSTALL_UV_DEFAULT="n"
+    if [[ "${BOOTSTRAP_INSTALL_UV_BY_DEFAULT}" == "true" ]]; then
+      INSTALL_UV_DEFAULT="y"
+    fi
+    if ask_yes_no "Install uv now? yes = preferred managed install, no = isolated pip fallback without touching system Python." "${INSTALL_UV_DEFAULT}"; then
+      if install_uv_binary "${BOOTSTRAP_UV_INSTALLER_URL}"; then
+        INSTALL_BACKEND="uv"
+        ok "uv installed successfully"
+      else
+        warn "uv installation failed; continuing with the fallback decision path."
+      fi
+    fi
+  fi
+
+  if [[ -z "${INSTALL_BACKEND}" ]]; then
+    if [[ "${BOOTSTRAP_ALLOW_PIP_FALLBACK}" != "true" ]]; then
+      fail "uv is unavailable and pip fallback is disabled by the install profile."
+      exit 1
+    fi
+    INSTALL_BACKEND="bootstrap"
+    warn "Using isolated bootstrap virtualenv fallback at ${BOOTSTRAP_VENV}"
+  fi
+fi
+
+step "Preparing managed Python environment"
+
+cd "${PROJECT_DIR}"
+
+if [[ "${INSTALL_BACKEND}" == "uv" ]]; then
+  uv sync --dev
+  uv tool install --editable "${PROJECT_DIR}" --force >/dev/null
+  ok "Editable CLI installed with uv"
+else
+  ensure_venv "${BOOTSTRAP_VENV}"
+  "${BOOTSTRAP_VENV}/bin/python" -m pip install -q --upgrade pip setuptools wheel
+  "${BOOTSTRAP_VENV}/bin/python" -m pip install -q -e "${PROJECT_DIR}" pytest pytest-asyncio
+  ok "Editable CLI installed in isolated bootstrap env"
+
+  mkdir -p "${BOOTSTRAP_BIN_DIR}"
+  cat > "${BOOTSTRAP_BIN_DIR}/k-ai" <<EOF
+#!/usr/bin/env bash
+exec "${BOOTSTRAP_VENV}/bin/python" -m k_ai.main "\$@"
+EOF
+  chmod +x "${BOOTSTRAP_BIN_DIR}/k-ai"
+  ok "Installed k-ai launcher at ${BOOTSTRAP_BIN_DIR}/k-ai"
+
+  case ":${PATH}:" in
+    *":${BOOTSTRAP_BIN_DIR}:"*) ;;
+    *)
+      warn "${BOOTSTRAP_BIN_DIR} is not in PATH for this shell. Add it if you want 'k-ai' to resolve globally."
+      ;;
+  esac
+fi
 
 step "Preparing runtime store"
 
@@ -179,7 +326,7 @@ else
 fi
 
 if [[ ! -f "${CONFIG_FILE}" ]]; then
-  uv run python -c 'from k_ai.config import ConfigManager; print(ConfigManager.get_default_yaml(), end="")' > "${CONFIG_FILE}"
+  run_managed_python -c 'from k_ai.config import ConfigManager; print(ConfigManager.get_default_yaml(), end="")' > "${CONFIG_FILE}"
   ok "Created ${CONFIG_FILE}"
 else
   ok "Config file already exists"
@@ -193,21 +340,26 @@ if [[ -n "${EDITOR_PREFERRED}" ]] && command -v "${EDITOR_PREFERRED%% *}" >/dev/
 elif command -v micro >/dev/null 2>&1; then
   EDITOR_CHOICE="micro"
   ok "micro already available"
-elif [[ "${EDITOR_OFFER_MICRO}" == "true" ]] && [[ "${INSTALL_INTERACTIVE}" == "true" ]] && ask_yes_no "Install micro as the default editor for k-ai config editing?" "y"; then
-  if command -v apt-get >/dev/null 2>&1; then
-    if command -v sudo >/dev/null 2>&1; then
-      sudo apt-get update && sudo apt-get install -y micro
+elif [[ "${EDITOR_OFFER_MICRO}" == "true" ]] && [[ "${INSTALL_INTERACTIVE}" == "true" ]]; then
+  info "Editor choices:"
+  info "  - yes: install and use micro as the default editor"
+  info "  - no: keep the system editor chain (K_AI_EDITOR / VISUAL / EDITOR / ${EDITOR_FALLBACK})"
+  if ask_yes_no "Install micro as the default editor for k-ai config editing?" "y"; then
+    if command -v apt-get >/dev/null 2>&1; then
+      if command -v sudo >/dev/null 2>&1; then
+        sudo apt-get update && sudo apt-get install -y micro
+      else
+        apt-get update && apt-get install -y micro
+      fi
+      if command -v micro >/dev/null 2>&1; then
+        EDITOR_CHOICE="micro"
+        ok "micro installed"
+      else
+        warn "micro installation did not produce a usable binary"
+      fi
     else
-      apt-get update && apt-get install -y micro
+      warn "apt-get not available; cannot auto-install micro"
     fi
-    if command -v micro >/dev/null 2>&1; then
-      EDITOR_CHOICE="micro"
-      ok "micro installed"
-    else
-      warn "micro installation did not produce a usable binary"
-    fi
-  else
-    warn "apt-get not available; cannot auto-install micro"
   fi
 fi
 
@@ -223,11 +375,46 @@ if [[ -z "${EDITOR_CHOICE}" ]]; then
   fi
 fi
 
-uv run python -c '
+if [[ "${INSTALL_INTERACTIVE}" == "true" ]]; then
+  step "Choosing initial tool capabilities"
+  info "Capability choices:"
+  info "  - exa: public web search through Exa"
+  info "  - python: sandboxed Python execution plus sandbox package management"
+  info "  - shell: sandboxed shell command execution"
+  info "  - qmd: indexed history and knowledge retrieval tools"
+  info "Protected approval-admin tools are not changed here; they remain YAML-only if you want to alter them manually."
+
+  if ask_yes_no "Enable Exa web search capability?" "$([[ "${CAP_EXA}" == "true" ]] && echo y || echo n)"; then
+    CAP_EXA="true"
+  else
+    CAP_EXA="false"
+  fi
+  if ask_yes_no "Enable Python sandbox capability?" "$([[ "${CAP_PYTHON}" == "true" ]] && echo y || echo n)"; then
+    CAP_PYTHON="true"
+  else
+    CAP_PYTHON="false"
+  fi
+  if ask_yes_no "Enable shell sandbox capability?" "$([[ "${CAP_SHELL}" == "true" ]] && echo y || echo n)"; then
+    CAP_SHELL="true"
+  else
+    CAP_SHELL="false"
+  fi
+  if ask_yes_no "Enable QMD knowledge capability?" "$([[ "${CAP_QMD}" == "true" ]] && echo y || echo n)"; then
+    CAP_QMD="true"
+  else
+    CAP_QMD="false"
+  fi
+fi
+
+run_managed_python -c '
 from k_ai.config import ConfigManager
 cm = ConfigManager(override_path=r"'"${CONFIG_FILE}"'")
 cm.set("config.editor", r"'"${EDITOR_CHOICE}"'")
-cm.set("tools.python_exec.sandbox_dir", r"'"${SANDBOX_DIR}"'")
+cm.set("tools.exa.enabled", '"${CAP_EXA}"' == "true")
+cm.set("tools.python.enabled", '"${CAP_PYTHON}"' == "true")
+cm.set("tools.python.sandbox_dir", r"'"${SANDBOX_DIR}"'")
+cm.set("tools.shell.enabled", '"${CAP_SHELL}"' == "true")
+cm.set("tools.qmd.enabled", '"${CAP_QMD}"' == "true")
 cm.save_active_yaml(r"'"${CONFIG_FILE}"'")
 ' >/dev/null
 ok "Configured config.editor=${EDITOR_CHOICE}"
@@ -250,8 +437,8 @@ fi
 
 step "Preparing Python sandbox"
 
-if [[ "${PYTHON_SANDBOX_ENABLED}" != "true" ]]; then
-  warn "Python sandbox disabled by install profile"
+if [[ "${PYTHON_SANDBOX_ENABLED}" != "true" || "${CAP_PYTHON}" != "true" ]]; then
+  warn "Python sandbox setup skipped because the install profile or chosen capability disabled it"
 else
   if [[ ! -x "${SANDBOX_DIR}/bin/python" ]]; then
     python3 -m venv "${SANDBOX_DIR}"
@@ -261,7 +448,10 @@ else
   fi
 
   read -r -a PROFILE_PACKAGES <<< "${PYTHON_DEFAULT_PACKAGES}"
-  if [[ "${INSTALL_INTERACTIVE}" == "true" && "${INSTALL_ASK_DEFAULT_PACKAGES}" == "true" ]]; then
+  if [[ "${INSTALL_INTERACTIVE}" == "true" && "${INSTALL_ASK_DEFAULT_PACKAGES}" == "true" && "${#PROFILE_PACKAGES[@]}" -gt 0 ]]; then
+    info "Default sandbox package choices:"
+    info "  - yes: install the proposed package into the dedicated Python sandbox"
+    info "  - no: skip it for now"
     for pkg in "${PROFILE_PACKAGES[@]}"; do
       if ask_yes_no "Install sandbox package '${pkg}'?" "y"; then
         SELECTED_PACKAGES+=("${pkg}")
@@ -272,6 +462,9 @@ else
   fi
 
   if [[ "${INSTALL_INTERACTIVE}" == "true" && "${INSTALL_ALLOW_EXTRA_PACKAGES}" == "true" ]]; then
+    info "Extra sandbox packages:"
+    info "  - type one package name per prompt to add it"
+    info "  - press Enter on an empty line when you are done"
     while true; do
       extra_pkg="$(prompt_line "Extra sandbox package to add (empty to continue):")"
       extra_pkg="$(printf '%s' "${extra_pkg}" | xargs 2>/dev/null || true)"
@@ -286,28 +479,31 @@ else
     mapfile -t UNIQUE_PACKAGES < <(printf '%s\n' "${SELECTED_PACKAGES[@]}" | awk 'NF && !seen[$0]++')
     "${SANDBOX_DIR}/bin/pip" install -q "${UNIQUE_PACKAGES[@]}"
     ok "Sandbox packages installed: ${UNIQUE_PACKAGES[*]}"
-    PACKAGES_JSON="$(printf '%s\n' "${UNIQUE_PACKAGES[@]}" | uv run python - <<'PY'
-import json, sys
+    PACKAGES_JSON="$(printf '%s\n' "${UNIQUE_PACKAGES[@]}" | run_managed_python - <<'PY'
+import json
+import sys
+
 items = [line.strip() for line in sys.stdin if line.strip()]
 print(json.dumps(items))
 PY
 )"
-    PACKAGES_JSON="${PACKAGES_JSON}" uv run python -c '
+    PACKAGES_JSON="${PACKAGES_JSON}" run_managed_python -c '
 import json
 import os
 from k_ai.config import ConfigManager
+
 cm = ConfigManager(override_path=r"'"${CONFIG_FILE}"'")
-cm.set("tools.python_exec.default_packages", json.loads(os.environ["PACKAGES_JSON"]))
+cm.set("tools.python.default_packages", json.loads(os.environ["PACKAGES_JSON"]))
 cm.save_active_yaml(r"'"${CONFIG_FILE}"'")
 ' >/dev/null
   else
-    warn "No sandbox packages selected; python_exec sandbox was created without extra packages."
+    warn "No sandbox packages selected; the dedicated Python sandbox was created without extra packages."
   fi
 fi
 
 step "Setting up QMD"
 
-if [[ "${QMD_INSTALL_IF_MISSING}" == "true" ]] && ! command -v qmd >/dev/null 2>&1; then
+if [[ "${CAP_QMD}" == "true" && "${QMD_INSTALL_IF_MISSING}" == "true" ]] && ! command -v qmd >/dev/null 2>&1; then
   if command -v bun >/dev/null 2>&1; then
     bun install -g qmd >/dev/null
   elif command -v npm >/dev/null 2>&1; then
@@ -315,7 +511,9 @@ if [[ "${QMD_INSTALL_IF_MISSING}" == "true" ]] && ! command -v qmd >/dev/null 2>
   fi
 fi
 
-if command -v qmd >/dev/null 2>&1; then
+if [[ "${CAP_QMD}" != "true" ]]; then
+  warn "QMD capability disabled by install choices"
+elif command -v qmd >/dev/null 2>&1; then
   ok "QMD available"
   if qmd collection show "${QMD_COLLECTION_NAME}" >/dev/null 2>&1; then
     ok "QMD collection '${QMD_COLLECTION_NAME}' already exists"
@@ -343,15 +541,15 @@ ok "Installed ${HOOK_FILE}"
 
 step "Running verification"
 
-if [[ "${VERIFY_PREFER_MAKE}" == "true" ]] && [[ -f "${PROJECT_DIR}/Makefile" ]] && command -v make >/dev/null 2>&1; then
+if [[ "${VERIFY_PREFER_MAKE}" == "true" && "${INSTALL_BACKEND}" == "uv" ]] && [[ -f "${PROJECT_DIR}/Makefile" ]] && command -v make >/dev/null 2>&1; then
   make check
 else
   python3 -m py_compile src/k_ai/*.py src/k_ai/tools/*.py src/k_ai/ui/*.py test/*.py
-  uv run pytest -q
+  run_managed_pytest
 fi
 
 if [[ "${VERIFY_RUN_DOCTOR}" == "true" ]]; then
-  uv run k-ai doctor || warn "Doctor reported issues. Review the output above."
+  run_managed_kai doctor || warn "Doctor reported issues. Review the output above."
 fi
 
 echo
@@ -360,7 +558,11 @@ echo -e "${GREEN}  k-ai installation complete${RESET}"
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
 echo -e "  Install profile: ${CYAN}${INSTALL_PROFILE}${RESET}"
 echo -e "  Install docs:    ${CYAN}${PROJECT_DIR}/install/README.md${RESET}"
+echo -e "  Backend:         ${CYAN}${INSTALL_BACKEND}${RESET}"
+if [[ "${INSTALL_BACKEND}" == "bootstrap" ]]; then
+  echo -e "  Launcher:        ${CYAN}${BOOTSTRAP_BIN_DIR}/k-ai${RESET}"
+fi
 echo -e "  Runtime config:  ${CYAN}${CONFIG_FILE}${RESET}"
 echo -e "  Chat:            ${CYAN}k-ai chat${RESET}"
-echo -e "  Check:           ${CYAN}make check${RESET} ${DIM}(preferred)${RESET}"
+echo -e "  Check:           ${CYAN}make check${RESET} ${DIM}(preferred when uv is available)${RESET}"
 echo -e "  Status:          ${CYAN}k-ai chat${RESET} then ${CYAN}/status${RESET}"

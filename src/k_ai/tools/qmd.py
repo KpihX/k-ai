@@ -19,6 +19,7 @@ import shutil
 from typing import Any, Dict
 
 from ..models import ToolResult
+from ..tool_capabilities import capability_enabled
 from .base import InternalTool, ToolContext, ToolRegistry
 
 
@@ -48,7 +49,7 @@ _SESSION_ID_RE = re.compile(r"\b([0-9a-f]{8,12})\b", re.IGNORECASE)
 
 
 def _session_collection(ctx: ToolContext) -> str:
-    return str(ctx.config.get_nested("tools", "qmd_search", "session_collection", default="k-ai"))
+    return str(ctx.config.get_nested("tools", "qmd", "session_collection", default="k-ai"))
 
 
 def _resolve_qmd_collection(
@@ -128,6 +129,12 @@ def _render_qmd_hits(data: Any, fallback: str) -> Any:
     return table
 
 
+def _qmd_disabled_result(ctx: ToolContext) -> ToolResult | None:
+    if capability_enabled(ctx.config, "qmd"):
+        return None
+    return ToolResult(success=False, message="QMD capability is disabled in config.")
+
+
 # ===================================================================
 # Search tools
 # ===================================================================
@@ -155,7 +162,10 @@ class QmdQueryTool(InternalTool):
     requires_approval = False
 
     async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
-        cfg = ctx.config.get_nested("tools", "qmd_search", default={})
+        disabled = _qmd_disabled_result(ctx)
+        if disabled:
+            return disabled
+        cfg = ctx.config.get_nested("tools", "qmd", default={})
         query = arguments.get("query", "")
         n = arguments.get("num_results", cfg.get("limit", 5))
         collection = _resolve_qmd_collection(arguments.get("collection"), query, ctx)
@@ -185,7 +195,7 @@ class QmdQueryTool(InternalTool):
         table.add_column("value")
         table.add_row("Query", str(arguments.get("query", "")))
         table.add_row("Collection", _session_collection(ctx))
-        table.add_row("Results", str(arguments.get("num_results", ctx.config.get_nested("tools", "qmd_search", "limit", default=5))))
+        table.add_row("Results", str(arguments.get("num_results", ctx.config.get_nested("tools", "qmd", "limit", default=5))))
         return [("Search Request", table)]
 
     def result_renderable(self, result: ToolResult, max_display_length: int, ctx: ToolContext) -> Any:
@@ -211,7 +221,10 @@ class QmdSearchTool(InternalTool):
     requires_approval = False
 
     async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
-        cfg = ctx.config.get_nested("tools", "qmd_search", default={})
+        disabled = _qmd_disabled_result(ctx)
+        if disabled:
+            return disabled
+        cfg = ctx.config.get_nested("tools", "qmd", default={})
         query = arguments.get("query", "")
         n = arguments.get("num_results", cfg.get("limit", 5))
         collection = _resolve_qmd_collection(arguments.get("collection"), query, ctx)
@@ -256,7 +269,10 @@ class QmdVsearchTool(InternalTool):
     requires_approval = False
 
     async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
-        cfg = ctx.config.get_nested("tools", "qmd_search", default={})
+        disabled = _qmd_disabled_result(ctx)
+        if disabled:
+            return disabled
+        cfg = ctx.config.get_nested("tools", "qmd", default={})
         query = arguments.get("query", "")
         n = arguments.get("num_results", cfg.get("limit", 5))
         collection = _resolve_qmd_collection(arguments.get("collection"), query, ctx)
@@ -308,6 +324,9 @@ class QmdGetTool(InternalTool):
     requires_approval = False
 
     async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
+        disabled = _qmd_disabled_result(ctx)
+        if disabled:
+            return disabled
         file = _resolve_qmd_file(arguments.get("file", ""), ctx)
         lines = arguments.get("lines")
         args = ["get", file]
@@ -346,6 +365,9 @@ class QmdMultiGetTool(InternalTool):
     requires_approval = False
 
     async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
+        disabled = _qmd_disabled_result(ctx)
+        if disabled:
+            return disabled
         pattern = arguments.get("pattern", "")
         lines = arguments.get("lines")
         args = ["multi-get", pattern, "--json"]
@@ -372,6 +394,9 @@ class QmdLsTool(InternalTool):
     requires_approval = False
 
     async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
+        disabled = _qmd_disabled_result(ctx)
+        if disabled:
+            return disabled
         path = arguments.get("path", "")
         args = ["ls"]
         args.append(path or _session_collection(ctx))
@@ -394,6 +419,9 @@ class QmdCollectionListTool(InternalTool):
     requires_approval = False
 
     async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
+        disabled = _qmd_disabled_result(ctx)
+        if disabled:
+            return disabled
         ok, out = await _run_qmd("collection", "show", _session_collection(ctx))
         return ToolResult(success=ok, message=out)
 
@@ -413,6 +441,9 @@ class QmdCollectionAddTool(InternalTool):
     requires_approval = True
 
     async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
+        disabled = _qmd_disabled_result(ctx)
+        if disabled:
+            return disabled
         name = arguments.get("name", "")
         path = arguments.get("path", "")
         pattern = arguments.get("pattern")
@@ -436,6 +467,9 @@ class QmdCollectionRemoveTool(InternalTool):
     requires_approval = True
 
     async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
+        disabled = _qmd_disabled_result(ctx)
+        if disabled:
+            return disabled
         name = arguments.get("name", "")
         ok, out = await _run_qmd("collection", "remove", name)
         return ToolResult(success=ok, message=out)
@@ -454,6 +488,9 @@ class QmdCollectionShowTool(InternalTool):
     requires_approval = False
 
     async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
+        disabled = _qmd_disabled_result(ctx)
+        if disabled:
+            return disabled
         name = arguments.get("name", "")
         ok, out = await _run_qmd("collection", "show", name)
         return ToolResult(success=ok, message=out)
@@ -470,6 +507,9 @@ class QmdStatusTool(InternalTool):
     requires_approval = False
 
     async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
+        disabled = _qmd_disabled_result(ctx)
+        if disabled:
+            return disabled
         ok, out = await _run_qmd("status")
         return ToolResult(success=ok, message=out)
 
@@ -487,6 +527,9 @@ class QmdUpdateTool(InternalTool):
     requires_approval = True
 
     async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
+        disabled = _qmd_disabled_result(ctx)
+        if disabled:
+            return disabled
         pull = arguments.get("pull", False)
         args = ["update"]
         if pull:
@@ -510,6 +553,9 @@ class QmdEmbedTool(InternalTool):
     requires_approval = True
 
     async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
+        disabled = _qmd_disabled_result(ctx)
+        if disabled:
+            return disabled
         force = arguments.get("force", False)
         args = ["embed"]
         if force:
@@ -525,6 +571,9 @@ class QmdCleanupTool(InternalTool):
     requires_approval = True
 
     async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
+        disabled = _qmd_disabled_result(ctx)
+        if disabled:
+            return disabled
         ok, out = await _run_qmd("cleanup")
         return ToolResult(success=ok, message=out)
 
@@ -540,6 +589,9 @@ class QmdContextListTool(InternalTool):
     requires_approval = False
 
     async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
+        disabled = _qmd_disabled_result(ctx)
+        if disabled:
+            return disabled
         ok, out = await _run_qmd("context", "list")
         return ToolResult(success=ok, message=out)
 
@@ -558,6 +610,9 @@ class QmdContextAddTool(InternalTool):
     requires_approval = True
 
     async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
+        disabled = _qmd_disabled_result(ctx)
+        if disabled:
+            return disabled
         collection = arguments.get("collection", "")
         text = arguments.get("text", "")
         ok, out = await _run_qmd("context", "add", collection, text)
@@ -577,6 +632,9 @@ class QmdContextRemoveTool(InternalTool):
     requires_approval = True
 
     async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
+        disabled = _qmd_disabled_result(ctx)
+        if disabled:
+            return disabled
         collection = arguments.get("collection", "")
         ok, out = await _run_qmd("context", "rm", collection)
         return ToolResult(success=ok, message=out)

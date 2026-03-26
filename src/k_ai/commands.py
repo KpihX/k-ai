@@ -35,7 +35,7 @@ SLASH_COMMANDS = [
     "/digest", "/extract",
     "/history", "/model", "/provider", "/system",
     "/set", "/settings", "/status",
-    "/tools",
+    "/tools", "/tools capabilities", "/tools enable", "/tools disable",
     "/config show", "/config save", "/config get", "/config sections", "/config edit",
     "/save", "/tokens",
     "/memory list", "/memory add", "/memory remove",
@@ -101,9 +101,9 @@ _HELP: dict[str, tuple[str, str, str]] = {
     "/settings [prefix]": ("List current active config keys, optionally filtered by prefix.", "optional prefix", "/settings cli"),
     "/status": ("Show full runtime transparency: provider, tokens, context, limits, approvals, paths.", "-", "/status"),
     "/tools": (
-        "Inspect or change tool approval policies. Supports defaults, session overrides, and global overrides.",
-        "show|ask|auto|reset ...",
-        "/tools show protected",
+        "Inspect tool approval policies or live-enable/disable capability groups such as exa, python, shell, and qmd. Protected admin rules stay YAML-only.",
+        "show|capabilities|enable|disable|ask|auto|reset ...",
+        "/tools capabilities",
     ),
     "/config show [key|section:<name> ...]": (
         "Inspect active config values or built-in config sections from inside chat.",
@@ -497,6 +497,9 @@ class CommandHandler:
         return await self._run_internal_tool("runtime_status", {"mode": "full"})
 
     async def _tools(self, args: List[str]) -> bool:
+        if args and args[0].lower() in {"capabilities", "caps", "enabled"}:
+            return await self._run_internal_tool("tool_capability_list", {})
+
         if not args or args[0].lower() in {"list", "show", "status"}:
             payload: Dict[str, object] = {}
             if args:
@@ -507,6 +510,16 @@ class CommandHandler:
             return await self._run_internal_tool("tool_policy_list", payload)
 
         sub = args[0].lower()
+        if sub in {"enable", "disable"}:
+            if len(args) < 2:
+                self.console.print("[yellow]Usage:[/yellow] /tools enable|disable <exa|python|shell|qmd>")
+                return True
+            payload = {
+                "capability": args[1],
+                "enabled": sub == "enable",
+            }
+            return await self._run_internal_tool("tool_capability_set", payload)
+
         if sub in {"ask", "auto"}:
             if len(args) < 2:
                 self.console.print("[yellow]Usage:[/yellow] /tools ask|auto <target> [session|global] [tool|category|risk]")
@@ -532,10 +545,14 @@ class CommandHandler:
 
         self.console.print(
             "[yellow]Usage:[/yellow]\n"
+            "  /tools capabilities\n"
+            "  /tools enable <exa|python|shell|qmd>\n"
+            "  /tools disable <exa|python|shell|qmd>\n"
             "  /tools show [ask|auto|default|session|global|protected]\n"
             "  /tools ask <target> [session|global] [tool|category|risk]\n"
             "  /tools auto <target> [session|global] [tool|category|risk]\n"
-            "  /tools reset <target> [session|global] [tool|category|risk]"
+            "  /tools reset <target> [session|global] [tool|category|risk]\n"
+            "  Protected admin approval rules remain manual YAML edits by design."
         )
         return True
 

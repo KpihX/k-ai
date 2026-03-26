@@ -68,6 +68,14 @@ Installation profiles:
 - editable defaults: [install/install.yaml](/home/kpihx/Work/AI/k_ai/install/install.yaml)
 - installer docs: [install/README.md](/home/kpihx/Work/AI/k_ai/install/README.md)
 
+Installer behavior highlights:
+
+- interactive by default, with explicit choices shown for each meaningful case
+- prefers `uv` when available
+- if `uv` is missing, proposes installing it
+- if `uv` is declined, falls back to an isolated `k-ai` bootstrap virtualenv instead of polluting the system Python
+- asks which live capability families should start enabled: `exa`, `python`, `shell`, `qmd`
+
 You can keep the default interactive install, explicitly target the default
 profile, or point to your own:
 
@@ -217,6 +225,8 @@ Runtime/config:
 - `/set <key> <value>`
 - `/model [name]`
 - `/provider [name] [model]`
+- `/tools capabilities`
+- `/tools enable|disable <exa|python|shell|qmd>`
 - `/config show [key]`
 - `/config show section:<name> [section:<name> ...]`
 - `/config get [path] [section ...]`
@@ -225,6 +235,8 @@ Runtime/config:
 
 Tools and memory:
 
+- live capability switching only applies to mutable families (`exa`, `python`, `shell`, `qmd`)
+- protected admin approval rules remain YAML-only by design
 - `/tools show [ask|auto|default|session|global|protected]`
 - `/tools ask|auto <target> [session|global] [tool|category|risk]`
 - `/tools reset <target> [session|global] [tool|category|risk]`
