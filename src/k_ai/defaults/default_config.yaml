@@ -19,7 +19,7 @@
 # Which provider to use by default.
 # Must match a key under no_auth, api_key, or oauth.
 # Examples: "ollama"  "openai"  "anthropic"  "mistral"  "groq"  "gemini"
-provider: "mistral"
+provider: "groq"
 
 # Sampling temperature: controls randomness.
 # Range: 0.0 (deterministic / focused) → 2.0 (very creative / random)

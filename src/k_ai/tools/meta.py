@@ -12,6 +12,34 @@ from .base import InternalTool, ToolContext, ToolRegistry
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _resolve_session_id(raw: str, ctx: ToolContext) -> str | None:
+    """
+    Resolve a session identifier: accepts an 8-char hex ID, a full ID,
+    an ID prefix, or a position number (#N / N) from the most recent list.
+    Returns the full session ID or None if not found.
+    """
+    raw = raw.strip().lstrip("#")
+
+    # Try as a position number (1-based)
+    try:
+        pos = int(raw)
+        if 1 <= pos <= 100:
+            max_recent = ctx.config.get_nested("sessions", "max_recent", default=10)
+            sessions = ctx.session_store.list_sessions(limit=max_recent)
+            if 1 <= pos <= len(sessions):
+                return sessions[pos - 1].id
+    except ValueError:
+        pass
+
+    # Try as ID or prefix
+    meta = ctx.session_store.get_session(raw)
+    return meta.id if meta else None
+
+
+# ---------------------------------------------------------------------------
 # Tool implementations
 # ---------------------------------------------------------------------------
 
@@ -30,15 +58,15 @@ class NewSessionTool(InternalTool):
 class LoadSessionTool(InternalTool):
     name = "load_session"
     description = (
-        "Resume a previous chat session by its ID. "
-        "The session's full message history will be restored."
+        "Resume a previous chat session. Use the 8-char hex ID from list_sessions "
+        "(e.g. 'd24a3534'), NOT the position number."
     )
     parameters_schema = {
         "type": "object",
         "properties": {
             "session_id": {
                 "type": "string",
-                "description": "The session ID (or prefix) to resume.",
+                "description": "The 8-char hex session ID (from list_sessions).",
             },
         },
         "required": ["session_id"],
@@ -46,7 +74,9 @@ class LoadSessionTool(InternalTool):
     requires_approval = True
 
     async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
-        session_id = arguments.get("session_id", "")
+        session_id = _resolve_session_id(arguments.get("session_id", ""), ctx)
+        if not session_id:
+            return ToolResult(success=False, message=f"Session '{arguments.get('session_id')}' not found.")
         meta = ctx.session_store.get_session(session_id)
         if not meta:
             return ToolResult(success=False, message=f"Session '{session_id}' not found.")
@@ -98,7 +128,11 @@ class RenameSessionTool(InternalTool):
 
 class ListSessionsTool(InternalTool):
     name = "list_sessions"
-    description = "List recent chat sessions with their IDs, titles, and summaries."
+    description = (
+        "List recent chat sessions. Each session shows its position number (#1, #2...) "
+        "and its unique ID (8-char hex). IMPORTANT: when referring to a session in other "
+        "tools (delete, load, rename), always use the 8-char hex ID, NOT the position number."
+    )
     parameters_schema = {
         "type": "object",
         "properties": {
@@ -118,10 +152,10 @@ class ListSessionsTool(InternalTool):
         if not sessions:
             return ToolResult(success=True, message="No sessions found.", data=[])
         lines = []
-        for s in sessions:
-            title = s.title or s.id
+        for i, s in enumerate(sessions, 1):
+            title = s.title or "(untitled)"
             summary = f" - {s.summary}" if s.summary else ""
-            lines.append(f"[{s.id[:8]}] {title}{summary} ({s.message_count} msgs)")
+            lines.append(f"#{i} ID={s.id[:8]} \"{title}\"{summary} ({s.message_count} msgs)")
         return ToolResult(
             success=True,
             message="\n".join(lines),
@@ -131,13 +165,16 @@ class ListSessionsTool(InternalTool):
 
 class DeleteSessionTool(InternalTool):
     name = "delete_session"
-    description = "Permanently delete a chat session by its ID."
+    description = (
+        "Permanently delete a chat session. Use the 8-char hex ID from list_sessions "
+        "(e.g. 'd24a3534'), NOT the position number."
+    )
     parameters_schema = {
         "type": "object",
         "properties": {
             "session_id": {
                 "type": "string",
-                "description": "The session ID (or prefix) to delete.",
+                "description": "The 8-char hex session ID (from list_sessions).",
             },
         },
         "required": ["session_id"],
@@ -145,10 +182,14 @@ class DeleteSessionTool(InternalTool):
     requires_approval = True
 
     async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
-        session_id = arguments.get("session_id", "")
+        session_id = _resolve_session_id(arguments.get("session_id", ""), ctx)
+        if not session_id:
+            return ToolResult(success=False, message=f"Session '{arguments.get('session_id')}' not found.")
+        meta = ctx.session_store.get_session(session_id)
+        title = meta.title if meta else session_id
         ok = ctx.session_store.delete_session(session_id)
         if ok:
-            return ToolResult(success=True, message=f"Session '{session_id}' deleted.")
+            return ToolResult(success=True, message=f"Session '{title}' ({session_id[:8]}) deleted.")
         return ToolResult(success=False, message=f"Session '{session_id}' not found.")
 
 
