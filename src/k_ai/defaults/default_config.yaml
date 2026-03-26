@@ -1,81 +1,308 @@
-# Default Configuration for k-ai
-# This file serves as the fallback configuration.
-# Users can override these settings with an external config file.
+# ┌─────────────────────────────────────────────────────────────────────────┐
+# │  k-ai  —  Default Configuration                                         │
+# │                                                                          │
+# │  This file ships with k-ai and provides sensible defaults.              │
+# │  To customise, export a copy:  k-ai config get -o my_config.yaml        │
+# │  then pass it at runtime:      k-ai chat --config my_config.yaml        │
+# │                                                                          │
+# │  Override hierarchy (last wins):                                         │
+# │    1. This file (built-in defaults)                                      │
+# │    2. Your config file  (only the keys you define are overridden)        │
+# │    3. CLI flags         (--provider, --model, --temperature, …)          │
+# │    4. /set commands     (live edits inside the chat session)             │
+# └─────────────────────────────────────────────────────────────────────────┘
 
 # ==============================================================================
 # 1. Active LLM Settings
 # ==============================================================================
-provider: "ollama"
+
+# Which provider to use by default.
+# Must match a key under no_auth, api_key, or oauth.
+# Examples: "ollama"  "openai"  "anthropic"  "mistral"  "groq"  "gemini"
+provider: "mistral"
+
+# Sampling temperature: controls randomness.
+# Range: 0.0 (deterministic / focused) → 2.0 (very creative / random)
+# Typical values:  0.0–0.3 (factual / code)  0.7 (balanced)  1.0–1.5 (creative)
 temperature: 0.7
+
+# Maximum number of tokens the model may generate in a single response.
+# Higher values allow longer answers but cost more and are slower.
+# Suggested: 2048 (quick answers)  8192 (detailed work)  32768+ (long-form)
 max_tokens: 8192
+
+# Whether to stream the response token-by-token (true) or wait for the
+# full response before displaying it (false).
+# Values: true | false
 stream: true
 
-# The order in which to search for a provider if no auth_mode is specified
+# Order in which to search provider sections when no auth_mode is forced.
+# k-ai tries each section in order and uses the first that contains the
+# requested provider name.
+# Sections: "no_auth"  "api_key"  "oauth"
 provider_search_priority:
-  - "no_auth_providers"
-  - "api_providers"
-  - "oauth_providers"
+  - "no_auth"
+  - "api_key"
+  - "oauth"
+
 
 # ==============================================================================
-# 2. CLI & UI Behavior
+# 2. CLI & UI Behaviour
 # ==============================================================================
+
 cli:
+  # Show per-turn token usage (prompt / completion counts) after each reply.
+  # Values: true | false
   show_token_usage: true
+
+  # Visual theme for the chat UI (reserved for future themes).
+  # Values: "default"
   theme: "default"
-  thinking_indicator: "dots"
+
+  # Style of the "thinking" indicator shown while waiting for the first token.
+  # Values: "dots"  "line"  "star"  "bouncingBar"  "clock"  (any Rich spinner)
+  thinking_indicator: "clock"
+
+  # Show the welcome panel (provider / model / temperature) at session start.
+  # Values: true | false
   show_welcome_panel: true
 
-# ==============================================================================
-# 3. Provider Registry
-# ==============================================================================
+  # Render mode for LLM responses.
+  # Values: "raw" (plain text)  "markdown" (Rich Markdown)  "rich" (Markdown + Unicode math)
+  render_mode: "rich"
 
-no_auth_providers:
+  # Maximum characters to display from a tool result in the UI.
+  tool_result_max_display: 500
+
+  # Debug mode: show raw system prompts and LLM responses before rendering.
+  debug: false
+
+
+# ==============================================================================
+# 3. No-Auth Providers  (local endpoints — no credential needed)
+# ==============================================================================
+# Each entry under no_auth must have:
+#   base_url      (str)  — The OpenAI-compatible API root (with /v1 suffix).
+#   default_model (str)  — Model name to use when none is specified.
+#   context_window (int) — Approximate token limit (for informational display).
+
+no_auth:
+
   ollama:
+    # Ollama runs locally; start it with: ollama serve
+    # Pull a model first:  ollama pull phi4-mini
     base_url: "http://localhost:11434/v1"
     default_model: "phi4-mini:latest"
     context_window: 32768
 
-api_providers:
+
+# ==============================================================================
+# 4. API-Key Providers  (cloud services — key read from env / .env)
+# ==============================================================================
+# Each entry must have:
+#   api_key_env_var (str) — Name of the environment variable that holds the key.
+#                           Resolution order: .env file → os.environ → zsh -l -c
+#   default_model   (str) — Model to use when none is specified.
+#   context_window  (int) — Approximate context size in tokens.
+#
+# Optional:
+#   api_key_value   (str) — Hard-code the key inline (not recommended; use .env).
+#   base_url        (str) — Override the endpoint (e.g. for Azure OpenAI proxies).
+
+api_key:
+
   mistral:
     api_key_env_var: "MISTRAL_API_KEY"
+    base_url: "https://api.mistral.ai/v1"
+    # Models: mistral-large-latest  mistral-small-latest  open-mixtral-8x22b
     default_model: "mistral-large-latest"
     context_window: 128000
 
   openai:
     api_key_env_var: "OPENAI_API_KEY"
+    # Models: gpt-4o  gpt-4o-mini  gpt-4-turbo  o1  o1-mini  o3-mini
     default_model: "gpt-4o"
     context_window: 128000
 
   groq:
     api_key_env_var: "GROQ_API_KEY"
+    base_url: "https://api.groq.com/openai/v1"
+    # Models: qwen/qwen3-32b  llama-3.3-70b-versatile  llama-3.1-8b-instant
     default_model: "qwen/qwen3-32b"
-    context_window: 32768
-    
+    context_window: 131072
+
   gemini:
     api_key_env_var: "GOOGLE_API_KEY"
+    # Models: gemini-2.5-flash  gemini-2.5-pro  gemini-2.0-flash
     default_model: "gemini-2.5-flash"
     context_window: 1000000
 
   anthropic:
     api_key_env_var: "ANTHROPIC_API_KEY"
-    default_model: "claude-3-sonnet-20240229"
+    # Models: claude-opus-4-6  claude-sonnet-4-6  claude-haiku-4-5
+    default_model: "claude-sonnet-4-6"
     context_window: 200000
 
   dashscope:
     api_key_env_var: "DASHSCOPE_API_KEY"
+    # Models: qwen-turbo  qwen-plus  qwen-max  qwen-long
     default_model: "qwen-turbo"
-    context_window: 6144
+    context_window: 131072
+
+  xai:
+    api_key_env_var: "GROK_API_KEY"
+    # LiteLLM native routing (no base_url) — model_str = xai/<model>
+    # Models: grok-3-fast-beta  grok-3-beta  grok-3-mini-fast-beta  grok-4  grok-4-latest
+    default_model: "grok-3-fast-beta"
+    context_window: 131072
+
 
 # ==============================================================================
-# 4. OAuth Based Providers
+# 5. OAuth Providers  (browser-based login — token stored in a local file)
 # ==============================================================================
-# For providers that support browser-based OAuth authentication.
+# Each entry must have:
+#   oauth_provider_name (str)       — Name of the OAuth adapter in auth.py.
+#   oauth_scopes        (list[str]) — Scopes requested during the OAuth flow.
+#   token_path          (str)       — Where to persist the access token.
+#   default_model       (str)       — Model to use when none is specified.
+#   context_window      (int)       — Approximate context size.
+#
+# Note: a provider key (e.g. "gemini") may appear in BOTH api_key and oauth.
+# The auth_mode is selected by the first section found during
+# provider_search_priority traversal, or forced with --auth-mode on the CLI.
 
-oauth_providers:
-  gemini: # The provider key 'gemini' is the same, but it's in a different section
+# ==============================================================================
+# 6. Sessions  (persistent chat history)
+# ==============================================================================
+
+sessions:
+  # Where session files are stored on disk.
+  directory: "~/.k-ai/sessions"
+
+  # Maximum number of recent sessions shown at boot / in list.
+  max_recent: 10
+
+
+# ==============================================================================
+# 7. Prompts  (all LLM instructions — fully customisable)
+# ==============================================================================
+
+prompts:
+  # Base identity injected into every system message.
+  identity: >-
+    You are k-ai, an intelligent CLI chat assistant.
+    You have access to internal tools for session management, memory,
+    search, code execution, and more. When you detect the user wants
+    to perform a meta-action (start new session, resume old one, change
+    settings, manage memory, exit, etc.), propose the appropriate tool.
+    The user will validate or reject your proposals. For normal questions,
+    just answer directly.
+
+  # Boot greeting when recent sessions exist.
+  boot_with_sessions: >-
+    [SESSION_BOOT] The user just opened k-ai.
+    Greet them briefly and proactively. Based on their recent sessions
+    and memory, suggest resuming a relevant session or starting fresh.
+    Keep it short (2-3 sentences). If you suggest resuming, use the
+    load_session tool.
+
+  # Boot greeting when no sessions exist (first launch or empty history).
+  boot_no_sessions: >-
+    [SESSION_BOOT] The user just opened k-ai for the first time
+    (or has no recent sessions). Greet them warmly and briefly.
+    If you know anything about them from memory, personalise the greeting.
+    Keep it to 1-2 sentences.
+
+  # Instruction for compaction summarisation.
+  compact_summarize: >-
+    Summarize the following conversation concisely, preserving key
+    facts, decisions, and context needed to continue the conversation.
+
+  # Instruction for auto-generating a session title on exit.
+  exit_title: >-
+    Generate a short title (max 60 chars) for this chat.
+
+  # Instruction for auto-generating a session summary on exit.
+  exit_summary: >-
+    Summarize this chat in 2-3 sentences.
+
+
+# ==============================================================================
+# 8. Context Compaction
+# ==============================================================================
+
+compaction:
+  # Trigger compaction when the message list exceeds this percentage of
+  # the provider's context_window.  Set to 0 to disable auto-compaction.
+  trigger_percent: 80
+
+  # Number of most-recent messages kept verbatim in hot context.
+  # Older messages are summarised by the LLM.
+  keep_last_n: 10
+
+  # Automatically rename the session (LLM-generated summary) after compaction.
+  auto_rename: true
+
+
+# ==============================================================================
+# 9. Memory
+# ==============================================================================
+
+memory:
+  # External memory file loaded read-only into the system prompt.
+  # Set to "" to disable.  Example: "~/.agents/KERNEL.md"
+  external_file: "~/.agents/KERNEL.md"
+
+  # Internal memory file managed by k-ai (add/list/remove).
+  internal_file: "~/.k-ai/MEMORY.json"
+
+
+# ==============================================================================
+# 10. External Tools
+# ==============================================================================
+
+tools:
+  exa_search:
+    enabled: yes
+    api_key_env_var: "EXA_API_KEY"
+    num_results: 5
+
+  python_exec:
+    enabled: true
+    timeout: 30
+    require_approval: true
+
+  shell_exec:
+    enabled: true
+    timeout: 30
+    require_approval: true
+
+  qmd_search:
+    enabled: true
+    limit: 5
+
+
+# ==============================================================================
+# 11. OAuth Providers  (browser-based login — token stored in a local file)
+# ==============================================================================
+# Each entry must have:
+#   oauth_provider_name (str)       — Name of the OAuth adapter in auth.py.
+#   oauth_scopes        (list[str]) — Scopes requested during the OAuth flow.
+#   token_path          (str)       — Where to persist the access token.
+#   default_model       (str)       — Model to use when none is specified.
+#   context_window      (int)       — Approximate context size.
+#
+# Note: a provider key (e.g. "gemini") may appear in BOTH api_key and oauth.
+# The auth_mode is selected by the first section found during
+# provider_search_priority traversal, or forced with --auth-mode on the CLI.
+
+oauth:
+
+  gemini:
     oauth_provider_name: "google"
     oauth_scopes:
       - "https://www.googleapis.com/auth/cloud-platform"
     token_path: "~/.k_ai/tokens/google_oauth.json"
+    # Models: same as api_providers.gemini above
     default_model: "gemini-2.5-flash"
     context_window: 1000000

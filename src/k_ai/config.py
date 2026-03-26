@@ -1,125 +1,241 @@
 # src/k_ai/config.py
 """
 Configuration management for k-ai.
-Handles loading default and user-provided configurations with a clear override hierarchy.
+Handles loading, merging, and live editing of configuration with a clear override hierarchy:
+  1. Built-in defaults  (src/k_ai/defaults/default_config.yaml)
+  2. User config file   (--config path, or override_path=...)
+  3. Inline kwargs      (ConfigManager(temperature=0.9, provider="openai"))
 """
-import os
+import copy
 import yaml
-from pathlib import Path
-from typing import Dict, Any, Optional
 from functools import lru_cache
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
-# The name of the default configuration file included with the package
 DEFAULT_CONFIG_FILENAME = "default_config.yaml"
 
-@lru_cache(maxsize=None)
-def load_config_from_path(path: Path) -> Dict[str, Any]:
-    """
-    Loads and parses a YAML configuration file from a given path.
-    This function is cached to avoid repeated disk I/O.
-    """
+# Sentinel used by get_nested() to distinguish "key absent" from "key present
+# with a null value" — a plain None would be ambiguous in the latter case.
+_SENTINEL = object()
+
+
+@lru_cache(maxsize=8)
+def _load_yaml(path: Path) -> Dict[str, Any]:
+    """Load and parse a YAML file from disk (no caching — callers deep-copy as needed)."""
     if not path.exists():
-        raise FileNotFoundError(f"Configuration file not found at {path}")
-        
-    with open(path, 'r') as f:
+        raise FileNotFoundError(f"Configuration file not found at: {path}")
+    with open(path, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
-    
     if not isinstance(config, dict):
-        raise TypeError(f"Configuration at {path} is not a valid dictionary.")
-        
+        raise TypeError(f"Configuration at {path} must be a YAML mapping, got {type(config).__name__}.")
     return config
 
+
 class ConfigManager:
-    def __init__(self, override_path: Optional[str] = None):
-        """
-        Initializes the ConfigManager.
-        """
+    """
+    Central configuration store for k-ai.
+
+    Usage examples::
+
+        # Defaults only
+        cm = ConfigManager()
+
+        # Override from file (partial file — only defined keys override defaults)
+        cm = ConfigManager(override_path="~/my_config.yaml")
+
+        # Override individual params inline
+        cm = ConfigManager(provider="openai", temperature=0.2)
+
+        # Both
+        cm = ConfigManager(override_path="base.yaml", model="gpt-4o")
+
+        # External library usage: get the default config template
+        yaml_text = ConfigManager.get_default_yaml()
+    """
+
+    def __init__(self, override_path: Optional[str] = None, **kwargs: Any):
         self.default_config_path = Path(__file__).parent / "defaults" / DEFAULT_CONFIG_FILENAME
         self.override_path = Path(override_path).expanduser() if override_path else None
-        
+        self._kwargs: Dict[str, Any] = kwargs
+
         self.config: Dict[str, Any] = {}
         self._load_and_merge()
 
-    def _load_and_merge(self):
-        """
-        Loads the default configuration and merges the override config on top.
-        """
-        # 1. Load default config from cache
-        self.config = load_config_from_path(self.default_config_path)
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
 
-        # 2. Load override config if it exists
+    def _load_and_merge(self) -> None:
+        """Build self.config from all layers (deepcopy avoids mutating on-disk data)."""
+        # Layer 1: package defaults
+        self.config = copy.deepcopy(_load_yaml(self.default_config_path))
+
+        # Layer 2: user override file
         if self.override_path and self.override_path.exists():
-            override_config = load_config_from_path(self.override_path)
-            # 3. Merge override into default (deep merge)
-            self._deep_merge(self.config, override_config)
+            self._deep_merge(self.config, _load_yaml(self.override_path))
 
-    def _deep_merge(self, base: Dict, new: Dict) -> Dict:
-        """
-        Recursively merges 'new' dictionary into 'base'.
-        'new' values overwrite 'base' values.
-        """
-        for key, value in new.items():
-            if isinstance(value, dict) and key in base and isinstance(base[key], dict):
-                base[key] = self._deep_merge(base[key], value)
+        # Layer 3: inline kwargs (top-level only)
+        for key, value in self._kwargs.items():
+            self.config[key] = value
+
+    @staticmethod
+    def _deep_merge(base: Dict, overlay: Dict) -> Dict:
+        """Recursively merge `overlay` into `base` in-place. `overlay` wins."""
+        for key, value in overlay.items():
+            if isinstance(value, dict) and isinstance(base.get(key), dict):
+                ConfigManager._deep_merge(base[key], value)
             else:
                 base[key] = value
         return base
 
+    # ------------------------------------------------------------------
+    # Read API
+    # ------------------------------------------------------------------
+
     def get(self, key: str, default: Any = None) -> Any:
-        """
-        Retrieves a top-level configuration value.
-        """
+        """Return a top-level config value."""
         return self.config.get(key, default)
 
-    def get_provider_config_with_auth_mode(self, provider_name: str, auth_mode: Optional[str] = None) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+    def get_nested(self, *keys: str, default: Any = None) -> Any:
         """
-        Searches provider sections, finds the provider, and returns its config
-        along with the determined authentication mode.
-        """
-        search_priority = self.get("provider_search_priority", ["no_auth_providers", "api_providers", "oauth_providers"])
+        Return a nested config value using a key path.
 
-        def find_in_section(section_name: str) -> Optional[Dict[str, Any]]:
-            section = self.config.get(section_name, {})
-            if provider_name in section:
-                return section[provider_name]
-            return None
+        Uses an internal sentinel so that a legitimately null config value is
+        not confused with "key not found" (which would happen if None were used
+        as the sentinel directly).
+
+        Example::
+            cm.get_nested("cli", "theme")  # equivalent to config["cli"]["theme"]
+        """
+        node = self.config
+        for key in keys:
+            if not isinstance(node, dict):
+                return default
+            node = node.get(key, _SENTINEL)
+            if node is _SENTINEL:
+                return default
+        return node
+
+    def get_all(self) -> Dict[str, Any]:
+        """Return a deep copy of the entire active configuration."""
+        return copy.deepcopy(self.config)
+
+    # ------------------------------------------------------------------
+    # Write API (live in-session edits)
+    # ------------------------------------------------------------------
+
+    def set(self, key: str, value: Any) -> None:
+        """
+        Set a config value, supporting dot-notation for nested keys.
+        Automatically coerces string values to the type of the existing value.
+
+        Examples::
+            cm.set("temperature", 0.9)
+            cm.set("temperature", "0.9")        # auto-coerced to float
+            cm.set("cli.show_token_usage", "false")  # auto-coerced to bool
+            cm.set("max_tokens", "8192")        # auto-coerced to int
+        """
+        parts = key.split(".")
+        node = self.config
+        for part in parts[:-1]:
+            if not isinstance(node.get(part), dict):
+                node[part] = {}
+            node = node[part]
+
+        leaf = parts[-1]
+        existing = node.get(leaf)
+        value = self._coerce(value, existing)
+        node[leaf] = value
+
+    @staticmethod
+    def _coerce(value: Any, existing: Any) -> Any:
+        """Try to cast `value` to the type of `existing` when `value` is a string."""
+        if existing is None or not isinstance(value, str):
+            return value
+        try:
+            if isinstance(existing, bool):
+                return value.lower() in ("true", "1", "yes", "on")
+            if isinstance(existing, int):
+                return int(value)
+            if isinstance(existing, float):
+                return float(value)
+        except (ValueError, TypeError):
+            pass
+        return value
+
+    # ------------------------------------------------------------------
+    # Serialisation helpers
+    # ------------------------------------------------------------------
+
+    def dump_yaml(self) -> str:
+        """Serialise the full active configuration to a YAML string."""
+        return yaml.dump(
+            self.get_all(),
+            default_flow_style=False,
+            allow_unicode=True,
+            sort_keys=False,
+        )
+
+    @classmethod
+    def get_default_yaml(cls) -> str:
+        """Return the raw content of the built-in default config file."""
+        path = Path(__file__).parent / "defaults" / DEFAULT_CONFIG_FILENAME
+        return path.read_text(encoding="utf-8")
+
+    # ------------------------------------------------------------------
+    # Provider helpers (used by llm_core)
+    # ------------------------------------------------------------------
+
+    def list_providers(self) -> Dict[str, List[str]]:
+        """
+        Return all configured providers grouped by auth mode.
+
+        The order follows ``provider_search_priority``.  Only sections that
+        contain at least one provider entry are included.
+
+        Example::
+
+            {
+                "no_auth":  ["ollama"],
+                "api_key":  ["anthropic", "dashscope", "gemini", "groq", "mistral", "openai"],
+                "oauth":    ["gemini"],
+            }
+        """
+        result: Dict[str, List[str]] = {}
+        for section in self.get("provider_search_priority", ["no_auth", "api_key", "oauth"]):
+            providers = sorted(self.config.get(section, {}).keys())
+            if providers:
+                result[section] = providers
+        return result
+
+    def get_provider_config_with_auth_mode(
+        self,
+        provider_name: str,
+        auth_mode: Optional[str] = None,
+    ) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """
+        Locate a provider's configuration block and determine its auth mode.
+
+        Searches sections in the order defined by `provider_search_priority`.
+        Returns (provider_config_dict, auth_mode_string) or (None, None).
+        """
+        search_priority: list[str] = self.get(
+            "provider_search_priority",
+            ["no_auth", "api_key", "oauth"],
+        )
+
+        def _find(section_name: str) -> Optional[Dict[str, Any]]:
+            return self.config.get(section_name, {}).get(provider_name)
 
         if auth_mode:
-            section_name = f"{auth_mode}_providers"
-            config = find_in_section(section_name)
-            if config:
-                return config, auth_mode
+            # Section name equals auth_mode (e.g. "api_key" → config["api_key"][provider]).
+            cfg = _find(auth_mode)
+            if cfg:
+                return cfg, auth_mode
         else:
-            for section_name in search_priority:
-                config = find_in_section(section_name)
-                if config:
-                    derived_auth_mode = section_name.replace("_providers", "")
-                    return config, derived_auth_mode
-                    
+            for section in search_priority:
+                cfg = _find(section)
+                if cfg:
+                    return cfg, section  # section name IS the auth_mode
+
         return None, None
-
-# Example usage (for testing)
-if __name__ == '__main__':
-    # Test without override
-    print("--- Loading Default Config ---")
-    cm_default = ConfigManager()
-    print(f"Default provider: {cm_default.get('provider')}")
-
-    # Test with override
-    # Create a dummy override file
-    dummy_override_content = """
-provider: "openai"
-temperature: 0.9
-"""
-    dummy_path = Path("test_config.yaml")
-    with open(dummy_path, "w") as f:
-        f.write(dummy_override_content)
-
-    print("\n--- Loading with Override Config ---")
-    cm_override = ConfigManager(override_path=str(dummy_path))
-    print(f"Overridden provider: {cm_override.get('provider')}")
-    print(f"Overridden temperature: {cm_override.get('temperature')}")
-    print(f"Default max_tokens (not overridden): {cm_override.get('max_tokens')}")
-
-    # Clean up
-    os.remove(dummy_path)

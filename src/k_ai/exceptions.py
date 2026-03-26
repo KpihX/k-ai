@@ -28,5 +28,21 @@ class ContextLengthExceededError(LLMError):
     pass
 
 class ServiceUnavailableError(LLMError):
-    """Raised when an LLM provider's service is unavailable."""
+    """Raised when an LLM provider's service is unavailable (5xx / overloaded)."""
+    pass
+
+class ProviderTimeoutError(LLMError):
+    """Raised when a request to the LLM provider times out."""
+    pass
+
+class SessionStoreError(KAIError):
+    """Raised for session persistence errors (save/load/index)."""
+    pass
+
+class MemoryStoreError(KAIError):
+    """Raised for memory store errors (corrupt file, validation)."""
+    pass
+
+class ToolExecutionError(KAIError):
+    """Raised when an internal tool fails to execute."""
     pass
