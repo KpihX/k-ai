@@ -8,6 +8,7 @@ can propose) or is a UI-only shortcut.  This ensures uniform behaviour:
 """
 import json
 import os
+import subprocess
 from datetime import datetime
 from typing import TYPE_CHECKING, Dict, List
 
@@ -35,7 +36,7 @@ SLASH_COMMANDS = [
     "/history", "/model", "/provider", "/system",
     "/set", "/settings", "/status",
     "/tools",
-    "/config show", "/config save", "/config get", "/config sections",
+    "/config show", "/config save", "/config get", "/config sections", "/config edit",
     "/save", "/tokens",
     "/memory list", "/memory add", "/memory remove",
     "/doctor",
@@ -49,47 +50,88 @@ SLASH_COMMANDS = [
 # Help registry
 # ---------------------------------------------------------------------------
 
-_HELP: dict[str, str] = {
-    "/help": "Show this help message.",
-    "/exit, /quit, /bye": "Exit the chat session.",
-    "/new [classic|meta]": "Start a new chat session, optionally seeding its type.",
-    "/load <id>": "Resume a previous session by ID (or prefix).",
-    "/sessions [recent|oldest] [classic|meta]": "List sessions with optional order/type filters.",
-    "/rename <title>": "Rename the current session.",
-    "/delete <id>": "Permanently delete a session.",
-    "/compact": "Compress conversation history (summarise old messages).",
-    "/clear": "Clear the terminal screen (history untouched).",
-    "/reset": "Clear conversation history (start over in this session).",
-    "/digest [id]": "Generate or refresh summary + themes for current or given session.",
-    "/extract <id> [offset] [limit]": "Extract a window of messages from a session.",
-    "/history": "Show message count and first/last messages.",
-    "/model [name]": "Show or switch the active model override.",
-    "/provider [name] [model]": "Show or switch provider (+ optional model override).",
-    "/system [prompt|off]": "Show, set, or disable the system prompt.",
-    "/set <key> <value>": "Live-edit any config key.",
-    "/settings [prefix]": "List active config keys (optionally filtered by prefix).",
-    "/status": "Full runtime transparency: provider, context window, tokens, limits.",
-    "/tools": "Inspect or change tool approval policies.",
-    "/config show [key|section:<name> ...]": "Inspect active config or built-in config sections.",
-    "/config save [path]": "Persist the active merged config to disk.",
-    "/config get [path] [section ...]": "Export the full default config or only selected sections.",
-    "/config sections": "List available built-in config sections.",
-    "/save [filename]": "Save conversation to a JSON file.",
-    "/tokens": "Show cumulative session token usage.",
-    "/memory list": "List all memory entries.",
-    "/memory add <text>": "Add a memory entry.",
-    "/memory remove <id>": "Remove a memory entry by ID.",
-    "/doctor": "Run a full diagnostic check.",
-    "/qmd query <text>": "Hybrid semantic search (recommended).",
-    "/qmd search <text>": "BM25 keyword search (fast).",
-    "/qmd vsearch <text>": "Vector similarity search.",
-    "/qmd get <file> [N]": "View a document (optional line limit).",
-    "/qmd ls [collection]": "List indexed files.",
-    "/qmd collections": "List all collections.",
-    "/qmd status": "Index health & stats.",
-    "/qmd update [--pull]": "Re-index (optionally git pull first).",
-    "/qmd embed [-f]": "Refresh vector embeddings.",
-    "/qmd cleanup": "Clear caches & vacuum DB.",
+_HELP: dict[str, tuple[str, str, str]] = {
+    "/help": ("Show this help table.", "-", "/help"),
+    "/exit, /quit, /bye": ("Exit the interactive session safely.", "-", "/exit"),
+    "/new [classic|meta]": (
+        "Start a fresh session. Use [cyan]classic[/cyan] for a real task/topic, [cyan]meta[/cyan] for admin/config work.",
+        "type=classic|meta",
+        "/new meta",
+    ),
+    "/load <id> [last_n]": (
+        "Resume a previous session by exact ID or prefix, optionally loading only the last N messages.",
+        "id + optional last_n window",
+        "/load a3b5b372 20",
+    ),
+    "/sessions [recent|oldest] [classic|meta]": (
+        "List known sessions with order and optional type filter. The table already includes summary, themes, count, and date.",
+        "order=recent|oldest, type=classic|meta",
+        "/sessions oldest meta",
+    ),
+    "/rename <title>": ("Rename the current session title/summary anchor.", "free text title", "/rename Debug OAuth Google"),
+    "/delete <id>": ("Permanently delete one session by ID or prefix.", "target session id", "/delete 0d193bea"),
+    "/compact": ("Compact the in-memory context and persist a summary of old turns.", "-", "/compact"),
+    "/clear": ("Clear the terminal screen only. Session history remains unchanged.", "-", "/clear"),
+    "/reset": ("Clear the current conversation history inside this session.", "-", "/reset"),
+    "/digest [id]": (
+        "Generate or refresh summary, themes, and session_type for the current or a past session.",
+        "optional session id",
+        "/digest a3b5b372",
+    ),
+    "/extract <id> [offset] [limit]": (
+        "Extract an explicit message window from a session without loading the whole chat.",
+        "id, offset>=0, limit>0",
+        "/extract a3b5b372 20 15",
+    ),
+    "/history": ("Show current in-context history size and first/last message previews.", "-", "/history"),
+    "/model [name]": ("Show current model or change it live for this session.", "optional model name", "/model mistral-large-latest"),
+    "/provider [name] [model]": (
+        "Show current provider or switch provider, optionally changing model at the same time.",
+        "provider + optional model",
+        "/provider mistral mistral-medium-latest",
+    ),
+    "/system [prompt|off]": ("Show, set, or disable the session-specific system prompt.", "free text or off", "/system You are concise."),
+    "/set <key> <value>": ("Change one runtime config key live using dot-notation.", "dot.key + value", "/set cli.theme mono"),
+    "/settings [prefix]": ("List current active config keys, optionally filtered by prefix.", "optional prefix", "/settings cli"),
+    "/status": ("Show full runtime transparency: provider, tokens, context, limits, approvals, paths.", "-", "/status"),
+    "/tools": (
+        "Inspect or change tool approval policies. Supports defaults, session overrides, and global overrides.",
+        "show|ask|auto|reset ...",
+        "/tools show protected",
+    ),
+    "/config show [key|section:<name> ...]": (
+        "Inspect active config values or built-in config sections from inside chat.",
+        "key or one/many section:<name>",
+        "/config show section:models section:governance",
+    ),
+    "/config save [path]": ("Persist the current merged runtime config to disk.", "optional output path", "/config save ~/.k-ai/config.yaml"),
+    "/config get [path] [section ...]": (
+        "Export the built-in default config, optionally restricted to chosen sections.",
+        "optional path + optional sections",
+        "/config get prompts.yaml ui",
+    ),
+    "/config sections": ("List all built-in config sections and what each one contains.", "-", "/config sections"),
+    "/config edit [all|models|ui|sessions|governance]": (
+        "Open the active config file or one built-in fragment in the configured editor.",
+        "optional target section",
+        "/config edit governance",
+    ),
+    "/save [filename]": ("Export the current chat history to a JSON file.", "optional filename", "/save debug_chat.json"),
+    "/tokens": ("Show cumulative token accounting for the current session.", "-", "/tokens"),
+    "/memory list": ("List persistent memory entries.", "-", "/memory list"),
+    "/memory add <text>": ("Add one persistent memory entry.", "free text", "/memory add User prefers French."),
+    "/memory remove <id>": ("Remove one persistent memory entry by ID.", "memory id", "/memory remove 3"),
+    "/doctor": ("Run the same environment diagnostic as [cyan]k-ai doctor[/cyan].", "-", "/doctor"),
+    "/qmd query <text>": ("Run the recommended hybrid semantic search over QMD.", "free text query", "/qmd query diagonalisation matrice"),
+    "/qmd search <text>": ("Run keyword-first BM25 search in QMD.", "free text query", "/qmd search Francis Ngannou"),
+    "/qmd vsearch <text>": ("Run vector similarity search in QMD.", "free text query", "/qmd vsearch startup camerounaise"),
+    "/qmd get <file> [N]": ("Open a QMD document, optionally truncating to N lines.", "file path + optional line count", "/qmd get qmd://k-ai/abc.jsonl 80"),
+    "/qmd ls [collection]": ("List indexed files, optionally restricted to one collection.", "optional collection", "/qmd ls k-ai"),
+    "/qmd collections": ("List all QMD collections currently available.", "-", "/qmd collections"),
+    "/qmd status": ("Show QMD index health, counts, and sync status.", "-", "/qmd status"),
+    "/qmd update [--pull]": ("Refresh the QMD index, optionally pulling sources first.", "optional --pull", "/qmd update --pull"),
+    "/qmd embed [-f]": ("Refresh or force-refresh vector embeddings.", "optional -f", "/qmd embed -f"),
+    "/qmd cleanup": ("Vacuum caches and cleanup QMD index artifacts.", "-", "/qmd cleanup"),
 }
 
 
@@ -369,10 +411,17 @@ class CommandHandler:
     async def _help(self, args: List[str]) -> bool:
         t = Table(title="[bold cyan]k-ai Commands[/bold cyan]", show_header=True, header_style="bold")
         t.add_column("Command", style="cyan", no_wrap=True)
-        t.add_column("Description")
-        for cmd, desc in _HELP.items():
-            t.add_row(cmd, desc)
+        t.add_column("What It Does")
+        t.add_column("Arguments / Values", style="magenta")
+        t.add_column("Example", style="green")
+        for cmd, (desc, params, example) in _HELP.items():
+            t.add_row(cmd, desc, params, example)
         self.console.print(t)
+        self.console.print(
+            "[dim]Tip:[/dim] shell-level help is also available with "
+            "[cyan]k-ai --help[/cyan], [cyan]k-ai chat --help[/cyan], "
+            "[cyan]k-ai config --help[/cyan], and [cyan]k-ai doctor --help[/cyan]."
+        )
         return True
 
     async def _history(self, args: List[str]) -> bool:
@@ -521,6 +570,23 @@ class CommandHandler:
                 table.add_row(item["name"], item["file"], item["description"])
             self.console.print(table)
             return True
+        elif sub == "edit":
+            if len(args) > 2:
+                self.console.print("[yellow]Usage:[/yellow] /config edit [all|models|ui|sessions|governance]")
+                return True
+            target_name = args[1] if len(args) > 1 else "all"
+            try:
+                target_path = self.session.cm.resolve_edit_target(target_name)
+                editor_cmd = self.session.cm.resolve_editor_command()
+                self.console.print(f"[cyan]Opening[/cyan] {target_path} [cyan]with[/cyan] {' '.join(editor_cmd)}")
+                subprocess.run([*editor_cmd, str(target_path)], check=True)
+            except FileNotFoundError as e:
+                self.console.print(f"[bold red]Error:[/bold red] {e}")
+            except subprocess.CalledProcessError as e:
+                self.console.print(f"[bold red]Editor exited with error:[/bold red] {e}")
+            except Exception as e:
+                self.console.print(f"[bold red]Error:[/bold red] {e}")
+            return True
         elif sub == "get":
             extra = args[1:]
             target = "config.yaml"
@@ -549,7 +615,8 @@ class CommandHandler:
         else:
             self.console.print(
                 "[yellow]Usage:[/yellow] /config show [key] | /config show section:<name> [section:<name> ...] | "
-                "/config save [path] | /config get [path] [section ...] | /config sections"
+                "/config save [path] | /config get [path] [section ...] | /config sections | "
+                "/config edit [all|models|ui|sessions|governance]"
             )
         return True
 

@@ -14,6 +14,20 @@ ok() { echo -e "${GREEN}  OK${RESET} $*"; }
 warn() { echo -e "${YELLOW}  WARN${RESET} $*"; }
 fail() { echo -e "${RED}  ERR${RESET} $*"; }
 step() { echo -e "\n${CYAN}━━━ $* ━━━${RESET}"; }
+ask_yes_no() {
+  local prompt="$1"
+  local default="${2:-y}"
+  local suffix="[Y/n]"
+  if [[ "${default}" == "n" ]]; then
+    suffix="[y/N]"
+  fi
+  if [[ ! -t 0 ]]; then
+    [[ "${default}" == "y" ]] && return 0 || return 1
+  fi
+  read -r -p "$(echo -e "${CYAN}[k-ai]${RESET} ${prompt} ${suffix} ")" reply
+  reply="${reply:-$default}"
+  [[ "${reply}" =~ ^[Yy]$ ]]
+}
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 K_AI_DIR="${HOME}/.k-ai"
@@ -22,6 +36,7 @@ SANDBOX_DIR="${K_AI_DIR}/sandbox"
 MEMORY_FILE="${K_AI_DIR}/MEMORY.json"
 CONFIG_FILE="${K_AI_DIR}/config.yaml"
 HOOK_FILE="${K_AI_DIR}/.git/hooks/post-commit"
+EDITOR_CHOICE=""
 
 step "Checking prerequisites"
 
@@ -78,6 +93,49 @@ if [[ ! -f "${CONFIG_FILE}" ]]; then
 else
   ok "Config file already exists"
 fi
+
+step "Choosing default editor"
+
+if command -v micro >/dev/null 2>&1; then
+  EDITOR_CHOICE="micro"
+  ok "micro already available"
+elif ask_yes_no "Install micro as the default editor for k-ai config editing?" "y"; then
+  if command -v apt-get >/dev/null 2>&1; then
+    if command -v sudo >/dev/null 2>&1; then
+      sudo apt-get update && sudo apt-get install -y micro
+    else
+      apt-get update && apt-get install -y micro
+    fi
+    if command -v micro >/dev/null 2>&1; then
+      EDITOR_CHOICE="micro"
+      ok "micro installed"
+    else
+      warn "micro installation did not produce a usable binary"
+    fi
+  else
+    warn "apt-get not available; cannot auto-install micro"
+  fi
+fi
+
+if [[ -z "${EDITOR_CHOICE}" ]]; then
+  if [[ -n "${K_AI_EDITOR:-}" ]]; then
+    EDITOR_CHOICE="${K_AI_EDITOR}"
+  elif [[ -n "${VISUAL:-}" ]]; then
+    EDITOR_CHOICE="${VISUAL}"
+  elif [[ -n "${EDITOR:-}" ]]; then
+    EDITOR_CHOICE="${EDITOR}"
+  else
+    EDITOR_CHOICE="nano"
+  fi
+fi
+
+uv run python -c '
+from k_ai.config import ConfigManager
+cm = ConfigManager(override_path=r"'"${CONFIG_FILE}"'")
+cm.set("config.editor", r"'"${EDITOR_CHOICE}"'")
+cm.save_active_yaml(r"'"${CONFIG_FILE}"'")
+' >/dev/null
+ok "Configured config.editor=${EDITOR_CHOICE}"
 
 if [[ ! -f "${K_AI_DIR}/.gitignore" ]]; then
   printf 'sandbox/\n*.tmp\n' > "${K_AI_DIR}/.gitignore"

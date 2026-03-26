@@ -301,6 +301,32 @@ class TestToolPolicies:
         assert result.success is True
 
     @pytest.mark.asyncio
+    async def test_tool_proposal_uses_fallback_rationale_when_model_provides_none(self, session):
+        session.console = MagicMock()
+        session._tool_ctx.console = session.console
+        tc = ToolCall(id="c1", function_name="clear_screen", arguments={})
+
+        with patch("k_ai.session.render_tool_proposal") as render_mock:
+            result = await session._execute_internal_tool(tc, rationale="")
+
+        assert result.success is True
+        assert render_mock.call_args.kwargs["show_rationale"] is True
+        assert "Use clear_screen" in render_mock.call_args.kwargs["rationale"]
+
+    @pytest.mark.asyncio
+    async def test_tool_proposal_can_hide_rationale_panel_via_config(self, session):
+        session.console = MagicMock()
+        session._tool_ctx.console = session.console
+        session.cm.set("cli.show_tool_rationale", False)
+        tc = ToolCall(id="c1", function_name="clear_screen", arguments={})
+
+        with patch("k_ai.session.render_tool_proposal") as render_mock:
+            result = await session._execute_internal_tool(tc, rationale="explicit")
+
+        assert result.success is True
+        assert render_mock.call_args.kwargs["show_rationale"] is False
+
+    @pytest.mark.asyncio
     async def test_protected_admin_tool_still_requests_confirmation(self, session):
         session.console = MagicMock()
         session._tool_ctx.console = session.console
@@ -609,6 +635,9 @@ class TestBootFlow:
         identity = session.cm.get_nested("prompts", "identity")
         assert identity is not None
         assert len(identity) > 10
+        assert "python_exec" in identity
+        assert "shell_exec" in identity
+        assert "exa_search" in identity
 
         boot_with = session.cm.get_nested("prompts", "boot_with_sessions")
         assert boot_with is not None

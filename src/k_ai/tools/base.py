@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 @dataclass(frozen=True)
 class ToolDisplaySpec:
     display_name: str
+    description: str = ""
     category: str = "general"
     danger_level: str = "low"
     accent_color: str = "cyan"
@@ -84,10 +85,34 @@ class InternalTool(ABC):
     def display_spec(self) -> ToolDisplaySpec:
         return ToolDisplaySpec(
             display_name=self.display_name or self.name,
+            description=self.description,
             category=self.category,
             danger_level=self.danger_level,
             accent_color=self.accent_color,
         )
+
+    def proposal_rationale(self, arguments: Dict[str, Any]) -> str:
+        """
+        Fallback justification shown when the model did not provide one.
+
+        Keep it short and grounded in the tool description plus one salient
+        argument when available, so the approval panel remains transparent even
+        when the assistant emits only a raw tool call.
+        """
+        description = (self.description or f"Use {self.name}.").strip()
+        argument_hint = ""
+        for key in ("query", "command", "code", "path", "key", "mode", "session_id"):
+            value = arguments.get(key)
+            if value is None:
+                continue
+            text = str(value).strip()
+            if not text:
+                continue
+            if len(text) > 120:
+                text = text[:117] + "..."
+            argument_hint = f" Main input: {key}={text}"
+            break
+        return f"Use {self.name} to {description[0].lower() + description[1:]}{argument_hint}"
 
     def proposal_sections(self, arguments: Dict[str, Any], ctx: ToolContext) -> List[tuple[str, Any]]:
         """Renderable sections for the tool proposal panel."""

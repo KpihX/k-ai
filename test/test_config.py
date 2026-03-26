@@ -26,6 +26,18 @@ def write_yaml(tmp_path: Path, data: dict, name="override.yaml") -> Path:
 # ---------------------------------------------------------------------------
 
 class TestDefaultLoad:
+    def test_default_paths_resolve_inside_fake_home(self, cm):
+        fake_home = Path("~").expanduser().resolve()
+        sessions_dir = Path(str(cm.get_nested("sessions", "directory"))).expanduser().resolve()
+        memory_file = Path(str(cm.get_nested("memory", "internal_file"))).expanduser().resolve()
+        persist_path = Path(str(cm.get_nested("config", "persist_path"))).expanduser().resolve()
+        oauth_token = Path(str(cm.get_nested("oauth", "gemini", "token_path"))).expanduser().resolve()
+
+        assert str(sessions_dir).startswith(str(fake_home))
+        assert str(memory_file).startswith(str(fake_home))
+        assert str(persist_path).startswith(str(fake_home))
+        assert str(oauth_token).startswith(str(fake_home))
+
     def test_default_provider_exists(self, cm):
         provider = cm.get("provider")
         assert isinstance(provider, str) and len(provider) > 0
@@ -41,6 +53,7 @@ class TestDefaultLoad:
 
     def test_default_cli_section(self, cm):
         assert cm.get_nested("cli", "show_token_usage") is True
+        assert cm.get_nested("cli", "show_tool_rationale") is True
         assert cm.get_nested("cli", "show_welcome_panel") is True
         assert cm.get_nested("cli", "theme") == "default"
 
@@ -239,6 +252,44 @@ class TestGetAllDump:
         written = cm.save_active_yaml(str(target))
         assert written == target
         assert target.exists()
+
+    def test_resolve_edit_target_all_uses_active_override(self, tmp_path):
+        override_path = tmp_path / "user-config.yaml"
+        cm = ConfigManager(override_path=str(override_path))
+        target = cm.resolve_edit_target("all")
+        assert target == override_path
+        assert target.exists()
+
+    def test_resolve_edit_target_section_returns_fragment_path(self, cm):
+        target = cm.resolve_edit_target("governance")
+        assert target.name == "30-runtime-governance.yaml"
+        assert target.exists()
+
+    def test_resolve_editor_command_prefers_configured_editor(self, cm, monkeypatch):
+        cm.set("config.editor", "micro --config-dir /tmp/micro")
+        monkeypatch.setattr("k_ai.config.shutil.which", lambda name: "/usr/bin/micro" if name == "micro" else None)
+        command = cm.resolve_editor_command()
+        assert command == ["/usr/bin/micro", "--config-dir", "/tmp/micro"]
+
+    def test_resolve_editor_command_falls_through_envs_until_valid(self, cm, monkeypatch):
+        monkeypatch.setenv("K_AI_EDITOR", "missing-editor --wait")
+        monkeypatch.setenv("VISUAL", "vim -f")
+        monkeypatch.setenv("EDITOR", "nano")
+        monkeypatch.setattr(
+            "k_ai.config.shutil.which",
+            lambda name: "/usr/bin/vim" if name == "vim" else None,
+        )
+        command = cm.resolve_editor_command()
+        assert command == ["/usr/bin/vim", "-f"]
+
+    def test_resolve_editor_command_raises_if_no_editor_exists(self, cm, monkeypatch):
+        cm.set("config.editor", "missing-editor")
+        monkeypatch.delenv("K_AI_EDITOR", raising=False)
+        monkeypatch.delenv("VISUAL", raising=False)
+        monkeypatch.delenv("EDITOR", raising=False)
+        monkeypatch.setattr("k_ai.config.shutil.which", lambda name: None)
+        with pytest.raises(FileNotFoundError):
+            cm.resolve_editor_command()
 
 
 # ---------------------------------------------------------------------------

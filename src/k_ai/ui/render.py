@@ -401,6 +401,7 @@ def render_tool_proposal(
     spec: ToolDisplaySpec,
     sections: Sequence[Tuple[str, object]],
     rationale: str = "",
+    show_rationale: bool = True,
     requires_approval: bool = True,
 ) -> None:
     """Display a proposed tool call with rationale and exact JSON arguments."""
@@ -408,10 +409,10 @@ def render_tool_proposal(
 
     parts = []
 
-    if rationale:
+    if show_rationale and rationale:
         parts.append(Panel(
             render_content(rationale, "rich"),
-            title="[bold cyan]Rationale[/bold cyan]",
+            title="[bold cyan]Justification[/bold cyan]",
             border_style="cyan",
             expand=True,
             padding=(0, 1),

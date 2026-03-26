@@ -3,6 +3,7 @@
 Shared pytest fixtures and helpers for the k-ai test suite.
 """
 import pytest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -13,6 +14,45 @@ from k_ai.llm_core import LiteLLMDriver
 # ---------------------------------------------------------------------------
 # Core fixtures
 # ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def isolated_test_home(tmp_path, monkeypatch):
+    """
+    Force every test to resolve "~" inside a private temporary home.
+
+    This prevents accidental reads/writes to the developer's real ~/.k-ai,
+    ~/.k_ai, token files, config files, or session directories.
+    """
+    fake_home = tmp_path / "home"
+    fake_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(fake_home / ".config"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(fake_home / ".local" / "share"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(fake_home / ".cache"))
+    monkeypatch.chdir(tmp_path)
+    assert Path("~").expanduser().resolve() == fake_home.resolve()
+    return fake_home
+
+
+@pytest.fixture(autouse=True)
+def isolated_test_secrets(monkeypatch):
+    """
+    Ensure tests never depend on real API keys or login-shell secrets.
+
+    The suite should be hermetic: providers can initialize against dummy values,
+    and no test should accidentally consume the developer's actual credentials.
+    """
+    dummy_keys = {
+        "MISTRAL_API_KEY": "test-mistral-key",
+        "ANTHROPIC_API_KEY": "test-anthropic-key",
+        "OPENAI_API_KEY": "test-openai-key",
+        "GROQ_API_KEY": "test-groq-key",
+        "GEMINI_API_KEY": "test-gemini-key",
+    }
+    for name, value in dummy_keys.items():
+        monkeypatch.setenv(name, value)
+
 
 @pytest.fixture
 def cm():

@@ -5,6 +5,13 @@
 config:
   # Default path used by /config save and chat-side config persistence.
   persist_path: "~/.k-ai/config.yaml"
+  # Preferred editor used by `k-ai config edit`.
+  # If empty, runtime falls back to:
+  #   1. $K_AI_EDITOR
+  #   2. $VISUAL
+  #   3. $EDITOR
+  #   4. nano
+  editor: ""
 
 
 # ==============================================================================
@@ -337,5 +344,8 @@ tools:
   qmd_search:
     enabled: true
     limit: 5
+    query_timeout: 180
+    keyword_timeout: 30
+    vector_timeout: 30
     # Restrict session/history retrieval to the dedicated k-ai collection.
     session_collection: "k-ai"

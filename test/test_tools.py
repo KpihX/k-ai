@@ -3,6 +3,7 @@
 Tests for the internal tool system: registry, tool execution, tool definitions.
 """
 import pytest
+import sys
 from unittest.mock import MagicMock, AsyncMock
 from pathlib import Path
 
@@ -16,7 +17,7 @@ from k_ai.tools.meta import (
 )
 from k_ai.tools.memory_tools import MemoryAddTool, MemoryListTool, MemoryRemoveTool
 from k_ai.tools.external import PythonExecTool, ShellExecTool
-from k_ai.tools.qmd import QmdGetTool, QmdSearchTool
+from k_ai.tools.qmd import QmdGetTool, QmdQueryTool, QmdSearchTool
 from k_ai.models import Message, MessageRole, ToolResult
 from k_ai.memory import MemoryStore
 from k_ai.session_store import SessionStore
@@ -24,13 +25,15 @@ from k_ai.config import ConfigManager
 
 
 @pytest.fixture
-def ctx(tmp_path):
+def ctx(tmp_path, monkeypatch):
     """Build a ToolContext with real stores but mocked callbacks."""
     cm = ConfigManager()
+    cm.set("tools.python_exec.sandbox_dir", str(tmp_path / "sandbox"))
     mem = MemoryStore(tmp_path / "MEMORY.json")
     mem.load()
     ss = SessionStore(tmp_path / "sessions")
     ss.init()
+    monkeypatch.setattr(PythonExecTool, "_ensure_sandbox", AsyncMock(return_value=sys.executable))
 
     return ToolContext(
         config=cm,
@@ -383,6 +386,25 @@ class TestExternalTools:
 
 
 class TestQmdTools:
+    @pytest.mark.asyncio
+    async def test_qmd_query_uses_configured_timeout(self, ctx, monkeypatch):
+        captured = {}
+
+        async def fake_run_qmd(*args, timeout=60):
+            captured["args"] = args
+            captured["timeout"] = timeout
+            return True, "[]"
+
+        monkeypatch.setattr("k_ai.tools.qmd._run_qmd", fake_run_qmd)
+        ctx.config.set("tools.qmd_search.query_timeout", 180)
+
+        tool = QmdQueryTool()
+        result = await tool.execute({"query": "miami open"}, ctx)
+
+        assert result.success is True
+        assert captured["args"][:2] == ("query", "miami open")
+        assert captured["timeout"] == 180
+
     @pytest.mark.asyncio
     async def test_qmd_get_resolves_short_session_id_to_indexed_jsonl(self, ctx, monkeypatch):
         meta = ctx.session_store.create_session()

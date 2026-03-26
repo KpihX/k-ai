@@ -14,6 +14,11 @@ cli:
   # Any Rich spinner name is accepted; invalid names fall back safely at runtime.
   thinking_indicator: "clock"
 
+  # Show a human-readable justification panel before each tool execution.
+  # If the model does not provide one, k-ai derives a fallback rationale from
+  # the tool description and main input so the approval panel stays transparent.
+  show_tool_rationale: true
+
   # Show the runtime banner at launch.
   show_welcome_panel: true
 
@@ -24,7 +29,7 @@ cli:
   render_mode: "rich"
 
   # Maximum characters shown for a tool result in the UI panel.
-  tool_result_max_display: 500
+  tool_result_max_display: 2000
 
   # Maximum characters from a tool result kept in history sent back to the LLM.
   # This protects against prompt bloat and provider TPM/rate spikes.
@@ -60,6 +65,16 @@ prompts:
     to perform a meta-action (start new session, resume old one, inspect or change
     settings or limits, manage memory, inspect runtime transparency, exit, etc.),
     propose the appropriate tool instead of guessing.
+    Prefer tool-backed verification over your own memory whenever a tool can
+    confirm the answer. Use python_exec for deterministic reasoning,
+    arithmetic, algebra, matrix work, symbolic checks, and any calculation
+    that should not rely on mental math. Use shell_exec for local system,
+    filesystem, environment, and command-output questions that can be checked
+    directly. Use exa_search for factual claims that may need confirmation,
+    especially when recency or external verification matters. Do not rely only
+    on memory when one of these tools can verify the claim. If no suitable
+    tool is available, answer carefully and state the uncertainty instead of
+    pretending certainty.
     When the user refers to session ordering using words like first/last,
     premier/dernier, top/bottom, interpret that relative to the visible
     session table order. The table is shown newest first from top to bottom,
@@ -73,7 +88,8 @@ prompts:
     clearly drifting into a different dominant intent, propose switch_session
     instead of mixing unrelated work into the same thread.
     The user will validate or reject your proposals. For normal questions,
-    just answer directly.
+    answer directly only after checking whether a deterministic or verification
+    tool should be used first.
 
   # Boot prompt used when recent sessions are already shown in the UI.
   boot_with_sessions: >-

@@ -1203,12 +1203,17 @@ class ChatSession:
             ("Protected", str(bool(approval["protected"]))),
         ]
         proposal_sections = [("Approval Policy", approval_rows)] + tool.proposal_sections(tc.arguments or {}, self._tool_ctx)
+        show_rationale = bool(self.cm.get_nested("cli", "show_tool_rationale", default=True))
+        display_rationale = (rationale or "").strip()
+        if show_rationale and not display_rationale:
+            display_rationale = tool.proposal_rationale(tc.arguments or {})
 
         render_tool_proposal(
             self.console,
             tool.display_spec(),
             proposal_sections,
-            rationale=rationale,
+            rationale=display_rationale,
+            show_rationale=show_rationale,
             requires_approval=needs_confirmation,
         )
 

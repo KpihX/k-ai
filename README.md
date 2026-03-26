@@ -39,6 +39,21 @@ It is designed around one principle: the chat loop, the slash commands, and the 
 - Robust interruption handling for prompt input, generation, and tool execution.
 - Split default config fragments with cached loading for better maintainability and lower parse overhead.
 
+## Problem-First Docs
+
+Long-form architecture docs now live in the standalone docs site:
+
+- GitHub Pages: `https://kpihx.github.io/k-ai-docs/`
+- Source repo: `https://github.com/KpihX/k-ai-docs`
+
+They are written in the same spirit as `tutos_live`:
+
+- problem first
+- real examples
+- ASCII diagrams
+- request payload examples
+- session / memory / tool-governance workflows
+
 ## Quick Start
 
 ```bash
@@ -129,6 +144,28 @@ Export only one or several sections to build a minimal override file:
 k-ai config get -o prompts.yaml --section ui
 k-ai config get -o providers-and-tools.yaml --section models --section governance
 ```
+
+Open the active config or one built-in fragment in your editor:
+
+```bash
+k-ai config edit all
+k-ai config edit ui
+k-ai config edit governance
+/config edit governance
+```
+
+Editor resolution order:
+
+- `config.editor`
+- `K_AI_EDITOR`
+- `VISUAL`
+- `EDITOR`
+- `nano`
+
+Tool proposal transparency:
+
+- `cli.show_tool_rationale: true` keeps a justification panel visible before each tool.
+- if the model emits no explanation, `k-ai` derives a fallback rationale from the tool description and main input.
 
 OAuth note:
 

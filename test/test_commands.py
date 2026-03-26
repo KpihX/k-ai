@@ -85,6 +85,22 @@ class TestCommandHandler:
         assert session_for_commands.console.print.called
 
     @pytest.mark.asyncio
+    async def test_config_edit_opens_requested_fragment(self, session_for_commands):
+        handler = CommandHandler(session_for_commands)
+        session_for_commands.cm.set("config.editor", "nano")
+
+        with (
+            patch.object(session_for_commands.cm, "resolve_editor_command", return_value=["/usr/bin/nano"]),
+            patch("k_ai.commands.subprocess.run") as run_mock,
+        ):
+            await handler.handle("/config edit governance")
+
+        run_mock.assert_called_once()
+        args = run_mock.call_args.args[0]
+        assert args[0] == "/usr/bin/nano"
+        assert args[1].endswith("30-runtime-governance.yaml")
+
+    @pytest.mark.asyncio
     async def test_digest_routes_through_internal_tool_executor(self, session_for_commands):
         handler = CommandHandler(session_for_commands)
         session_for_commands._execute_internal_tool = AsyncMock(

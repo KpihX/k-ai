@@ -160,6 +160,7 @@ class QmdQueryTool(InternalTool):
         n = arguments.get("num_results", cfg.get("limit", 5))
         collection = _resolve_qmd_collection(arguments.get("collection"), query, ctx)
         full = arguments.get("full", False)
+        timeout = int(cfg.get("query_timeout", 180))
 
         args = ["query", query, "-n", str(n), "--json"]
         if collection:
@@ -167,7 +168,7 @@ class QmdQueryTool(InternalTool):
         if full:
             args.append("--full")
 
-        ok, out = await _run_qmd(*args, timeout=90)
+        ok, out = await _run_qmd(*args, timeout=timeout)
         data = None
         if ok:
             try:
@@ -214,12 +215,13 @@ class QmdSearchTool(InternalTool):
         query = arguments.get("query", "")
         n = arguments.get("num_results", cfg.get("limit", 5))
         collection = _resolve_qmd_collection(arguments.get("collection"), query, ctx)
+        timeout = int(cfg.get("keyword_timeout", 30))
 
         args = ["search", query, "-n", str(n), "--json"]
         if collection:
             args.extend(["-c", collection])
 
-        ok, out = await _run_qmd(*args, timeout=30)
+        ok, out = await _run_qmd(*args, timeout=timeout)
         data = None
         if ok:
             try:
@@ -258,12 +260,13 @@ class QmdVsearchTool(InternalTool):
         query = arguments.get("query", "")
         n = arguments.get("num_results", cfg.get("limit", 5))
         collection = _resolve_qmd_collection(arguments.get("collection"), query, ctx)
+        timeout = int(cfg.get("vector_timeout", 30))
 
         args = ["vsearch", query, "-n", str(n), "--json"]
         if collection:
             args.extend(["-c", collection])
 
-        ok, out = await _run_qmd(*args, timeout=30)
+        ok, out = await _run_qmd(*args, timeout=timeout)
         data = None
         if ok:
             try:

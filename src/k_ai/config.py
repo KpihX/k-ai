@@ -7,6 +7,9 @@ Handles loading, merging, and live editing of configuration with a clear overrid
   3. Inline kwargs      (ConfigManager(temperature=0.9, provider="openai"))
 """
 import copy
+import os
+import shlex
+import shutil
 import yaml
 from functools import lru_cache
 from pathlib import Path
@@ -369,6 +372,55 @@ class ConfigManager:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(self.dump_yaml(), encoding="utf-8")
         return target
+
+    def resolve_edit_target(self, target: Optional[str] = None) -> Path:
+        """
+        Resolve which YAML file should be opened by `config edit`.
+
+        Targets:
+          - None / all / active / user / override -> runtime override/persisted file
+          - models / ui / sessions / governance   -> built-in split fragment
+        """
+        name = str(target or "all").strip().lower()
+        if name in {"", "all", "active", "user", "override"}:
+            return self.save_active_yaml()
+        normalized = self.normalize_default_sections([name])[0]
+        info = self.default_config_sections[normalized]
+        return Path(info["file"])
+
+    def resolve_editor_command(self) -> List[str]:
+        """
+        Return the editor command to use for `config edit`.
+
+        Resolution order:
+          1. config.editor
+          2. $K_AI_EDITOR
+          3. $VISUAL
+          4. $EDITOR
+          5. nano
+        """
+        candidates = [
+            str(self.get_nested("config", "editor", default="") or "").strip(),
+            os.environ.get("K_AI_EDITOR", "").strip(),
+            os.environ.get("VISUAL", "").strip(),
+            os.environ.get("EDITOR", "").strip(),
+            "nano",
+        ]
+        first_nonempty = ""
+        for raw in candidates:
+            if not raw:
+                continue
+            first_nonempty = first_nonempty or raw
+            command = shlex.split(raw)
+            if not command:
+                continue
+            binary = shutil.which(command[0])
+            if binary:
+                command[0] = binary
+                return command
+        raise FileNotFoundError(
+            f"Editor '{first_nonempty or 'nano'}' not found. Set config.editor, K_AI_EDITOR, VISUAL, or EDITOR to a valid editor."
+        )
 
     # ------------------------------------------------------------------
     # Provider helpers (used by llm_core)
