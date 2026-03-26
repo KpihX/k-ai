@@ -18,6 +18,14 @@ from ..ui_theme import resolve_syntax_theme
 from .base import InternalTool, ToolContext, ToolRegistry
 
 
+def _positive_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+        return parsed if parsed > 0 else int(default)
+    except (TypeError, ValueError):
+        return int(default)
+
+
 class ExaSearchTool(InternalTool):
     name = "exa_search"
     display_name = "Web Search"
@@ -52,7 +60,8 @@ class ExaSearchTool(InternalTool):
             return ToolResult(success=False, message=f"{api_key_var} not found.")
 
         query = arguments.get("query", "")
-        num_results = arguments.get("num_results", tool_cfg.get("num_results", 5))
+        default_num_results = _positive_int(tool_cfg.get("num_results", 5), 5)
+        num_results = _positive_int(arguments.get("num_results", default_num_results), default_num_results)
 
         try:
             import httpx

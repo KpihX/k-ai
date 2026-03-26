@@ -45,6 +45,14 @@ async def _run_qmd(*args: str, timeout: int = 60) -> tuple[bool, str]:
         return False, str(e)
 
 
+def _positive_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+        return parsed if parsed > 0 else int(default)
+    except (TypeError, ValueError):
+        return int(default)
+
+
 _SESSION_ID_RE = re.compile(r"\b([0-9a-f]{8,12})\b", re.IGNORECASE)
 
 
@@ -167,7 +175,8 @@ class QmdQueryTool(InternalTool):
             return disabled
         cfg = ctx.config.get_nested("tools", "qmd", default={})
         query = arguments.get("query", "")
-        n = arguments.get("num_results", cfg.get("limit", 5))
+        default_n = _positive_int(cfg.get("limit", 5), 5)
+        n = _positive_int(arguments.get("num_results", default_n), default_n)
         collection = _resolve_qmd_collection(arguments.get("collection"), query, ctx)
         full = arguments.get("full", False)
         timeout = int(cfg.get("query_timeout", 180))
@@ -195,7 +204,8 @@ class QmdQueryTool(InternalTool):
         table.add_column("value")
         table.add_row("Query", str(arguments.get("query", "")))
         table.add_row("Collection", _session_collection(ctx))
-        table.add_row("Results", str(arguments.get("num_results", ctx.config.get_nested("tools", "qmd", "limit", default=5))))
+        default_n = _positive_int(ctx.config.get_nested("tools", "qmd", "limit", default=5), 5)
+        table.add_row("Results", str(_positive_int(arguments.get("num_results", default_n), default_n)))
         return [("Search Request", table)]
 
     def result_renderable(self, result: ToolResult, max_display_length: int, ctx: ToolContext) -> Any:
@@ -226,7 +236,8 @@ class QmdSearchTool(InternalTool):
             return disabled
         cfg = ctx.config.get_nested("tools", "qmd", default={})
         query = arguments.get("query", "")
-        n = arguments.get("num_results", cfg.get("limit", 5))
+        default_n = _positive_int(cfg.get("limit", 5), 5)
+        n = _positive_int(arguments.get("num_results", default_n), default_n)
         collection = _resolve_qmd_collection(arguments.get("collection"), query, ctx)
         timeout = int(cfg.get("keyword_timeout", 30))
 
@@ -274,7 +285,8 @@ class QmdVsearchTool(InternalTool):
             return disabled
         cfg = ctx.config.get_nested("tools", "qmd", default={})
         query = arguments.get("query", "")
-        n = arguments.get("num_results", cfg.get("limit", 5))
+        default_n = _positive_int(cfg.get("limit", 5), 5)
+        n = _positive_int(arguments.get("num_results", default_n), default_n)
         collection = _resolve_qmd_collection(arguments.get("collection"), query, ctx)
         timeout = int(cfg.get("vector_timeout", 30))
 

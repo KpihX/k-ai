@@ -18,6 +18,7 @@ from k_ai.tools.meta import (
 )
 from k_ai.tools.memory_tools import MemoryAddTool, MemoryListTool, MemoryRemoveTool
 from k_ai.tools.external import (
+    ExaSearchTool,
     PythonExecTool,
     ShellExecTool,
     PythonSandboxPackagesTool,
@@ -468,6 +469,45 @@ class TestExternalTools:
 
 class TestQmdTools:
     @pytest.mark.asyncio
+    async def test_exa_search_num_results_uses_argument_or_config_default(self, ctx, monkeypatch):
+        captured = {}
+
+        class FakeResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"results": []}
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def post(self, url, headers=None, json=None):
+                captured["payload"] = json
+                return FakeResponse()
+
+        monkeypatch.setattr("k_ai.tools.external.resolve_secret", lambda _name: ("test-key", "mock"))
+        monkeypatch.setattr("httpx.AsyncClient", FakeClient)
+
+        ctx.config.set("tools.exa.num_results", 7)
+        tool = ExaSearchTool()
+
+        result = await tool.execute({"query": "tennis"}, ctx)
+        assert result.success is True
+        assert captured["payload"]["num_results"] == 7
+
+        result = await tool.execute({"query": "tennis", "num_results": 3}, ctx)
+        assert result.success is True
+        assert captured["payload"]["num_results"] == 3
+
+    @pytest.mark.asyncio
     async def test_qmd_query_uses_configured_timeout(self, ctx, monkeypatch):
         captured = {}
 
@@ -485,6 +525,27 @@ class TestQmdTools:
         assert result.success is True
         assert captured["args"][:2] == ("query", "miami open")
         assert captured["timeout"] == 180
+
+    @pytest.mark.asyncio
+    async def test_qmd_query_num_results_uses_argument_or_config_default(self, ctx, monkeypatch):
+        captured = {}
+
+        async def fake_run_qmd(*args, timeout=60):
+            captured["args"] = args
+            return True, "[]"
+
+        monkeypatch.setattr("k_ai.tools.qmd._run_qmd", fake_run_qmd)
+        ctx.config.set("tools.qmd.limit", 6)
+
+        tool = QmdQueryTool()
+
+        result = await tool.execute({"query": "miami open"}, ctx)
+        assert result.success is True
+        assert captured["args"][:4] == ("query", "miami open", "-n", "6")
+
+        result = await tool.execute({"query": "miami open", "num_results": 2}, ctx)
+        assert result.success is True
+        assert captured["args"][:4] == ("query", "miami open", "-n", "2")
 
     @pytest.mark.asyncio
     async def test_qmd_get_resolves_short_session_id_to_indexed_jsonl(self, ctx, monkeypatch):

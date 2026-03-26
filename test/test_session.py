@@ -761,6 +761,44 @@ class TestTurnRollback:
         assert persisted == []
 
     @pytest.mark.asyncio
+    async def test_process_message_interrupt_after_partial_content_keeps_user_and_partial_assistant(self, session):
+        async def _stream(messages, config=None, tools=None):
+            yield CompletionChunk(delta_content="Premiere partie")
+            raise KeyboardInterrupt
+            yield  # pragma: no cover
+
+        session.llm.chat_stream = _stream
+        session.console = MagicMock()
+        session._tool_ctx.console = session.console
+        session._do_new_session()
+
+        await session._process_message("question interrompue")
+
+        assert len(session.history) == 2
+        assert session.history[0].role == MessageRole.USER
+        assert session.history[0].content == "question interrompue"
+        assert session.history[1].role == MessageRole.ASSISTANT
+        assert "Premiere partie" in session.history[1].content
+        assert "[Response interrupted by user]" in session.history[1].content
+
+    @pytest.mark.asyncio
+    async def test_process_message_interrupt_before_any_token_keeps_user_message(self, session):
+        async def _stream(messages, config=None, tools=None):
+            raise KeyboardInterrupt
+            yield  # pragma: no cover
+
+        session.llm.chat_stream = _stream
+        session.console = MagicMock()
+        session._tool_ctx.console = session.console
+        session._do_new_session()
+
+        await session._process_message("question sans reponse")
+
+        assert len(session.history) == 1
+        assert session.history[0].role == MessageRole.USER
+        assert session.history[0].content == "question sans reponse"
+
+    @pytest.mark.asyncio
     async def test_llm_error_after_tool_execution_rolls_back_whole_turn(self, session):
         tc = ToolCall(id="c1", function_name="clear_screen", arguments={})
         call_count = 0

@@ -58,6 +58,7 @@ from .tool_capabilities import capability_enabled, capability_for_tool, list_cap
 # Max rounds in the agentic tool loop per user message
 _MAX_TOOL_ROUNDS = 10
 _MAX_EMPTY_ASSISTANT_ROUNDS = 2
+_INTERRUPTED_RESPONSE_MARKER = "[Response interrupted by user]"
 
 
 class ChatSession:
@@ -1308,6 +1309,8 @@ class ChatSession:
         tools = self._get_active_tools(excluded_tools=blocked_tools)
         empty_rounds = 0
         executed_tool_cache: Dict[str, str] = {}
+        pending_tool_calls: List[ToolCall] = []
+        full_content = ""
 
         try:
             for _round in range(_MAX_TOOL_ROUNDS):
@@ -1321,7 +1324,7 @@ class ChatSession:
                         border_style="dim",
                     ))
 
-                pending_tool_calls: List[ToolCall] = []
+                pending_tool_calls = []
                 full_content = ""
                 with self._interrupt_scope(allow_escape=True):
                     with StreamingRenderer(
@@ -1335,6 +1338,7 @@ class ChatSession:
                             if self._interrupt_requested:
                                 raise KeyboardInterrupt
                             renderer.update(chunk)
+                            full_content = renderer.full_content
                             if chunk.tool_calls:
                                 pending_tool_calls.extend(chunk.tool_calls)
                         full_content = renderer.full_content
@@ -1473,7 +1477,10 @@ class ChatSession:
                 "Use [cyan]/compact[/cyan] or [cyan]/clear[/cyan]."
             )
         except KeyboardInterrupt:
-            self._rollback_turn(turn_start)
+            self._persist_interrupted_turn_state(
+                partial_content=full_content,
+                pending_tool_calls=pending_tool_calls,
+            )
             render_notice(self.console, "Génération interrompue. La main vous est rendue.", level="warning", title="Interruption")
         except ProviderAuthenticationError as e:
             self._rollback_turn(turn_start)
@@ -1563,6 +1570,31 @@ class ChatSession:
         if len(content) <= max_len:
             return content
         return content[:max_len] + "\n...(truncated for history)"
+
+    def _build_interrupted_assistant_content(self, content: str) -> str:
+        clean = content.rstrip()
+        if not clean:
+            return _INTERRUPTED_RESPONSE_MARKER
+        if clean.endswith(_INTERRUPTED_RESPONSE_MARKER):
+            return clean
+        return f"{clean}\n\n{_INTERRUPTED_RESPONSE_MARKER}"
+
+    def _persist_interrupted_turn_state(
+        self,
+        partial_content: str,
+        pending_tool_calls: Optional[List[ToolCall]] = None,
+    ) -> None:
+        if pending_tool_calls:
+            return
+        if not partial_content.strip():
+            return
+        interrupted_msg = Message(
+            role=MessageRole.ASSISTANT,
+            content=self._build_interrupted_assistant_content(partial_content),
+        )
+        self.history.append(interrupted_msg)
+        self._persist_message(interrupted_msg)
+        self._sync_session_totals()
 
     def _rollback_turn(self, turn_start: int) -> None:
         """Rollback any in-memory and persisted messages added during the current turn."""
