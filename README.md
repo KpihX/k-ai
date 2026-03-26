@@ -43,8 +43,9 @@ It is designed around one principle: the chat loop, the slash commands, and the 
 
 Long-form architecture docs now live in the standalone docs site:
 
-- GitHub Pages: `https://kpihx.github.io/k-ai-docs/`
-- Source repo: `https://github.com/KpihX/k-ai-docs`
+- Live docs site: [kpihx.github.io/k-ai-docs](https://kpihx.github.io/k-ai-docs/)
+- Docs source repo: [github.com/KpihX/k-ai-docs](https://github.com/KpihX/k-ai-docs)
+- Local docs entrypoint: [`docs/README.md`](docs/README.md)
 
 They are written in the same spirit as `tutos_live`:
 
@@ -65,8 +66,8 @@ k-ai chat
 
 Installation profiles:
 
-- editable defaults: [install/install.yaml](/home/kpihx/Work/AI/k_ai/install/install.yaml)
-- installer docs: [install/README.md](/home/kpihx/Work/AI/k_ai/install/README.md)
+- editable defaults: [`install/install.yaml`](install/install.yaml)
+- installer docs: [`install/README.md`](install/README.md)
 
 Installer behavior highlights:
 
@@ -92,6 +93,20 @@ Development:
 uv sync --dev
 uv run pytest -q
 uv run k-ai chat
+```
+
+Published package identity:
+
+- PyPI distribution name: `kpihx-ai`
+- import module: `k_ai`
+- installed CLI command: `k-ai`
+
+If you install from PyPI instead of from source:
+
+```bash
+uv tool install kpihx-ai
+# or
+pipx install kpihx-ai
 ```
 
 ## Installation and Removal

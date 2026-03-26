@@ -46,6 +46,8 @@ The format is based on Keep a Changelog.
 - Tool availability is now modeled by capability family, not by per-tool duplicated `enabled` flags.
 - Doctor now audits config coherence and tool/catalog alignment instead of only reporting shallow environment state.
 - Release automation now includes `make push-docs`, `make publish-docs`, and `make release`.
+- Package publication now uses a login-shell-aware `make publish` flow with `UV_PUBLISH_TOKEN` preflight, clean `dist/`, and duplicate-safe upload checks.
+- PyPI distribution identity is now `kpihx-ai`, while the import module stays `k_ai` and the CLI stays `k-ai`.
 
 ### Fixed
 

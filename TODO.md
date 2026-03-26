@@ -6,6 +6,8 @@
 - [x] Add live capability toggles shared by install, slash commands, and LLM tools.
 - [x] Harden doctor with coherence audits, tool/catalog alignment, and backup-first resets.
 - [x] Add release automation targets for package publishing and docs pushing/publishing.
+- [x] Make `make publish` robust with login-shell token resolution, clean builds, and duplicate-safe uploads.
+- [x] Publish the package on PyPI under a unique distribution name while keeping `k_ai` / `k-ai` locally.
 - [x] Unify tool proposal/result UI.
 - [x] Restrict QMD session retrieval to the `k-ai` collection.
 - [x] Add session digest generation with themes.

@@ -1,10 +1,16 @@
 # k-ai Installation Profiles
 
-This directory contains the installation-time defaults used by [install.sh](/home/kpihx/Work/AI/k_ai/scripts/install.sh).
+This directory contains the installation-time defaults used by [`scripts/install.sh`](../scripts/install.sh).
+
+Quick navigation:
+
+- main project README: [`../README.md`](../README.md)
+- local docs hub: [`../docs/README.md`](../docs/README.md)
+- live docs site: [kpihx.github.io/k-ai-docs](https://kpihx.github.io/k-ai-docs/)
 
 Main file:
 
-- [install.yaml](/home/kpihx/Work/AI/k_ai/install/install.yaml)
+- [`install.yaml`](install.yaml)
 
 Use cases:
 

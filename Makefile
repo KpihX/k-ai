@@ -2,6 +2,8 @@
 
 .PHONY: help install purge test check build publish push push-docs publish-docs release status
 
+ZSH_LOGIN = zsh -lc
+
 help:
 	@echo "Available targets:"
 	@echo "  install  - run scripts/install.sh"
@@ -30,10 +32,15 @@ check:
 	@uv run pytest -q
 
 build:
+	@rm -rf dist
 	@uv build
 
 publish: build
-	@uv publish
+	@$(ZSH_LOGIN) 'if ! env | grep -q "^UV_PUBLISH_TOKEN="; then \
+		echo "UV_PUBLISH_TOKEN is not available in the login shell. Check bw-env / shell bootstrap."; \
+		exit 1; \
+	fi; \
+	uv publish --check-url https://pypi.org/simple'
 
 push-docs:
 	@$(MAKE) -C docs push
