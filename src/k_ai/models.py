@@ -152,6 +152,7 @@ class SessionMetadata(BaseModel):
     model: str = ""
     message_count: int = 0
     total_tokens: int = 0
+    themes: List[str] = []
 
 
 # ---------------------------------------------------------------------------

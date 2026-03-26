@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Dict, List, Optional
 
 from rich.panel import Panel
+from rich.prompt import Confirm
 from rich.syntax import Syntax
 from rich.table import Table
 
@@ -27,9 +28,10 @@ SLASH_COMMANDS = [
     "/help", "/exit", "/quit", "/bye",
     "/new", "/load", "/sessions", "/rename", "/delete",
     "/compact", "/clear", "/reset",
+    "/digest", "/extract",
     "/history", "/model", "/provider", "/system",
     "/set", "/settings", "/status",
-    "/config show", "/config get",
+    "/config show", "/config save", "/config get",
     "/save", "/tokens",
     "/memory list", "/memory add", "/memory remove",
     "/doctor",
@@ -54,14 +56,17 @@ _HELP: dict[str, str] = {
     "/compact": "Compress conversation history (summarise old messages).",
     "/clear": "Clear the terminal screen (history untouched).",
     "/reset": "Clear conversation history (start over in this session).",
+    "/digest [id]": "Generate or refresh summary + themes for current or given session.",
+    "/extract <id> [offset] [limit]": "Extract a window of messages from a session.",
     "/history": "Show message count and first/last messages.",
-    "/model [name]": "Show or switch the model.",
-    "/provider [name] [model]": "Show or switch provider (+ optional model).",
+    "/model [name]": "Show or switch the active model override.",
+    "/provider [name] [model]": "Show or switch provider (+ optional model override).",
     "/system [prompt|off]": "Show, set, or disable the system prompt.",
     "/set <key> <value>": "Live-edit any config key.",
-    "/settings": "Display all active settings.",
-    "/status": "Full runtime status: provider, keys, token usage.",
-    "/config show": "Print the full active config as YAML.",
+    "/settings [prefix]": "List active config keys (optionally filtered by prefix).",
+    "/status": "Full runtime transparency: provider, context window, tokens, limits.",
+    "/config show [key]": "Inspect one active config key or the full merged config.",
+    "/config save [path]": "Persist the active merged config to disk.",
     "/config get [path]": "Export the default config template.",
     "/save [filename]": "Save conversation to a JSON file.",
     "/tokens": "Show cumulative session token usage.",
@@ -86,6 +91,18 @@ class CommandHandler:
     def __init__(self, session: "ChatSession"):
         self.session = session
         self.console = session.console
+
+    async def _run_internal_tool(self, tool_name: str, arguments: Dict[str, object]) -> bool:
+        tool = self.session.tool_registry.get(tool_name)
+        if not tool:
+            from .ui import render_notice
+            render_notice(self.console, f"Tool {tool_name} not found.", level="error")
+            return True
+
+        from .models import ToolCall
+        tool_call = ToolCall(id=f"cmd_{tool_name}", function_name=tool_name, arguments=dict(arguments))
+        await self.session._execute_internal_tool(tool_call, rationale="Triggered explicitly via slash command.")
+        return True
 
     async def handle(self, text: str) -> bool:
         """
@@ -114,6 +131,8 @@ class CommandHandler:
             "clear": self._clear,
             "cls": self._clear,
             "reset": self._reset,
+            "digest": self._digest,
+            "extract": self._extract,
             "history": self._history,
             "model": self._model,
             "provider": self._provider,
@@ -153,9 +172,14 @@ class CommandHandler:
 
     async def _load(self, args: List[str]) -> bool:
         if not args:
-            self.console.print("[yellow]Usage:[/yellow] /load <session_id>")
+            self.console.print("[yellow]Usage:[/yellow] /load <session_id> [last_n]")
             return True
-        self.session._do_load_session(args[0])
+        try:
+            last_n = int(args[1]) if len(args) > 1 else None
+        except ValueError:
+            self.console.print("[red]last_n must be a number.[/red]")
+            return True
+        self.session._do_load_session(args[0], last_n=last_n)
         return True
 
     async def _sessions(self, args: List[str]) -> bool:
@@ -181,12 +205,7 @@ class CommandHandler:
         if not args:
             self.console.print("[yellow]Usage:[/yellow] /delete <session_id>")
             return True
-        ok = self.session.session_store.delete_session(args[0])
-        if ok:
-            self.console.print(f"[green]Session deleted.[/green]")
-        else:
-            self.console.print(f"[red]Session '{args[0]}' not found.[/red]")
-        return True
+        return await self._run_internal_tool("delete_session", {"session_id": args[0]})
 
     async def _compact(self, args: List[str]) -> bool:
         await self.session._do_compact()
@@ -197,9 +216,32 @@ class CommandHandler:
         return True
 
     async def _reset(self, args: List[str]) -> bool:
-        self.session.history.clear()
-        self.console.print("[green]History cleared.[/green]")
+        self.session.reset_history()
+        from .ui import render_notice
+        render_notice(self.console, "Active conversation history cleared.", level="success", title="History Reset")
         return True
+
+    async def _digest(self, args: List[str]) -> bool:
+        session_id = args[0] if args else None
+        return await self._run_internal_tool(
+            "session_digest",
+            {"session_id": session_id} if session_id else {},
+        )
+
+    async def _extract(self, args: List[str]) -> bool:
+        if not args:
+            self.console.print("[yellow]Usage:[/yellow] /extract <session_id> [offset] [limit]")
+            return True
+        payload: Dict[str, object] = {"session_id": args[0]}
+        try:
+            if len(args) > 1:
+                payload["offset"] = int(args[1])
+            if len(args) > 2:
+                payload["limit"] = int(args[2])
+        except ValueError:
+            self.console.print("[red]offset and limit must be numbers.[/red]")
+            return True
+        return await self._run_internal_tool("session_extract", payload)
 
     # ------------------------------------------------------------------
     # QMD commands
@@ -224,8 +266,6 @@ class CommandHandler:
 
         sub = args[0].lower()
         rest = args[1:]
-        ctx = self.session._tool_ctx
-
         # Map subcommand to tool name + arguments
         tool_map = {
             "query":       ("qmd_query",   lambda: {"query": " ".join(rest)}),
@@ -245,11 +285,6 @@ class CommandHandler:
             return True
 
         tool_name, build_args = tool_map[sub]
-        tool = self.session.tool_registry.get(tool_name)
-        if not tool:
-            self.console.print(f"[red]Tool {tool_name} not found.[/red]")
-            return True
-
         try:
             arguments = build_args()
         except (IndexError, ValueError) as e:
@@ -258,9 +293,7 @@ class CommandHandler:
 
         # Filter None values
         arguments = {k: v for k, v in arguments.items() if v is not None}
-        result = await tool.execute(arguments, ctx)
-        self.console.print(result.message)
-        return True
+        return await self._run_internal_tool(tool_name, arguments)
 
     # ------------------------------------------------------------------
     # Memory commands
@@ -282,17 +315,10 @@ class CommandHandler:
                 for e in entries:
                     self.console.print(f"  [cyan]#{e.id}[/cyan] {e.text}")
         elif sub == "add" and len(args) > 1:
-            text = " ".join(args[1:])
-            entry = self.session.memory.add(text)
-            self.console.print(f"[green]Remembered (#{entry.id}):[/green] {text}")
+            return await self._run_internal_tool("memory_add", {"text": " ".join(args[1:])})
         elif sub == "remove" and len(args) > 1:
             try:
-                entry_id = int(args[1])
-                removed = self.session.memory.remove(entry_id)
-                if removed:
-                    self.console.print(f"[green]Entry #{entry_id} removed.[/green]")
-                else:
-                    self.console.print(f"[red]Entry #{entry_id} not found.[/red]")
+                return await self._run_internal_tool("memory_remove", {"entry_id": int(args[1])})
             except ValueError:
                 self.console.print("[red]ID must be a number.[/red]")
         else:
@@ -339,36 +365,15 @@ class CommandHandler:
 
     async def _model(self, args: List[str]) -> bool:
         if not args:
-            self.console.print(
-                f"[dim]Model:[/dim] [bold]{self.session.llm.model_name}[/bold] "
-                f"[dim]({self.session.llm.provider_name})[/dim]"
-            )
-        else:
-            try:
-                self.session.reload_provider(model=args[0])
-                self.console.print(f"[green]Model -> {self.session.llm.model_name}[/green]")
-            except Exception as e:
-                self.console.print(f"[bold red]Error:[/bold red] {e}")
-        return True
+            return await self._run_internal_tool("runtime_status", {"mode": "compact"})
+        return await self._run_internal_tool("set_config", {"key": "model", "value": args[0]})
 
     async def _provider(self, args: List[str]) -> bool:
         if not args:
-            self.console.print(
-                f"[dim]Provider:[/dim] [bold]{self.session.llm.provider_name}[/bold]  "
-                f"[dim]Model:[/dim] [bold]{self.session.llm.model_name}[/bold]"
-            )
-        else:
-            new_provider = args[0]
-            new_model = args[1] if len(args) > 1 else None
-            try:
-                self.session.cm.set("provider", new_provider)
-                self.session.reload_provider(provider=new_provider, model=new_model)
-                self.console.print(
-                    f"[green]Provider -> {self.session.llm.provider_name}  "
-                    f"Model -> {self.session.llm.model_name}[/green]"
-                )
-            except Exception as e:
-                self.console.print(f"[bold red]Error:[/bold red] {e}")
+            return await self._run_internal_tool("runtime_status", {"mode": "compact"})
+        await self._run_internal_tool("set_config", {"key": "provider", "value": args[0]})
+        if len(args) > 1:
+            await self._run_internal_tool("set_config", {"key": "model", "value": args[1]})
         return True
 
     async def _system(self, args: List[str]) -> bool:
@@ -391,106 +396,31 @@ class CommandHandler:
         if len(args) < 2:
             self.console.print("[yellow]Usage:[/yellow] /set <key> <value>")
             return True
-        key = args[0]
-        value_str = " ".join(args[1:])
-        try:
-            self.session.cm.set(key, value_str)
-            parts = key.split(".")
-            coerced = self.session.cm.get_nested(*parts) if len(parts) > 1 else self.session.cm.get(key)
-            self.console.print(f"[green]{key}[/green] = [cyan]{coerced!r}[/cyan]")
-        except Exception as e:
-            self.console.print(f"[bold red]Error:[/bold red] {e}")
-        return True
+        return await self._run_internal_tool("set_config", {"key": args[0], "value": " ".join(args[1:])})
 
     async def _settings(self, args: List[str]) -> bool:
-        cfg = self.session.cm.get_all()
-        t = Table(title="[bold cyan]Active Settings[/bold cyan]", show_header=True, header_style="bold")
-        t.add_column("Key", style="cyan")
-        t.add_column("Value")
-
-        for key, val in cfg.items():
-            if not isinstance(val, dict):
-                t.add_row(key, str(val))
-        for key, val in cfg.get("cli", {}).items():
-            if not isinstance(val, dict):
-                t.add_row(f"cli.{key}", str(val))
-
-        t.add_row("--- runtime ---", "")
-        t.add_row("active_provider", self.session.llm.provider_name)
-        t.add_row("active_model", self.session.llm.model_name)
-        t.add_row("session_id", self.session._session_id or "(none)")
-        if self.session.system_prompt:
-            preview = self.session.system_prompt[:60] + ("..." if len(self.session.system_prompt) > 60 else "")
-            t.add_row("system_prompt", preview)
-
-        self.console.print(t)
-        return True
+        payload: Dict[str, object] = {"limit": 200}
+        if args:
+            payload["prefix"] = args[0]
+        return await self._run_internal_tool("list_config", payload)
 
     async def _status(self, args: List[str]) -> bool:
-        from rich.text import Text
-        from .secrets import get_all_key_status, get_dotenv_path
-
-        llm = self.session.llm
-        cm = self.session.cm
-        u = self.session.total_usage
-
-        rt = Table(show_header=False, box=None, padding=(0, 1))
-        rt.add_column("key", style="dim")
-        rt.add_column("value", style="bold white")
-        rt.add_row("Provider", llm.provider_name)
-        rt.add_row("Model", llm.model_name)
-        rt.add_row("Auth mode", llm.auth_mode or "n/a")
-        rt.add_row("Temperature", str(cm.get("temperature")))
-        rt.add_row("Max tokens", str(cm.get("max_tokens")))
-        rt.add_row("Stream", str(cm.get("stream")))
-        rt.add_row("Session ID", self.session._session_id or "(none)")
-        rt.add_row("History", f"{len(self.session.history)} message(s)")
-        self.console.print(Panel(rt, title="[bold cyan]Runtime[/bold cyan]", border_style="cyan"))
-
-        tt = Table(show_header=False, box=None, padding=(0, 1))
-        tt.add_column("metric", style="dim")
-        tt.add_column("count", style="bold white", justify="right")
-        tt.add_row("Input tokens", f"{u.prompt_tokens:,}")
-        tt.add_row("Output tokens", f"{u.completion_tokens:,}")
-        tt.add_row("Total tokens", f"{u.total_tokens:,}")
-        self.console.print(Panel(tt, title="[bold cyan]Tokens[/bold cyan]", border_style="cyan"))
-
-        dotenv_path = get_dotenv_path()
-        dotenv_label = f"[green]{dotenv_path}[/green]" if dotenv_path else "[dim]none[/dim]"
-        self.console.print(Panel(
-            Text.from_markup(f".env: {dotenv_label}"),
-            title="[bold cyan]Environment[/bold cyan]",
-            border_style="cyan",
-        ))
-
-        key_table = Table(title="[bold cyan]API Keys[/bold cyan]", show_header=True, header_style="bold")
-        key_table.add_column("Provider", style="cyan")
-        key_table.add_column("Env Var", style="dim")
-        key_table.add_column("Status")
-        key_table.add_column("Source")
-
-        for entry in get_all_key_status(cm.config):
-            st = "[green]set[/green]" if entry["available"] else "[red]missing[/red]"
-            key_table.add_row(entry["provider"], entry["env_var"], st, entry["source"])
-
-        self.console.print(key_table)
-        return True
+        return await self._run_internal_tool("runtime_status", {"mode": "full"})
 
     async def _config(self, args: List[str]) -> bool:
         sub = args[0].lower() if args else "get"
         if sub == "show":
-            yaml_str = self.session.cm.dump_yaml()
-            self.console.print(Panel(
-                Syntax(yaml_str, "yaml", theme="monokai", line_numbers=False),
-                title="[bold cyan]Active Configuration[/bold cyan]",
-                border_style="cyan",
-            ))
+            key = args[1] if len(args) > 1 else ""
+            payload = {"key": key} if key else {}
+            return await self._run_internal_tool("get_config", payload)
+        elif sub == "save":
+            payload = {"path": args[1]} if len(args) > 1 else {}
+            return await self._run_internal_tool("save_config", payload)
         elif sub == "get":
             target = args[1] if len(args) > 1 else "config.yaml"
             try:
                 if os.path.exists(target):
-                    self.console.print(f"[yellow]'{target}' exists. Overwrite? (y/n)[/yellow] ", end="")
-                    if input().strip().lower() != "y":
+                    if not Confirm.ask(f"Overwrite '{target}'?", console=self.console, default=False):
                         return True
                 with open(target, "w", encoding="utf-8") as f:
                     f.write(self.session.cm.get_default_yaml())
@@ -498,7 +428,7 @@ class CommandHandler:
             except Exception as e:
                 self.console.print(f"[bold red]Error:[/bold red] {e}")
         else:
-            self.console.print("[yellow]Usage:[/yellow] /config show | /config get [path]")
+            self.console.print("[yellow]Usage:[/yellow] /config show [key] | /config save [path] | /config get [path]")
         return True
 
     async def _save(self, args: List[str]) -> bool:
@@ -523,12 +453,13 @@ class CommandHandler:
         return True
 
     async def _tokens(self, args: List[str]) -> bool:
-        u = self.session.total_usage
+        u = self.session.get_token_snapshot()
         t = Table(title="[bold cyan]Token Usage[/bold cyan]")
         t.add_column("Metric", style="cyan")
         t.add_column("Count", justify="right")
-        t.add_row("Input", f"{u.prompt_tokens:,}")
-        t.add_row("Output", f"{u.completion_tokens:,}")
-        t.add_row("Total", f"{u.total_tokens:,}")
+        t.add_row("Input", f"{int(u['prompt_tokens']):,}")
+        t.add_row("Output", f"{int(u['completion_tokens']):,}")
+        t.add_row("Total", f"{int(u['total_tokens']):,}")
+        t.add_row("Source", str(u["token_source"]))
         self.console.print(t)
         return True

@@ -13,6 +13,8 @@ All tools output JSON when possible for the LLM to process.
 Session history files are automatically mapped to the QMD collection.
 """
 import asyncio
+import json
+import re
 import shutil
 from typing import Any, Dict
 
@@ -42,12 +44,100 @@ async def _run_qmd(*args: str, timeout: int = 60) -> tuple[bool, str]:
         return False, str(e)
 
 
+_SESSION_ID_RE = re.compile(r"\b([0-9a-f]{8,12})\b", re.IGNORECASE)
+
+
+def _session_collection(ctx: ToolContext) -> str:
+    return str(ctx.config.get_nested("tools", "qmd_search", "session_collection", default="k-ai"))
+
+
+def _resolve_qmd_collection(
+    collection: str | None,
+    query: str,
+    ctx: ToolContext,
+) -> str | None:
+    return _session_collection(ctx)
+
+
+def _resolve_qmd_file(file: str, ctx: ToolContext) -> str:
+    raw = file.strip()
+    if not raw:
+        return raw
+
+    if raw.startswith("#"):
+        return raw
+
+    line_suffix = ""
+    base = raw
+    if ":" in raw and not raw.startswith("qmd://"):
+        candidate_base, candidate_line = raw.rsplit(":", 1)
+        if candidate_line.isdigit():
+            base = candidate_base
+            line_suffix = f":{candidate_line}"
+
+    if base.startswith("qmd://"):
+        prefix = f"qmd://{_session_collection(ctx)}/sessions/"
+        if base.startswith(prefix):
+            session_id = base.removeprefix(prefix).strip("/")
+            meta = ctx.session_store.get_session(session_id)
+            if meta:
+                return f"qmd://{_session_collection(ctx)}/{meta.id}.jsonl{line_suffix}"
+        if not base.startswith(f"qmd://{_session_collection(ctx)}/"):
+            suffix = base.split("/", 3)[-1]
+            return f"qmd://{_session_collection(ctx)}/{suffix}{line_suffix}"
+        return raw
+
+    if base.startswith("sessions/"):
+        session_id = base.split("/", 1)[1]
+        meta = ctx.session_store.get_session(session_id)
+        if meta:
+            return f"qmd://{_session_collection(ctx)}/{meta.id}.jsonl{line_suffix}"
+
+    meta = ctx.session_store.get_session(base.removesuffix(".jsonl"))
+    if meta:
+        return f"qmd://{_session_collection(ctx)}/{meta.id}.jsonl{line_suffix}"
+
+    return raw
+
+
+def _render_qmd_hits(data: Any, fallback: str) -> Any:
+    from rich.table import Table
+    from rich.text import Text
+
+    if not isinstance(data, list) or not data:
+        return Text(fallback or "(no output)")
+
+    table = Table(show_header=True, header_style="bold", border_style="cyan")
+    table.add_column("Score", justify="right", width=7)
+    table.add_column("Title", min_width=18)
+    table.add_column("File", min_width=22)
+    table.add_column("Snippet")
+    for item in data[:8]:
+        score = item.get("score")
+        score_text = f"{score:.2f}" if isinstance(score, (int, float)) else "-"
+        snippet = item.get("snippet") or item.get("context") or item.get("body") or ""
+        snippet = snippet.replace("\n", " ")
+        if len(snippet) > 120:
+            snippet = snippet[:117] + "..."
+        table.add_row(
+            score_text,
+            str(item.get("title", item.get("docid", "(untitled)"))),
+            str(item.get("file", "-")),
+            snippet,
+        )
+    return table
+
+
 # ===================================================================
 # Search tools
 # ===================================================================
 
 class QmdQueryTool(InternalTool):
     name = "qmd_query"
+    display_name = "Hybrid Search"
+    category = "knowledge"
+    danger_level = "low"
+    accent_color = "cyan"
     description = (
         "Hybrid semantic search: auto-expands the query, combines BM25 + vectors + reranking. "
         "Best for natural language questions about past conversations or knowledge."
@@ -68,7 +158,7 @@ class QmdQueryTool(InternalTool):
         cfg = ctx.config.get_nested("tools", "qmd_search", default={})
         query = arguments.get("query", "")
         n = arguments.get("num_results", cfg.get("limit", 5))
-        collection = arguments.get("collection")
+        collection = _resolve_qmd_collection(arguments.get("collection"), query, ctx)
         full = arguments.get("full", False)
 
         args = ["query", query, "-n", str(n), "--json"]
@@ -78,11 +168,35 @@ class QmdQueryTool(InternalTool):
             args.append("--full")
 
         ok, out = await _run_qmd(*args, timeout=90)
-        return ToolResult(success=ok, message=out)
+        data = None
+        if ok:
+            try:
+                data = json.loads(out)
+            except Exception:
+                data = None
+        return ToolResult(success=ok, message=out, data=data)
+
+    def proposal_sections(self, arguments: Dict[str, Any], ctx: ToolContext) -> list[tuple[str, Any]]:
+        from rich.table import Table
+
+        table = Table(show_header=False, box=None, padding=(0, 1))
+        table.add_column("field", style="dim")
+        table.add_column("value")
+        table.add_row("Query", str(arguments.get("query", "")))
+        table.add_row("Collection", _session_collection(ctx))
+        table.add_row("Results", str(arguments.get("num_results", ctx.config.get_nested("tools", "qmd_search", "limit", default=5))))
+        return [("Search Request", table)]
+
+    def result_renderable(self, result: ToolResult, max_display_length: int, ctx: ToolContext) -> Any:
+        return _render_qmd_hits(result.data, fallback=result.message)
 
 
 class QmdSearchTool(InternalTool):
     name = "qmd_search"
+    display_name = "Keyword Search"
+    category = "knowledge"
+    danger_level = "low"
+    accent_color = "cyan"
     description = "Full-text BM25 keyword search. Fast, no LLM needed. Good for exact terms."
     parameters_schema = {
         "type": "object",
@@ -99,18 +213,34 @@ class QmdSearchTool(InternalTool):
         cfg = ctx.config.get_nested("tools", "qmd_search", default={})
         query = arguments.get("query", "")
         n = arguments.get("num_results", cfg.get("limit", 5))
-        collection = arguments.get("collection")
+        collection = _resolve_qmd_collection(arguments.get("collection"), query, ctx)
 
         args = ["search", query, "-n", str(n), "--json"]
         if collection:
             args.extend(["-c", collection])
 
         ok, out = await _run_qmd(*args, timeout=30)
-        return ToolResult(success=ok, message=out)
+        data = None
+        if ok:
+            try:
+                data = json.loads(out)
+            except Exception:
+                data = None
+        return ToolResult(success=ok, message=out, data=data)
+
+    def proposal_sections(self, arguments: Dict[str, Any], ctx: ToolContext) -> list[tuple[str, Any]]:
+        return QmdQueryTool.proposal_sections(self, arguments, ctx)
+
+    def result_renderable(self, result: ToolResult, max_display_length: int, ctx: ToolContext) -> Any:
+        return _render_qmd_hits(result.data, fallback=result.message)
 
 
 class QmdVsearchTool(InternalTool):
     name = "qmd_vsearch"
+    display_name = "Semantic Search"
+    category = "knowledge"
+    danger_level = "low"
+    accent_color = "cyan"
     description = "Vector similarity search only. Good for semantic matching without keyword dependency."
     parameters_schema = {
         "type": "object",
@@ -127,14 +257,26 @@ class QmdVsearchTool(InternalTool):
         cfg = ctx.config.get_nested("tools", "qmd_search", default={})
         query = arguments.get("query", "")
         n = arguments.get("num_results", cfg.get("limit", 5))
-        collection = arguments.get("collection")
+        collection = _resolve_qmd_collection(arguments.get("collection"), query, ctx)
 
         args = ["vsearch", query, "-n", str(n), "--json"]
         if collection:
             args.extend(["-c", collection])
 
         ok, out = await _run_qmd(*args, timeout=30)
-        return ToolResult(success=ok, message=out)
+        data = None
+        if ok:
+            try:
+                data = json.loads(out)
+            except Exception:
+                data = None
+        return ToolResult(success=ok, message=out, data=data)
+
+    def proposal_sections(self, arguments: Dict[str, Any], ctx: ToolContext) -> list[tuple[str, Any]]:
+        return QmdQueryTool.proposal_sections(self, arguments, ctx)
+
+    def result_renderable(self, result: ToolResult, max_display_length: int, ctx: ToolContext) -> Any:
+        return _render_qmd_hits(result.data, fallback=result.message)
 
 
 # ===================================================================
@@ -143,6 +285,10 @@ class QmdVsearchTool(InternalTool):
 
 class QmdGetTool(InternalTool):
     name = "qmd_get"
+    display_name = "Open Indexed Document"
+    category = "knowledge"
+    danger_level = "low"
+    accent_color = "cyan"
     description = (
         "Show a single document or a line slice from the QMD index. "
         "Use file:line format and -l N for line count. "
@@ -159,7 +305,7 @@ class QmdGetTool(InternalTool):
     requires_approval = False
 
     async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
-        file = arguments.get("file", "")
+        file = _resolve_qmd_file(arguments.get("file", ""), ctx)
         lines = arguments.get("lines")
         args = ["get", file]
         if lines:
@@ -167,9 +313,24 @@ class QmdGetTool(InternalTool):
         ok, out = await _run_qmd(*args)
         return ToolResult(success=ok, message=out)
 
+    def proposal_sections(self, arguments: Dict[str, Any], ctx: ToolContext) -> list[tuple[str, Any]]:
+        from rich.table import Table
+
+        table = Table(show_header=False, box=None, padding=(0, 1))
+        table.add_column("field", style="dim")
+        table.add_column("value")
+        table.add_row("File", _resolve_qmd_file(arguments.get("file", ""), ctx))
+        if arguments.get("lines"):
+            table.add_row("Lines", str(arguments["lines"]))
+        return [("Document Request", table)]
+
 
 class QmdMultiGetTool(InternalTool):
     name = "qmd_multi_get"
+    display_name = "Open Multiple Documents"
+    category = "knowledge"
+    danger_level = "low"
+    accent_color = "cyan"
     description = "Batch fetch multiple documents by glob pattern or comma-separated list."
     parameters_schema = {
         "type": "object",
@@ -193,6 +354,10 @@ class QmdMultiGetTool(InternalTool):
 
 class QmdLsTool(InternalTool):
     name = "qmd_ls"
+    display_name = "List Indexed Files"
+    category = "knowledge"
+    danger_level = "low"
+    accent_color = "cyan"
     description = "List indexed files in a collection or all collections."
     parameters_schema = {
         "type": "object",
@@ -206,8 +371,7 @@ class QmdLsTool(InternalTool):
     async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
         path = arguments.get("path", "")
         args = ["ls"]
-        if path:
-            args.append(path)
+        args.append(path or _session_collection(ctx))
         ok, out = await _run_qmd(*args)
         return ToolResult(success=ok, message=out)
 
@@ -218,12 +382,16 @@ class QmdLsTool(InternalTool):
 
 class QmdCollectionListTool(InternalTool):
     name = "qmd_collection_list"
+    display_name = "List Collections"
+    category = "knowledge"
+    danger_level = "low"
+    accent_color = "cyan"
     description = "List all QMD collections with their file counts and paths."
     parameters_schema = {"type": "object", "properties": {}, "required": []}
     requires_approval = False
 
     async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
-        ok, out = await _run_qmd("collection", "list")
+        ok, out = await _run_qmd("collection", "show", _session_collection(ctx))
         return ToolResult(success=ok, message=out)
 
 

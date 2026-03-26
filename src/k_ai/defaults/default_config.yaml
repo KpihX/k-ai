@@ -19,7 +19,10 @@
 # Which provider to use by default.
 # Must match a key under no_auth, api_key, or oauth.
 # Examples: "ollama"  "openai"  "anthropic"  "mistral"  "groq"  "gemini"
-provider: "groq"
+provider: "mistral"
+
+# Optional live model override. Leave empty to use the provider default_model.
+model: ""
 
 # Sampling temperature: controls randomness.
 # Range: 0.0 (deterministic / focused) → 2.0 (very creative / random)
@@ -74,6 +77,23 @@ cli:
   # Maximum characters to display from a tool result in the UI.
   tool_result_max_display: 500
 
+  # Maximum characters from a tool result kept in the conversation history
+  # sent back to the model. Prevents very large tool payloads from bloating
+  # prompts or tripping provider TPM limits.
+  tool_result_max_history: 4000
+
+  # Show a live runtime transparency panel after each completed turn and after
+  # config changes. This is UI-only and does not consume model tokens.
+  show_runtime_stats: true
+
+  # Runtime transparency density.
+  # Values: "compact"  "full"
+  runtime_stats_mode: "compact"
+
+  # Ask for explicit validation before every tool execution, including
+  # read-only tools. When false, only tools marked requires_approval prompt.
+  confirm_all_tools: true
+
   # Debug mode: show raw system prompts and LLM responses before rendering.
   debug: false
 
@@ -115,7 +135,7 @@ api_key:
     api_key_env_var: "MISTRAL_API_KEY"
     base_url: "https://api.mistral.ai/v1"
     # Models: mistral-large-latest  mistral-small-latest  open-mixtral-8x22b
-    default_model: "mistral-large-latest"
+    default_model: "mistral-medium-latest"
     context_window: 128000
 
   openai:
@@ -182,6 +202,16 @@ sessions:
   # Maximum number of recent sessions shown at boot / in list.
   max_recent: 10
 
+  # When loading a session, 0 means load the full history. Any positive number
+  # loads only the last N messages into the active context.
+  load_last_n: 0
+
+  # Number of messages to preview in the terminal after a session is loaded.
+  preview_last_n: 10
+
+  # Default window size for explicit session extraction.
+  extract_limit: 12
+
 
 # ==============================================================================
 # 7. Prompts  (all LLM instructions — fully customisable)
@@ -192,19 +222,22 @@ prompts:
   identity: >-
     You are k-ai, an intelligent CLI chat assistant.
     You have access to internal tools for session management, memory,
+    runtime inspection, config inspection, config updates, config persistence,
     search, code execution, and more. When you detect the user wants
-    to perform a meta-action (start new session, resume old one, change
-    settings, manage memory, exit, etc.), propose the appropriate tool.
+    to perform a meta-action (start new session, resume old one, inspect or change
+    settings or limits, manage memory, inspect runtime transparency, exit, etc.),
+    propose the appropriate tool instead of guessing.
     The user will validate or reject your proposals. For normal questions,
     just answer directly.
 
   # Boot greeting when recent sessions exist.
   boot_with_sessions: >-
-    [SESSION_BOOT] The user just opened k-ai.
-    Greet them briefly and proactively. Based on their recent sessions
-    and memory, suggest resuming a relevant session or starting fresh.
-    Keep it short (2-3 sentences). If you suggest resuming, use the
-    load_session tool.
+    [SESSION_BOOT] The user just opened k-ai and the recent sessions table
+    is already visible on screen. Do not ask to display the list again and
+    do not call list_sessions. Greet them briefly, reference one or two
+    relevant sessions already shown, and suggest either resuming one of them
+    or starting fresh. Keep it short (2-3 sentences). If you explicitly
+    propose resuming a specific session, you may use the load_session tool.
 
   # Boot greeting when no sessions exist (first launch or empty history).
   boot_no_sessions: >-
@@ -217,6 +250,15 @@ prompts:
   compact_summarize: >-
     Summarize the following conversation concisely, preserving key
     facts, decisions, and context needed to continue the conversation.
+
+  # Instruction for auto-generating a session title on exit.
+  session_summary: >-
+    Summarize the user's intent and the discussion topic in one short sentence.
+
+  session_digest: >-
+    Return strict JSON with keys "summary" and "themes".
+    "summary" must be one short sentence describing the discussion.
+    "themes" must be a short list of 3 to 8 key topics.
 
   # Instruction for auto-generating a session title on exit.
   exit_title: >-
@@ -258,7 +300,16 @@ memory:
 
 
 # ==============================================================================
-# 10. External Tools
+# 10. Config Persistence
+# ==============================================================================
+
+config:
+  # Default path used when persisting the active merged config from the chat UI.
+  persist_path: "~/.k-ai/config.yaml"
+
+
+# ==============================================================================
+# 11. External Tools
 # ==============================================================================
 
 tools:
@@ -283,10 +334,11 @@ tools:
   qmd_search:
     enabled: true
     limit: 5
+    session_collection: "k-ai"
 
 
 # ==============================================================================
-# 11. OAuth Providers  (browser-based login — token stored in a local file)
+# 12. OAuth Providers  (browser-based login — token stored in a local file)
 # ==============================================================================
 # Each entry must have:
 #   oauth_provider_name (str)       — Name of the OAuth adapter in auth.py.

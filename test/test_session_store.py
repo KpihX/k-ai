@@ -62,6 +62,12 @@ class TestSessionCRUD:
         sessions = store.list_sessions(limit=3)
         assert len(sessions) == 3
 
+    def test_list_sessions_oldest_first(self, store):
+        m1 = store.create_session()
+        m2 = store.create_session()
+        sessions = store.list_sessions(limit=10, order="oldest")
+        assert sessions[0].id == m1.id
+
     def test_rename_session(self, store):
         meta = store.create_session()
         ok = store.rename_session(meta.id, "New Title")
@@ -148,6 +154,20 @@ class TestMessagePersistence:
     def test_load_nonexistent_session(self, store):
         messages = store.load_messages("no_such_id")
         assert messages == []
+
+    def test_load_messages_with_last_n(self, store):
+        meta = store.create_session()
+        for i in range(5):
+            store.save_message(meta.id, Message(role=MessageRole.USER, content=f"m{i}"))
+        messages = store.load_messages(meta.id, last_n=2)
+        assert [m.content for m in messages] == ["m3", "m4"]
+
+    def test_load_messages_with_offset_limit(self, store):
+        meta = store.create_session()
+        for i in range(5):
+            store.save_message(meta.id, Message(role=MessageRole.USER, content=f"m{i}"))
+        messages = store.load_messages(meta.id, offset=1, limit=2)
+        assert [m.content for m in messages] == ["m1", "m2"]
 
 
 # ---------------------------------------------------------------------------

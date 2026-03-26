@@ -60,6 +60,7 @@ class SessionStore:
             updated_at=now,
             provider=provider,
             model=model,
+            themes=[],
         )
         self._index.append(meta)
         self._save_index()
@@ -74,12 +75,13 @@ class SessionStore:
                 return meta
         return None
 
-    def list_sessions(self, limit: int = 10) -> List[SessionMetadata]:
-        """Return the most recent sessions, newest first."""
+    def list_sessions(self, limit: int = 10, order: str = "recent") -> List[SessionMetadata]:
+        """Return sessions ordered by recency or age."""
+        reverse = order != "oldest"
         sorted_sessions = sorted(
             self._index,
             key=lambda s: s.updated_at,
-            reverse=True,
+            reverse=reverse,
         )
         return sorted_sessions[:limit]
 
@@ -93,12 +95,28 @@ class SessionStore:
         self._save_index()
         return True
 
-    def update_summary(self, session_id: str, summary: str) -> bool:
-        """Update a session's summary. Returns True if found."""
+    def update_summary(self, session_id: str, summary: str, themes: Optional[List[str]] = None) -> bool:
+        """Update a session's summary/themes. Returns True if found."""
         meta = self.get_session(session_id)
         if not meta:
             return False
         meta.summary = summary
+        if themes is not None:
+            meta.themes = list(themes)
+        meta.updated_at = datetime.now(timezone.utc).isoformat()
+        self._save_index()
+        return True
+
+    def update_digest(self, session_id: str, summary: str, themes: Optional[List[str]] = None) -> bool:
+        """Keep session title/summary/themes synchronized from a digest sentence."""
+        meta = self.get_session(session_id)
+        if not meta:
+            return False
+        digest = summary.strip()
+        meta.title = digest or meta.title
+        meta.summary = digest
+        if themes is not None:
+            meta.themes = list(themes)
         meta.updated_at = datetime.now(timezone.utc).isoformat()
         self._save_index()
         return True
@@ -155,8 +173,14 @@ class SessionStore:
             meta.updated_at = datetime.now(timezone.utc).isoformat()
             self._save_index()
 
-    def load_messages(self, session_id: str) -> List[Message]:
-        """Load all messages for a session from its JSONL file."""
+    def load_messages(
+        self,
+        session_id: str,
+        offset: int = 0,
+        limit: Optional[int] = None,
+        last_n: Optional[int] = None,
+    ) -> List[Message]:
+        """Load messages for a session, optionally sliced by offset/limit/last_n."""
         path = self._messages_path(session_id)
         if not path.exists():
             return []
@@ -173,7 +197,39 @@ class SessionStore:
                 raise SessionStoreError(
                     f"Corrupt message at {path.name}:{line_num}: {exc}"
                 ) from exc
-        return messages
+        if last_n is not None and last_n > 0:
+            return messages[-last_n:]
+        if offset < 0:
+            offset = 0
+        if limit is None:
+            return messages[offset:]
+        return messages[offset:offset + max(limit, 0)]
+
+    def rewrite_messages(self, session_id: str, messages: List[Message]) -> None:
+        """Rewrite the full JSONL message log for a session."""
+        path = self._messages_path(session_id)
+        lines = []
+        for message in messages:
+            entry = {
+                "role": message.role.value,
+                "content": message.content,
+            }
+            if message.name:
+                entry["name"] = message.name
+            if message.tool_call_id:
+                entry["tool_call_id"] = message.tool_call_id
+            if message.tool_calls:
+                entry["tool_calls"] = [tc.model_dump() for tc in message.tool_calls]
+            lines.append(json.dumps(entry, ensure_ascii=False))
+
+        payload = ("\n".join(lines) + "\n") if lines else ""
+        path.write_text(payload, encoding="utf-8")
+
+        meta = self.get_session(session_id)
+        if meta:
+            meta.message_count = len(messages)
+            meta.updated_at = datetime.now(timezone.utc).isoformat()
+            self._save_index()
 
     # ------------------------------------------------------------------
     # Index persistence

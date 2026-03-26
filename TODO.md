@@ -1,49 +1,21 @@
-# k-ai Project TODO
+# TODO
 
-## Phase 1: Core Backend Consolidation
+## Done in this pass
 
-- [x] **ConfigManager**:
-    - [x] Create `config.py`.
-    - [x] Implement `ConfigManager` class.
-    - [x] Logic to load default `config.yaml` from package data.
-    - [x] Logic to load and merge an external `config.yaml`.
-- [x] **LLM Core**:
-    - [x] Create `llm_core.py`.
-    - [x] Move `LiteLLMDriver` into it.
-    - [x] Refactor `get_provider` to use `ConfigManager`.
-    - [x] Ensure API keys and provider settings are read from config.
+- [x] Unify tool proposal/result UI.
+- [x] Restrict QMD session retrieval to the `k-ai` collection.
+- [x] Add session digest generation with themes.
+- [x] Add explicit session windows: load last `N`, extract `offset/limit`.
+- [x] Unify config management through chat, tools, and slash commands.
+- [x] Add runtime transparency panel.
+- [x] Add interrupt handling for prompt, generation, and tool execution.
+- [x] Add installation finalization and purge workflow.
+- [x] Refresh README, CHANGELOG, TODO, scripts, and Makefile.
 
-## Phase 2: UI & Session Logic
+## Next candidates
 
-- [x] **StreamingRenderer**:
-    - [x] Create `ui.py`.
-    - [x] Move/Refine `StreamingRenderer` class.
-    - [x] Add config options for UI themes and elements.
-- [x] **ChatSession**:
-    - [x] Create `session.py`.
-    - [x] Implement `ChatSession` class to encapsulate all session state.
-    - [x] `ChatSession` should be initialized with a `ConfigManager` instance.
-- [x] **CommandHandler**:
-    - [x] Create `commands.py`.
-    - [x] Implement `CommandHandler` for `/slash` commands.
-    - [x] Implement `/config get` command.
-
-## Phase 3: Packaging & Entry Points
-
-- [x] **CLI Entry Point**:
-    - [x] Create `main.py` using Typer.
-    - [x] `main.py` should parse CLI args (`--config-path`).
-    - [x] It should instantiate `ConfigManager` and `ChatSession`.
-- [x] **Library Entry Point**:
-    - [x] Create `src/k_ai/__init__.py`.
-    - [x] Expose `ChatSession`, `ConfigManager`, `get_provider` for library usage.
-
-## Phase 4: Git & Automation
-
-- [x] **Makefile**:
-    - [x] Create `Makefile`.
-    - [x] Add `push` target for all remotes.
-- [x] **Git Repository**:
-    - [x] Initialize Git repository.
-    - [x] Create repositories on GitHub and GitLab.
-    - [x] Add remotes.
+- [ ] Add a dedicated visual hint in the streaming UI for `Ctrl+C` / `Esc` interruption.
+- [ ] Improve per-provider token estimation quality beyond character-based heuristics.
+- [ ] Add richer session list columns for themes and persisted token totals.
+- [ ] Add snapshot/export command for runtime transparency as JSON/YAML.
+- [ ] Add integration tests for interruption behavior in an interactive PTY.

@@ -120,11 +120,36 @@ class ConfigManager:
         """Return a deep copy of the entire active configuration."""
         return copy.deepcopy(self.config)
 
+    def flatten(self, prefix: str = "") -> Dict[str, Any]:
+        """Return the active config as a flat dot-notation mapping."""
+        result: Dict[str, Any] = {}
+
+        def _walk(node: Any, path: List[str]) -> None:
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    _walk(value, path + [key])
+                return
+            if not path:
+                return
+            flat_key = ".".join(path)
+            if not prefix or flat_key == prefix or flat_key.startswith(prefix + "."):
+                result[flat_key] = node
+
+        _walk(self.config, [])
+        return result
+
+    def get_path(self, key: str, default: Any = None) -> Any:
+        """Return a value from a dot-notation path."""
+        if not key:
+            return self.get_all()
+        parts = key.split(".")
+        return self.get_nested(*parts, default=default)
+
     # ------------------------------------------------------------------
     # Write API (live in-session edits)
     # ------------------------------------------------------------------
 
-    def set(self, key: str, value: Any) -> None:
+    def set(self, key: str, value: Any) -> Any:
         """
         Set a config value, supporting dot-notation for nested keys.
         Automatically coerces string values to the type of the existing value.
@@ -146,6 +171,7 @@ class ConfigManager:
         existing = node.get(leaf)
         value = self._coerce(value, existing)
         node[leaf] = value
+        return node[leaf]
 
     @staticmethod
     def _coerce(value: Any, existing: Any) -> Any:
@@ -181,6 +207,20 @@ class ConfigManager:
         """Return the raw content of the built-in default config file."""
         path = Path(__file__).parent / "defaults" / DEFAULT_CONFIG_FILENAME
         return path.read_text(encoding="utf-8")
+
+    def save_active_yaml(self, path: Optional[str] = None) -> Path:
+        """Persist the active merged configuration to disk and return the written path."""
+        target = Path(
+            path
+            or (
+                str(self.override_path)
+                if self.override_path
+                else self.get_nested("config", "persist_path", default="~/.k-ai/config.yaml")
+            )
+        ).expanduser()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(self.dump_yaml(), encoding="utf-8")
+        return target
 
     # ------------------------------------------------------------------
     # Provider helpers (used by llm_core)

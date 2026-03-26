@@ -10,7 +10,8 @@ Every tool follows the same pattern:
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+import json
 from typing import TYPE_CHECKING, Any, Callable, Awaitable, Dict, List, Optional
 
 from ..models import ToolResult
@@ -20,6 +21,14 @@ if TYPE_CHECKING:
     from ..memory import MemoryStore
     from ..session_store import SessionStore
     from rich.console import Console
+
+
+@dataclass(frozen=True)
+class ToolDisplaySpec:
+    display_name: str
+    category: str = "general"
+    danger_level: str = "low"
+    accent_color: str = "cyan"
 
 
 @dataclass
@@ -46,6 +55,10 @@ class ToolContext:
     request_new_session: Optional[Callable] = None
     request_load_session: Optional[Callable] = None
     request_compact: Optional[Callable] = None
+    apply_config_change: Optional[Callable[..., Dict[str, Any]]] = None
+    generate_session_digest: Optional[Callable[..., Awaitable[dict[str, Any]]]] = None
+    get_runtime_snapshot: Optional[Callable[..., Dict[str, Any]]] = None
+    is_interrupt_requested: Optional[Callable[[], bool]] = None
 
 
 class InternalTool(ABC):
@@ -55,10 +68,42 @@ class InternalTool(ABC):
     description: str
     parameters_schema: Dict[str, Any]
     requires_approval: bool = True
+    display_name: Optional[str] = None
+    category: str = "general"
+    danger_level: str = "low"
+    accent_color: str = "cyan"
 
     @abstractmethod
     async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
         """Execute the tool with the given arguments."""
+
+    def display_spec(self) -> ToolDisplaySpec:
+        return ToolDisplaySpec(
+            display_name=self.display_name or self.name,
+            category=self.category,
+            danger_level=self.danger_level,
+            accent_color=self.accent_color,
+        )
+
+    def proposal_sections(self, arguments: Dict[str, Any], ctx: ToolContext) -> List[tuple[str, Any]]:
+        """Renderable sections for the tool proposal panel."""
+        from rich.syntax import Syntax
+
+        payload = json.dumps(arguments or {}, indent=2, ensure_ascii=False, sort_keys=True)
+        return [("Arguments", Syntax(payload, "json", theme="monokai", line_numbers=False, word_wrap=True))]
+
+    def result_renderable(self, result: ToolResult, max_display_length: int, ctx: ToolContext) -> Any:
+        """Renderable body for the tool result panel."""
+        from rich.syntax import Syntax
+        from rich.text import Text
+
+        msg = result.message
+        if len(msg) > max_display_length:
+            msg = msg[:max_display_length] + "\n...(truncated)"
+
+        if not result.success and ("Traceback" in msg or "Error" in msg):
+            return Syntax(msg, "pytb", theme="monokai", word_wrap=True)
+        return Text(msg) if msg else Text("[dim](no output)[/dim]")
 
     def to_openai_tool(self) -> Dict[str, Any]:
         """Convert to OpenAI-format tool definition for LLM tool calling."""

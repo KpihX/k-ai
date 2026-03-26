@@ -220,6 +220,16 @@ class TestGetAllDump:
         assert "oauth" in text
         assert "ollama" in text
 
+    def test_flatten_returns_dot_notation(self, cm):
+        flat = cm.flatten("cli")
+        assert "cli.show_token_usage" in flat
+
+    def test_save_active_yaml_writes_file(self, tmp_path, cm):
+        target = tmp_path / "active.yaml"
+        written = cm.save_active_yaml(str(target))
+        assert written == target
+        assert target.exists()
+
 
 # ---------------------------------------------------------------------------
 # lru_cache

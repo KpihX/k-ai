@@ -177,6 +177,31 @@ class TestSystemPrompt:
         assert len(msgs) == 2
 
 
+class TestRuntimeConfig:
+    def test_runtime_snapshot_contains_context_stats(self, session):
+        session.history.append(Message(role=MessageRole.USER, content="hello world"))
+        snapshot = session.get_runtime_snapshot()
+        assert snapshot["context_window"] > 0
+        assert snapshot["estimated_context_tokens"] >= 0
+        assert "context_percent" in snapshot
+
+    def test_apply_config_change_updates_runtime_model_override(self, session):
+        session.apply_config_change("model", "phi4-mini:latest")
+        assert session.cm.get("model") == "phi4-mini:latest"
+        assert session.llm.model_name == "phi4-mini:latest"
+
+    def test_handle_prompt_interrupt_requires_two_ctrl_c(self, session):
+        assert session._handle_prompt_interrupt() is False
+        assert session._handle_prompt_interrupt() is True
+
+    def test_token_snapshot_falls_back_to_estimate_when_provider_usage_missing(self, session):
+        session.history.append(Message(role=MessageRole.USER, content="bonjour"))
+        session.history.append(Message(role=MessageRole.ASSISTANT, content="salut"))
+        tokens = session.get_token_snapshot()
+        assert tokens["token_source"] == "estimated"
+        assert tokens["total_tokens"] > 0
+
+
 # ===========================================================================
 # send_with_tools()
 # ===========================================================================
@@ -383,6 +408,26 @@ class TestBootFlow:
         assert session._session_id is None
 
     @pytest.mark.asyncio
+    async def test_boot_greeting_with_sessions_only_exposes_load_session_tool(self, session):
+        from k_ai.models import SessionMetadata
+
+        recent = [SessionMetadata(
+            id="abc123", title="Old chat", summary="We discussed X.",
+            created_at="2026-03-25", updated_at="2026-03-25",
+            message_count=10,
+        )]
+        seen_tools = []
+
+        async def tracking_stream(messages, config=None, tools=None):
+            seen_tools.extend(tools or [])
+            yield CompletionChunk(delta_content="Welcome back!", finish_reason="stop")
+
+        session.llm.chat_stream = tracking_stream
+        await session._boot_greeting(recent)
+        assert seen_tools
+        assert {tool["function"]["name"] for tool in seen_tools} == {"load_session"}
+
+    @pytest.mark.asyncio
     async def test_boot_greeting_error_does_not_create_session(self, session):
         """If the LLM fails during boot greeting, no session is created."""
         async def failing_stream(messages, config=None, tools=None):
@@ -478,6 +523,79 @@ class TestDebugMode:
         assert session._debug is True
 
 
+class TestTurnRollback:
+    @pytest.mark.asyncio
+    async def test_llm_error_after_tool_execution_rolls_back_whole_turn(self, session):
+        tc = ToolCall(id="c1", function_name="clear_screen", arguments={})
+        call_count = 0
+
+        async def _stream(messages, config=None, tools=None):
+            nonlocal call_count
+            if call_count == 0:
+                call_count += 1
+                yield CompletionChunk(tool_calls=[tc], finish_reason="tool_calls")
+            else:
+                raise LLMError("boom")
+                yield  # pragma: no cover
+
+        session.llm.chat_stream = _stream
+        session.console = MagicMock()
+        session._tool_ctx.console = session.console
+        session._do_new_session()
+
+        with patch("k_ai.session.Confirm.ask", return_value=True):
+            await session._process_message("clear")
+
+        assert session.history == []
+        persisted = session.session_store.load_messages(session._session_id)
+        assert persisted == []
+
+    @pytest.mark.asyncio
+    async def test_tool_result_is_truncated_before_adding_to_history(self, session):
+        huge_result = "x" * 5000
+        normalized = session._normalize_tool_result_for_history(huge_result)
+        assert len(normalized) < len(huge_result)
+        assert normalized.endswith("...(truncated for history)")
+
+
+class TestPersistenceConsistency:
+    def test_reset_history_rewrites_session_file(self, session):
+        session._do_new_session()
+        session._persist_message(Message(role=MessageRole.USER, content="hello"))
+        session._persist_message(Message(role=MessageRole.ASSISTANT, content="world"))
+
+        session.reset_history()
+
+        assert session.history == []
+        assert session.session_store.load_messages(session._session_id) == []
+
+    @pytest.mark.asyncio
+    async def test_compaction_rewrites_persisted_history(self, session):
+        session.cm.set("compaction.keep_last_n", "2")
+        session._do_new_session()
+
+        messages = [
+            Message(role=MessageRole.USER, content="u1"),
+            Message(role=MessageRole.ASSISTANT, content="a1"),
+            Message(role=MessageRole.USER, content="u2"),
+            Message(role=MessageRole.ASSISTANT, content="a2"),
+        ]
+        for message in messages:
+            session.history.append(message)
+            session._persist_message(message)
+
+        async def compact_stream(messages, config=None, tools=None):
+            yield CompletionChunk(delta_content="compact summary", finish_reason="stop")
+
+        session.llm.chat_stream = compact_stream
+        await session._do_compact()
+
+        persisted = session.session_store.load_messages(session._session_id)
+        assert len(persisted) == 3
+        assert persisted[0].role == MessageRole.SYSTEM
+        assert "compact summary" in persisted[0].content
+
+
 class TestSessionLoadShowsHistory:
     def test_load_session_shows_recent_messages(self, session):
         """Loading a session should display recent messages."""
@@ -497,6 +615,37 @@ class TestSessionLoadShowsHistory:
         assert len(session.history) == 10
         # Console should have been called with the history preview
         assert session.console.print.call_count >= 3  # Resumed + header + messages
+
+    def test_load_session_with_last_n_only_loads_window(self, session):
+        session._do_new_session()
+        sid = session._session_id
+        for i in range(6):
+            session.session_store.save_message(sid, Message(role=MessageRole.USER, content=f"msg {i}"))
+        session.console = MagicMock()
+        session._tool_ctx.console = session.console
+        session._do_load_session(sid, last_n=2)
+        assert [m.content for m in session.history] == ["msg 4", "msg 5"]
+
+
+class TestSessionDigest:
+    @pytest.mark.asyncio
+    async def test_generate_session_digest_parses_json(self, session):
+        session._do_new_session()
+        sid = session._session_id
+        session.session_store.save_message(sid, Message(role=MessageRole.USER, content="Parlons de diagonalisation et Python"))
+
+        async def digest_stream(messages, config=None, tools=None):
+            yield CompletionChunk(
+                delta_content='{"summary":"Diagonalisation de matrices en Python","themes":["python","algebre lineaire"]}',
+                finish_reason="stop",
+            )
+
+        session.llm.chat_stream = digest_stream
+        digest = await session.generate_session_digest(sid, persist=True)
+        assert digest["summary"] == "Diagonalisation de matrices en Python"
+        assert "python" in digest["themes"]
+        meta = session.session_store.get_session(sid)
+        assert meta.summary == digest["summary"]
 
 
 class TestReloadProvider:

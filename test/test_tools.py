@@ -9,13 +9,14 @@ from pathlib import Path
 from k_ai.tools.base import InternalTool, ToolContext, ToolRegistry
 from k_ai.tools.meta import (
     NewSessionTool, LoadSessionTool, ExitSessionTool, RenameSessionTool,
-    ListSessionsTool, DeleteSessionTool, ClearScreenTool, SetConfigTool,
+    ListSessionsTool, SessionDigestTool, SessionExtractTool, DeleteSessionTool, ClearScreenTool, SetConfigTool,
+    GetConfigTool, ListConfigTool, RuntimeStatusTool, SaveConfigTool,
     register_meta_tools,
 )
 from k_ai.tools.memory_tools import MemoryAddTool, MemoryListTool, MemoryRemoveTool
 from k_ai.tools.external import PythonExecTool, ShellExecTool
-from k_ai.tools.qmd import QmdSearchTool
-from k_ai.models import ToolResult
+from k_ai.tools.qmd import QmdGetTool, QmdSearchTool
+from k_ai.models import Message, MessageRole, ToolResult
 from k_ai.memory import MemoryStore
 from k_ai.session_store import SessionStore
 from k_ai.config import ConfigManager
@@ -85,7 +86,7 @@ class TestToolRegistry:
     def test_register_meta_tools(self, ctx):
         registry = ToolRegistry()
         register_meta_tools(registry, ctx)
-        assert len(registry.list_tools()) == 9  # all meta tools
+        assert len(registry.list_tools()) == 15  # all meta/runtime/config tools
 
 
 # ---------------------------------------------------------------------------
@@ -119,7 +120,15 @@ class TestMetaTools:
         tool = LoadSessionTool()
         result = await tool.execute({"session_id": meta.id}, ctx)
         assert result.success is True
-        ctx.request_load_session.assert_called_once_with(meta.id)
+        ctx.request_load_session.assert_called_once_with(meta.id, None)
+
+    @pytest.mark.asyncio
+    async def test_load_session_with_last_n(self, ctx):
+        meta = ctx.session_store.create_session()
+        tool = LoadSessionTool()
+        result = await tool.execute({"session_id": meta.id, "last_n": 20}, ctx)
+        assert result.success is True
+        ctx.request_load_session.assert_called_once_with(meta.id, 20)
 
     @pytest.mark.asyncio
     async def test_rename_session(self, ctx):
@@ -142,7 +151,17 @@ class TestMetaTools:
         result = await tool.execute({}, ctx)
         assert result.success is True
         assert result.data is not None
-        assert len(result.data) == 2
+        assert len(result.data["sessions"]) == 2
+
+    @pytest.mark.asyncio
+    async def test_list_sessions_oldest_order(self, ctx):
+        first = ctx.session_store.create_session()
+        ctx.session_store.create_session()
+        tool = ListSessionsTool()
+        result = await tool.execute({"order": "oldest"}, ctx)
+        assert result.success is True
+        assert result.data["order"] == "oldest"
+        assert result.data["sessions"][0]["id"] == first.id
 
     @pytest.mark.asyncio
     async def test_delete_session(self, ctx):
@@ -165,6 +184,56 @@ class TestMetaTools:
         result = await tool.execute({"key": "temperature", "value": "0.5"}, ctx)
         assert result.success is True
         assert ctx.config.get("temperature") == 0.5
+
+    @pytest.mark.asyncio
+    async def test_get_config(self, ctx):
+        tool = GetConfigTool()
+        result = await tool.execute({"key": "temperature"}, ctx)
+        assert result.success is True
+        assert result.data["key"] == "temperature"
+
+    @pytest.mark.asyncio
+    async def test_list_config(self, ctx):
+        tool = ListConfigTool()
+        result = await tool.execute({"prefix": "cli"}, ctx)
+        assert result.success is True
+        assert any(key.startswith("cli.") for key, _ in result.data["items"])
+
+    @pytest.mark.asyncio
+    async def test_runtime_status(self, ctx):
+        ctx.get_runtime_snapshot = MagicMock(return_value={"provider": "ollama", "model": "phi4", "context_window": 32000, "estimated_context_tokens": 10, "context_percent": 0.0})
+        tool = RuntimeStatusTool()
+        result = await tool.execute({}, ctx)
+        assert result.success is True
+        assert result.data["snapshot"]["provider"] == "ollama"
+
+    @pytest.mark.asyncio
+    async def test_save_config(self, ctx, tmp_path):
+        tool = SaveConfigTool()
+        target = tmp_path / "active.yaml"
+        result = await tool.execute({"path": str(target)}, ctx)
+        assert result.success is True
+        assert target.exists()
+
+    @pytest.mark.asyncio
+    async def test_session_extract_current(self, ctx):
+        meta = ctx.session_store.create_session()
+        ctx.get_session_id = MagicMock(return_value=meta.id)
+        ctx.session_store.save_message(meta.id, Message(role=MessageRole.USER, content="hello"))
+        tool = SessionExtractTool()
+        result = await tool.execute({}, ctx)
+        assert result.success is True
+        assert result.data["messages"][0]["content"] == "hello"
+
+    @pytest.mark.asyncio
+    async def test_session_digest_calls_generator(self, ctx):
+        meta = ctx.session_store.create_session()
+        ctx.get_session_id = MagicMock(return_value=meta.id)
+        ctx.generate_session_digest = AsyncMock(return_value={"summary": "diag matrix", "themes": ["python", "linear algebra"]})
+        tool = SessionDigestTool()
+        result = await tool.execute({}, ctx)
+        assert result.success is True
+        assert "diag matrix" in result.message
 
 
 # ---------------------------------------------------------------------------
@@ -240,6 +309,33 @@ class TestExternalTools:
         result = await tool.execute({"code": "print('hello')"}, ctx)
         assert result.success is True
         assert "hello" in result.message
+
+    @pytest.mark.asyncio
+    async def test_python_exec_prints_last_expression_value(self, ctx):
+        tool = PythonExecTool()
+        result = await tool.execute({"code": "x = 21 * 2\nx"}, ctx)
+        assert result.success is True
+        assert "42" in result.message
+
+
+class TestQmdTools:
+    @pytest.mark.asyncio
+    async def test_qmd_get_resolves_short_session_id_to_indexed_jsonl(self, ctx, monkeypatch):
+        meta = ctx.session_store.create_session()
+        captured = {}
+
+        async def fake_run_qmd(*args, timeout=60):
+            captured["args"] = args
+            return True, "ok"
+
+        monkeypatch.setattr("k_ai.tools.qmd._run_qmd", fake_run_qmd)
+
+        tool = QmdGetTool()
+        result = await tool.execute({"file": meta.id[:8]}, ctx)
+
+        assert result.success is True
+        assert captured["args"] == ("get", f"qmd://k-ai/{meta.id}.jsonl")
+        assert result.message == "ok"
 
     @pytest.mark.asyncio
     async def test_python_exec_error(self, ctx):

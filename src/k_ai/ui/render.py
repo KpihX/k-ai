@@ -3,19 +3,163 @@
 Rich-based rendering for k-ai: streaming responses, session tables,
 tool proposals, and tool result display.
 """
-from typing import List, Optional
+from typing import List, Optional, Sequence, Tuple
 
 from rich.console import Console
+from rich.console import Group
 from rich.live import Live
-from rich.markdown import Markdown
 from rich.panel import Panel
-from rich.prompt import Confirm
+from rich.rule import Rule
 from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
 
 from ..models import CompletionChunk, SessionMetadata, ToolResult, TokenUsage
+from ..tools.base import ToolDisplaySpec
 from .markdown import render_content
+
+
+_STATUS_STYLES = {
+    "info": ("cyan", "Info"),
+    "success": ("green", "Success"),
+    "warning": ("yellow", "Warning"),
+    "error": ("red", "Error"),
+}
+
+_DANGER_STYLES = {
+    "low": ("cyan", "Low risk"),
+    "medium": ("yellow", "Requires attention"),
+    "high": ("red", "High impact"),
+}
+
+
+def render_assistant_panel(content: str, model_name: str, render_mode: str = "rich", usage: Optional[TokenUsage] = None) -> Panel:
+    subtitle = None
+    if usage and usage.total_tokens:
+        subtitle = f"[dim]{usage.prompt_tokens} in / {usage.completion_tokens} out[/dim]"
+    return Panel(
+        render_content(content, render_mode),
+        title=f"[bold green]Assistant[/bold green] [dim]{model_name}[/dim]",
+        subtitle=subtitle,
+        border_style="green",
+        expand=True,
+        padding=(0, 1),
+    )
+
+
+def render_user_panel(content: str) -> Panel:
+    return Panel(
+        render_content(content, "rich"),
+        title="[bold white]User[/bold white]",
+        border_style="bright_black",
+        style="on #1f2329",
+        expand=True,
+        padding=(0, 1),
+    )
+
+
+def render_runtime_panel(snapshot: dict, title: str = "Runtime Transparency", mode: str = "compact") -> Panel:
+    context_used = int(snapshot.get("estimated_context_tokens", 0) or 0)
+    context_total = int(snapshot.get("context_window", 0) or 0)
+    context_pct = float(snapshot.get("context_percent", 0.0) or 0.0)
+    threshold_tokens = int(snapshot.get("compaction_trigger_tokens", 0) or 0)
+    threshold_pct = int(snapshot.get("compaction_trigger_percent", 0) or 0)
+    themes = snapshot.get("session_themes", []) or []
+
+    header = Table.grid(expand=True)
+    header.add_column(ratio=1)
+    header.add_column(justify="right")
+    header.add_row(
+        Text.from_markup(
+            f"[bold white]{snapshot.get('provider', '?')}[/bold white]"
+            f"[dim] / {snapshot.get('model', '?')}[/dim]"
+        ),
+        Text.from_markup(
+            f"[dim]temp[/dim] [bold]{snapshot.get('temperature')}[/bold]   "
+            f"[dim]max[/dim] [bold]{snapshot.get('max_tokens')}[/bold]"
+        ),
+    )
+
+    body = Table.grid(expand=True)
+    body.add_column(style="dim", no_wrap=True)
+    body.add_column()
+    body.add_column(style="dim", no_wrap=True)
+    body.add_column()
+    body.add_row(
+        "Session",
+        snapshot.get("session_id")[:8] if snapshot.get("session_id") else "(none)",
+        "Auth",
+        str(snapshot.get("auth_mode", "n/a")),
+    )
+    body.add_row(
+        "Context",
+        f"{context_used:,} / {context_total:,} tok  ({context_pct:.1f}%)",
+        "Remaining",
+        f"{int(snapshot.get('remaining_context_tokens', 0) or 0):,} tok",
+    )
+    body.add_row(
+        "Compaction",
+        f"{threshold_tokens:,} tok  ({threshold_pct}%)" if threshold_tokens else "disabled",
+        "History",
+        f"{int(snapshot.get('history_messages', 0) or 0)} msgs",
+    )
+    body.add_row(
+        "Tokens",
+        f"{int(snapshot.get('prompt_tokens', 0) or 0):,} in / "
+        f"{int(snapshot.get('completion_tokens', 0) or 0):,} out / "
+        f"{int(snapshot.get('total_tokens', 0) or 0):,} total"
+        + (" [dim](estimated)[/dim]" if snapshot.get("token_source") == "estimated" else ""),
+        "Stream",
+        str(snapshot.get("stream")),
+    )
+
+    if mode in {"full", "welcome"}:
+        body.add_row(
+            "Render",
+            str(snapshot.get("render_mode", "rich")),
+            "Tools",
+            f"display {snapshot.get('tool_result_max_display')} / history {snapshot.get('tool_result_max_history')}",
+        )
+        body.add_row(
+            "Confirm tools",
+            str(snapshot.get("confirm_all_tools")),
+            "Persist path",
+            str(snapshot.get("persist_path", "")),
+        )
+        body.add_row(
+            "Token source",
+            str(snapshot.get("token_source", "unknown")),
+            "Provider usage",
+            f"{int(snapshot.get('provider_total_tokens', 0) or 0):,} total",
+        )
+
+    parts = [header, Rule(style="dim"), body]
+    if snapshot.get("session_summary"):
+        digest = Table.grid(expand=True)
+        digest.add_column(style="dim", width=8)
+        digest.add_column()
+        digest.add_row("Summary", str(snapshot.get("session_summary")))
+        digest.add_row("Themes", ", ".join(themes[:6]) if themes else "-")
+        parts.extend([Rule(style="dim"), digest])
+
+    return Panel(
+        Group(*parts),
+        title=f"[bold cyan]{title}[/bold cyan]",
+        border_style="cyan",
+        expand=True,
+        padding=(0, 1),
+    )
+
+
+def render_thinking_panel(content: str, render_mode: str = "rich", active: bool = False) -> Panel:
+    return Panel(
+        render_content(content, render_mode),
+        title="[bold yellow]Reasoning[/bold yellow]",
+        subtitle="[dim]streaming[/dim]" if active else None,
+        border_style="yellow",
+        expand=True,
+        padding=(0, 1),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -71,11 +215,7 @@ class StreamingRenderer:
         # If thinking was shown but never committed (no content followed),
         # print the thinking panel statically.
         if self.full_thought and not self._thinking_committed:
-            self.console.print(Panel(
-                render_content(self.full_thought, self.render_mode),
-                title="[bold yellow]Thinking[/bold yellow]",
-                border_style="yellow",
-            ))
+            self.console.print(render_thinking_panel(self.full_thought, self.render_mode))
 
         # Content panel: only print if we never switched to non-transient Live.
         # Once _content_started is True, the Live was non-transient and content
@@ -105,11 +245,7 @@ class StreamingRenderer:
             # Commit thinking if present
             if has_thought and not self._thinking_committed:
                 self._live.stop()
-                self.console.print(Panel(
-                    render_content(self.full_thought, self.render_mode),
-                    title="[bold yellow]Thinking[/bold yellow]",
-                    border_style="yellow",
-                ))
+                self.console.print(render_thinking_panel(self.full_thought, self.render_mode))
                 self._thinking_committed = True
             else:
                 # No thinking — stop the transient spinner
@@ -130,18 +266,14 @@ class StreamingRenderer:
         if has_content:
             self._live.update(self._content_panel())
         elif has_thought:
-            self._live.update(Panel(
-                render_content(self.full_thought, self.render_mode),
-                title="[bold yellow]Thinking...[/bold yellow]",
-                border_style="yellow",
-                subtitle="[dim]processing[/dim]",
-            ))
+            self._live.update(render_thinking_panel(self.full_thought, self.render_mode, active=True))
 
     def _content_panel(self) -> Panel:
-        return Panel(
-            render_content(self.full_content, self.render_mode),
-            title=f"[bold green]{self.model_name}[/bold green]",
-            border_style="green",
+        return render_assistant_panel(
+            self.full_content,
+            self.model_name,
+            render_mode=self.render_mode,
+            usage=self.last_usage,
         )
 
 
@@ -166,14 +298,15 @@ def render_sessions_table(
     )
     table.add_column("#", style="dim", width=3)
     table.add_column("ID", style="cyan", width=10)
-    table.add_column("Title", min_width=20)
+    table.add_column("Summary", min_width=42)
     table.add_column("Msgs", justify="right", width=5)
     table.add_column("Updated", width=12)
 
     for i, s in enumerate(sessions, 1):
-        title_text = s.title if s.title != s.id else "[dim](untitled)[/dim]"
+        summary_source = s.summary or (s.title if s.title != s.id else "")
+        summary = (summary_source[:86] + "...") if len(summary_source) > 86 else (summary_source or "[dim]-[/dim]")
         updated = s.updated_at[:10] if s.updated_at else "?"
-        table.add_row(str(i), s.id[:8], title_text, str(s.message_count), updated)
+        table.add_row(str(i), s.id[:8], summary, str(s.message_count), updated)
 
     console.print(table)
 
@@ -184,36 +317,108 @@ def render_sessions_table(
 
 def render_tool_result(
     console: Console,
-    name: str,
+    spec: ToolDisplaySpec,
     result: ToolResult,
-    max_display_length: int = 500,
+    content,
 ) -> None:
-    """Display a tool execution result in a styled panel with smart formatting."""
-    from rich.syntax import Syntax
-
+    """Display a tool execution result in a full, homogeneous panel."""
     if result.success:
         border = "green"
-        label = "Agent"
+        label = "Tool Result"
+        subtitle = "[green]Success[/green]"
     else:
         border = "red"
-        label = "Agent Error"
-
-    msg = result.message
-    if len(msg) > max_display_length:
-        msg = msg[:max_display_length] + "\n...(truncated)"
-
-    # Smart content: detect if output looks like code/traceback
-    if not result.success and ("Traceback" in msg or "Error" in msg):
-        content = Syntax(msg, "pytb", theme="monokai", word_wrap=True)
-    elif name in ("python_exec", "shell_exec") and result.success and msg.strip():
-        content = Syntax(msg, "text", theme="monokai", word_wrap=True)
-    else:
-        content = Text(msg) if msg else Text("[dim](no output)[/dim]")
+        label = "Tool Result"
+        subtitle = "[red]Error[/red]"
 
     console.print(Panel(
         content,
-        title=f"[bold {border}]{label}[/bold {border}] [dim]{name}[/dim]",
+        title=f"[bold {border}]{label}[/bold {border}] [dim]{spec.display_name}[/dim]",
+        subtitle=f"{subtitle} [dim]{spec.category}[/dim]",
+        border_style=border,
+        expand=True,
+        padding=(0, 1),
+    ))
+
+
+def render_notice(
+    console: Console,
+    message: str,
+    level: str = "info",
+    title: str | None = None,
+) -> None:
+    border, default_title = _STATUS_STYLES.get(level, _STATUS_STYLES["info"])
+    console.print(Panel(
+        render_content(message, "rich"),
+        title=f"[bold {border}]{title or default_title}[/bold {border}]",
         border_style=border,
         expand=False,
+        padding=(0, 1),
+    ))
+
+
+def render_key_value_panel(
+    console: Console,
+    title: str,
+    rows: Sequence[Tuple[str, str]],
+    border_style: str = "cyan",
+) -> None:
+    table = Table(show_header=False, box=None, padding=(0, 1))
+    table.add_column("key", style="dim", no_wrap=True)
+    table.add_column("value")
+    for key, value in rows:
+        table.add_row(key, value)
+    console.print(Panel(table, title=f"[bold {border_style}]{title}[/bold {border_style}]", border_style=border_style))
+
+
+def render_tool_proposal(
+    console: Console,
+    spec: ToolDisplaySpec,
+    sections: Sequence[Tuple[str, object]],
+    rationale: str = "",
+    requires_approval: bool = True,
+) -> None:
+    """Display a proposed tool call with rationale and exact JSON arguments."""
+    from rich.console import Group
+
+    parts = []
+
+    if rationale:
+        parts.append(Panel(
+            render_content(rationale, "rich"),
+            title="[bold cyan]Rationale[/bold cyan]",
+            border_style="cyan",
+            expand=True,
+            padding=(0, 1),
+        ))
+
+    for section_title, content in sections:
+        parts.append(Panel(
+            content,
+            title=f"[bold white]{section_title}[/bold white]",
+            border_style="white",
+            expand=True,
+            padding=(0, 1),
+        ))
+
+    danger_color, danger_label = _DANGER_STYLES.get(spec.danger_level, _DANGER_STYLES["low"])
+    validation = (
+        "[yellow]Validation required[/yellow] [dim]Press Enter/Y to approve, N to cancel[/dim]"
+        if requires_approval else
+        "[dim]Auto-execution[/dim]"
+    )
+    header = Group(
+        Text.from_markup(
+            f"[bold]{spec.display_name}[/bold]  [dim]{spec.category}[/dim]  "
+            f"[{danger_color}]{danger_label}[/{danger_color}]"
+        ),
+        Rule(style=danger_color),
+    )
+    console.print(Panel(
+        Group(header, *parts),
+        title=f"[bold {spec.accent_color}]Tool Proposal[/bold {spec.accent_color}]",
+        subtitle=validation,
+        border_style=spec.accent_color,
+        expand=True,
         padding=(0, 1),
     ))

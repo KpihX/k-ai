@@ -1,210 +1,173 @@
-# k-ai : The Conscious LLM CLI
+# k-ai
 
-```
-  ╭──────────────────────────────────────────────────────────╮
-  │  k-ai  │  Unified LLM Chat with Memory & Awareness      │
-  │                                                          │
-  │  Provider : mistral        Model : mistral-large-latest  │
-  │  Temp     : 0.7            Tokens: 8192                  │
-  ╰──────────────────────────────────────────────────────────╯
-```
+`k-ai` is a terminal-first LLM chat CLI with persistent sessions, runtime transparency, live config management, internal tools, and session-aware retrieval.
 
-**k-ai** is a next-generation CLI for interacting with Large Language Models.
-It combines a rich terminal UI with persistent sessions, memory, semantic search
-(QMD), LaTeX math rendering, and a 32-tool internal system — all provider-agnostic
-and 100% configurable.
+## What It Does
 
-## Architecture
+- Rich interactive chat UI with streaming responses and tool proposals/results.
+- Persistent session store in JSONL with digest generation: summary + themes.
+- Full runtime transparency in the UI: provider, model, context window, compaction threshold, token stats, active limits, config persistence path.
+- Live config management from chat: provider, model, `max_tokens`, UI limits, tool settings, and nested config keys.
+- Internal tools for session lifecycle, config, memory, Python, shell, web search, and QMD-based history/document retrieval.
+- QMD session retrieval restricted to the `k-ai` collection to avoid irrelevant cross-collection noise.
+- Safer interactive flow with human validation for tool calls and interruption handling for prompt, streaming, and tool execution.
 
-```
-                  ┌────────────────────────────────┐
-                  │         k-ai CLI / API          │
-                  └──────┬──────────┬──────────┬───┘
-                         │          │          │
-              ┌──────────┴──┐ ┌─────┴─────┐ ┌──┴─────────┐
-              │ ChatSession │ │ 32 Tools  │ │  Doctor    │
-              │ (agentic    │ │ Registry  │ │            │
-              │  loop)      │ └─────┬─────┘ └────────────┘
-              └──────┬──────┘       │
-          ┌──────────┼─────────┐    │
-    ┌─────┴──┐  ┌────┴───┐ ┌──┴────┴──────┐
-    │LiteLLM │  │Session │ │    Memory     │
-    │ Driver │  │ Store  │ │ ext + internal│
-    └────────┘  └────────┘ └──────────────-┘
-         │          │              │
-    ┌────┴────┐  ┌──┴───┐    ┌────┴────┐
-    │ 8 LLM   │  │ JSONL │   │MEMORY   │
-    │providers │  │ files │   │ .json   │
-    └─────────┘  └──────-┘   └────────-┘
-```
+## Current State
+
+- Boot flow shows recent sessions immediately.
+- Boot assistant no longer re-asks for the session list; it may only suggest a direct resume.
+- Session windows are explicit: load last `N`, extract `offset/limit`, refresh digest/themes on current or previous sessions.
+- Runtime token stats fall back to estimates when the provider does not return usage counters.
+- Test suite currently passes with `316` tests.
 
 ## Quick Start
 
 ```bash
-git clone https://github.com/kpihx/k-ai.git && cd k-ai
+git clone https://github.com/kpihx/k-ai.git
+cd k-ai
+./scripts/install.sh
+k-ai chat
+```
+
+Development setup:
+
+```bash
 uv sync --dev
-
-k-ai chat                                      # default provider
-k-ai chat -p mistral -m mistral-large-latest    # specific
-k-ai chat -t 0.2 -n 4096 -s "Expert Python."   # overrides
-k-ai doctor                                     # diagnostics
+uv run pytest -q
+uv run k-ai chat
 ```
 
-## Features at a Glance
+## Chat Capabilities
 
-```
-┌─ Sessions ──────────────────┐  ┌─ Memory ──────────────────┐
-│ Auto-save every message     │  │ External (read-only):     │
-│ Resume with /load <id>      │  │   ~/.agents/KERNEL.md     │
-│ Auto-title after 1st exchange│  │ Internal (read-write):   │
-│ Rich summary on exit        │  │   ~/.k-ai/MEMORY.json    │
-│ History preview on load     │  │   /memory add|list|remove │
-└─────────────────────────────┘  └───────────────────────────┘
+Session management:
 
-┌─ 32 Internal Tools ────────────────────────────────────────┐
-│ Session: new load exit rename list delete compact clear    │
-│ Config:  set_config                                        │
-│ Memory:  memory_add memory_list memory_remove              │
-│ Search:  exa_search                                        │
-│ Code:    python_exec shell_exec                            │
-│ QMD:     query search vsearch get multi_get ls             │
-│          collection_list/add/remove/show                   │
-│          context_list/add/rm                               │
-│          status update embed cleanup                       │
-└────────────────────────────────────────────────────────────┘
+- `/sessions`
+- `/load <id> [last_n]`
+- `/extract <id> [offset] [limit]`
+- `/digest [id]`
+- `/delete <id>`
+- `/compact`
+- `/reset`
 
-┌─ Rendering ─────────────────┐  ┌─ Agentic Loop ───────────┐
-│ 3 modes (config-driven):    │  │ LLM → tools → LLM → ...  │
-│  raw      Plain text        │  │ Human-in-the-loop [y/n]   │
-│  markdown Rich Markdown     │  │ Tool results in panels    │
-│  rich     MD + Unicode math │  │ Max 10 rounds safety      │
-│                             │  │ LangGraph-ready           │
-│ LaTeX → Unicode: 200+ syms  │  └───────────────────────────┘
-│ α β γ ∑ ∫ √ ℝ ℕ ⊂ ∈ ⟹ ...│
-└─────────────────────────────┘
-```
+Runtime/config management:
 
-## Boot Flow (Consciousness)
+- `/status`
+- `/tokens`
+- `/settings [prefix]`
+- `/set <key> <value>`
+- `/model [name]`
+- `/provider [name] [model]`
+- `/config show [key]`
+- `/config save [path]`
+- `/config get [path]`
 
-```
-1. Show welcome panel + recent sessions table
-2. LLM greets proactively (based on sessions + memory)
-3. User responds:
-   ├─ Resume session → LLM proposes load_session → [y/n] → history loaded
-   ├─ New topic → session created lazily on first real message
-   └─ Close without responding → nothing saved
-4. After 1st exchange → auto-generate session title
-5. On exit → auto-generate title + rich summary
-```
+Memory and search:
 
-## Commands (all also available in natural language)
+- `/memory list|add|remove`
+- `/qmd query|search|get|ls|status|update|embed|cleanup`
 
-| Command | Description |
-|---|---|
-| `/help` | All commands |
-| `/new` | New session |
-| `/load <id>` | Resume session (shows recent history) |
-| `/sessions` | List sessions |
-| `/rename <title>` | Rename session |
-| `/delete <id>` | Delete session |
-| `/compact` | Compress history |
-| `/clear` | Clear screen |
-| `/reset` | Clear history |
-| `/memory list\|add\|remove` | Manage memory |
-| `/model [name]` | Switch model |
-| `/provider [name]` | Switch provider |
-| `/set <key> <value>` | Live config |
-| `/doctor` | Full diagnostic |
-| `/qmd query\|search\|get\|ls\|...` | Full QMD suite |
-| `/exit` | Exit (auto-saves) |
+All of these can also be triggered naturally by the model via internal tools.
 
-## Configuration (`config.yaml`)
+## Runtime Transparency
+
+The UI exposes:
+
+- Active provider/model/auth mode.
+- Context window usage and remaining capacity.
+- Compaction threshold and current history depth.
+- Token stats with source labeling:
+  `provider` when usage is returned by the backend.
+  `estimated` when usage must be inferred from message sizes.
+- Tool display/history truncation limits.
+- Config persistence target.
+
+Relevant config keys:
 
 ```yaml
-provider: "ollama"          # or mistral, groq, gemini, anthropic, openai, xai, dashscope
+provider: "mistral"
+model: ""
 temperature: 0.7
 max_tokens: 8192
-stream: true
 
 cli:
-  render_mode: "rich"       # raw | markdown | rich (with Unicode math)
-  debug: false              # show raw prompts
+  render_mode: "rich"
+  show_runtime_stats: true
+  runtime_stats_mode: "compact"
   tool_result_max_display: 500
+  tool_result_max_history: 4000
+  confirm_all_tools: true
 
-sessions:
-  directory: "~/.k-ai/sessions"
-  max_recent: 10
-
-compaction:
-  trigger_percent: 80       # auto-compact at 80% of context window
-  keep_last_n: 10
-
-memory:
-  external_file: "~/.agents/KERNEL.md"
-  internal_file: "~/.k-ai/MEMORY.json"
-
-prompts:                    # all LLM instructions are configurable
-  identity: "..."
-  boot_with_sessions: "..."
-  boot_no_sessions: "..."
-  compact_summarize: "..."
-  exit_title: "..."
-  exit_summary: "..."
-
-tools:
-  exa_search: { enabled: true, api_key_env_var: "EXA_API_KEY" }
-  python_exec: { enabled: true, timeout: 30 }
-  shell_exec: { enabled: true, timeout: 30 }
-  qmd_search: { enabled: true, limit: 5 }
+config:
+  persist_path: "~/.k-ai/config.yaml"
 ```
 
-## Providers
+## Installation
 
-| Provider | Auth | Models |
-|---|---|---|
-| ollama | local | phi4-mini, llama3, qwen3.5, ... |
-| mistral | API key | mistral-large, mistral-small, ... |
-| groq | API key | qwen3-32b, llama-3.3-70b, ... |
-| gemini | API key / OAuth | gemini-2.5-flash, gemini-2.5-pro |
-| anthropic | API key | claude-sonnet-4-6, claude-opus-4-6 |
-| openai | API key | gpt-4o, o1, o3-mini |
-| xai | API key | grok-3-fast-beta, grok-4 |
-| dashscope | API key | qwen-turbo, qwen-max |
+The installer:
 
-## Library Usage
+- syncs Python dependencies with `uv`
+- installs the editable CLI entrypoint
+- creates `~/.k-ai/`
+- initializes memory/session storage
+- creates the Python sandbox for `python_exec`
+- installs/configures QMD when available
+- configures the `k-ai` QMD collection
+- runs `k-ai doctor`
 
-```python
-import asyncio
-from k_ai import ConfigManager, ChatSession, get_provider
+Run:
 
-cm = ConfigManager(provider="mistral", temperature=0.2)
-session = ChatSession(cm)
-response = asyncio.run(session.send("What is 2+2?"))
+```bash
+./scripts/install.sh
+```
 
-# Low-level streaming
-provider = get_provider(cm)
-async for chunk in provider.chat_stream(messages):
-    print(chunk.delta_content, end="")
+To completely remove installed state:
+
+```bash
+./scripts/purge.sh
+```
+
+## Make Targets
+
+```bash
+make help
+make install
+make purge
+make test
+make check
+make build
+make push
 ```
 
 ## File Layout
 
-```
+```text
 ~/.k-ai/
-├── sessions/
-│   ├── index.json         # session metadata
-│   ├── <uuid>.jsonl       # messages (one JSON per line)
-│   └── ...
-└── MEMORY.json            # internal memory
+├── config.yaml
+├── MEMORY.json
+├── sandbox/
+└── sessions/
+    ├── index.json
+    └── <session>.jsonl
 ```
 
-## Tests
+Repo layout:
 
-```bash
-uv run pytest test/ -q       # 283 tests
-uv run pytest test/ -v       # verbose
-uv run pytest test/ -k qmd   # filter
+```text
+src/k_ai/
+test/
+scripts/
+README.md
+CHANGELOG.md
+TODO.md
+Makefile
 ```
+
+## Notes
+
+- `Ctrl+C` during prompt input returns control once, exits on the second press.
+- `Ctrl+C` during generation/tool execution interrupts the current action and returns to the prompt.
+- `Esc` is also handled during non-prompt interruption scopes, but terminal behavior is less uniform than `Ctrl+C`.
+- Tool proposals remain human-validated by default.
 
 ## License
 
