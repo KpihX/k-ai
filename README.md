@@ -63,6 +63,21 @@ make install
 k-ai chat
 ```
 
+Installation profiles:
+
+- editable defaults: [install/install.yaml](/home/kpihx/Work/AI/k_ai/install/install.yaml)
+- installer docs: [install/README.md](/home/kpihx/Work/AI/k_ai/install/README.md)
+
+You can keep the default interactive install, explicitly target the default
+profile, or point to your own:
+
+```bash
+./scripts/install.sh
+./scripts/install.sh -p
+./scripts/install.sh -p defaults
+./scripts/install.sh --path /path/to/my-install.yaml
+```
+
 Development:
 
 ```bash
@@ -79,6 +94,9 @@ Install:
 make install
 # or directly:
 ./scripts/install.sh
+# or with an explicit install profile:
+./scripts/install.sh -p defaults
+./scripts/install.sh --path ./install/install.yaml
 ```
 
 Purge runtime state:

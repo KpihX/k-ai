@@ -211,6 +211,24 @@ tool_approval:
         default_policy: ask
         protected: false
         description: Execute Python code in the sandboxed runtime.
+      python_sandbox_list_packages:
+        category: execution
+        risk: low
+        default_policy: auto
+        protected: false
+        description: List installed packages in the Python sandbox.
+      python_sandbox_install_packages:
+        category: execution
+        risk: high
+        default_policy: ask
+        protected: false
+        description: Install one or more packages in the Python sandbox.
+      python_sandbox_remove_packages:
+        category: execution
+        risk: high
+        default_policy: ask
+        protected: false
+        description: Remove one or more non-core packages from the Python sandbox.
       shell_exec:
         category: execution
         risk: high
@@ -338,8 +356,18 @@ tools:
   python_exec:
     enabled: true
     timeout: 30
+    install_timeout: 300
     # Dedicated sandbox/venv used for numpy, scipy, pandas, etc.
     sandbox_dir: "~/.k-ai/sandbox"
+    # Default packages installed when the sandbox is first created.
+    default_packages:
+      - "numpy"
+      - "sympy"
+      - "scipy"
+      - "pandas"
+      - "matplotlib"
+      - "seaborn"
+      - "scikit-learn"
 
   # Sandboxed shell execution.
   shell_exec:

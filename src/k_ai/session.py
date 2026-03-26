@@ -787,6 +787,11 @@ class ChatSession:
         if self.memory.entries:
             entries_text = "\n".join(f"- {e.text}" for e in self.memory.entries)
             parts.append(f"## Remembered Facts\n{entries_text}")
+            if self.external_memory:
+                parts.append(
+                    "## Memory Priority Rule\n"
+                    "When internal remembered facts conflict with external user context, treat internal remembered facts as the latest source of truth."
+                )
 
         if self._session_id:
             active = self.session_store.get_session(self._session_id)

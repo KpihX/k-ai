@@ -16,7 +16,14 @@ from k_ai.tools.meta import (
     register_meta_tools,
 )
 from k_ai.tools.memory_tools import MemoryAddTool, MemoryListTool, MemoryRemoveTool
-from k_ai.tools.external import PythonExecTool, ShellExecTool
+from k_ai.tools.external import (
+    PythonExecTool,
+    ShellExecTool,
+    PythonSandboxPackagesTool,
+    PythonSandboxListPackagesTool,
+    PythonSandboxInstallPackagesTool,
+    PythonSandboxRemovePackagesTool,
+)
 from k_ai.tools.qmd import QmdGetTool, QmdQueryTool, QmdSearchTool
 from k_ai.models import Message, MessageRole, ToolResult
 from k_ai.memory import MemoryStore
@@ -401,6 +408,45 @@ class TestExternalTools:
         result = await tool.execute({"code": "x = 21 * 2\nx"}, ctx)
         assert result.success is True
         assert "42" in result.message
+
+    @pytest.mark.asyncio
+    async def test_python_sandbox_list_packages(self, ctx, monkeypatch):
+        async def fake_run_pip(ctx_arg, args, timeout=None):
+            return 0, '[{"name":"numpy","version":"1.0"}]', ""
+
+        monkeypatch.setattr(PythonSandboxPackagesTool, "_run_pip", staticmethod(fake_run_pip))
+        tool = PythonSandboxListPackagesTool()
+        result = await tool.execute({}, ctx)
+        assert result.success is True
+        assert "numpy==1.0" in result.message
+
+    @pytest.mark.asyncio
+    async def test_python_sandbox_install_packages(self, ctx, monkeypatch):
+        async def fake_run_pip(ctx_arg, args, timeout=None):
+            assert args == ["install", "polars", "pyarrow"]
+            return 0, "", ""
+
+        monkeypatch.setattr(PythonSandboxPackagesTool, "_run_pip", staticmethod(fake_run_pip))
+        tool = PythonSandboxInstallPackagesTool()
+        result = await tool.execute({"packages": ["polars", "pyarrow"]}, ctx)
+        assert result.success is True
+
+    @pytest.mark.asyncio
+    async def test_python_sandbox_remove_packages_rejects_core(self, ctx):
+        tool = PythonSandboxRemovePackagesTool()
+        result = await tool.execute({"packages": ["pip"]}, ctx)
+        assert result.success is False
+
+    @pytest.mark.asyncio
+    async def test_python_sandbox_remove_packages(self, ctx, monkeypatch):
+        async def fake_run_pip(ctx_arg, args, timeout=None):
+            assert args == ["uninstall", "-y", "polars"]
+            return 0, "", ""
+
+        monkeypatch.setattr(PythonSandboxPackagesTool, "_run_pip", staticmethod(fake_run_pip))
+        tool = PythonSandboxRemovePackagesTool()
+        result = await tool.execute({"packages": ["polars"]}, ctx)
+        assert result.success is True
 
 
 class TestQmdTools:

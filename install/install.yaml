@@ -1,0 +1,103 @@
+# ==============================================================================
+# k-ai installation profile
+# ==============================================================================
+#
+# This file controls the interactive behavior of ./scripts/install.sh.
+# It is intentionally verbose and heavily commented so the user does not have
+# to guess what the installer can do.
+#
+# Typical workflow:
+#   1. clone the repo
+#   2. optionally edit this file
+#   3. run:
+#        ./scripts/install.sh
+#      or:
+#        ./scripts/install.sh -p defaults
+#      or:
+#        ./scripts/install.sh --path /path/to/my-install.yaml
+#
+# Notes:
+# - The installer remains interactive by default.
+# - This file provides the default answers and available options.
+# - The runtime config lives elsewhere (~/.k-ai/config.yaml); this file is only
+#   for installation-time defaults and interaction.
+
+# Global installer behavior.
+interactive:
+  # If true, the installer will ask questions whenever the corresponding
+  # section enables prompting. If false, the installer uses the defaults below.
+  enabled: true
+
+  # If true, the installer asks for confirmation package-by-package for the
+  # default sandbox package list below.
+  ask_default_python_packages_one_by_one: true
+
+  # If true, after the default package loop, the installer keeps asking for
+  # extra sandbox packages until the user provides an empty line.
+  allow_extra_python_packages: true
+
+
+# Where runtime state will live after installation.
+runtime_store:
+  # Root runtime directory used by k-ai for config, memory, sessions, sandbox.
+  home_dir: "~/.k-ai"
+
+
+# Editor behavior for `k-ai config edit` and `/config edit`.
+editor:
+  # Explicit preferred editor. Leave empty to discover interactively/fallback.
+  preferred: ""
+
+  # If true and `micro` is not already available, the installer proposes to
+  # install it and use it as the default editor for k-ai.
+  offer_micro_install: true
+
+  # Fallback editor used when no preferred/system editor is found.
+  fallback: "nano"
+
+
+# Python sandbox initialization.
+python_sandbox:
+  # If true, create the sandbox virtualenv during install.
+  enabled: true
+
+  # Path of the python_exec sandbox virtualenv.
+  sandbox_dir: "~/.k-ai/sandbox"
+
+  # Default package set proposed at installation time.
+  # These are also persisted into tools.python_exec.default_packages so that a
+  # future sandbox rebuild keeps the same baseline.
+  default_packages:
+    - "numpy"
+    - "sympy"
+    - "scipy"
+    - "pandas"
+    - "matplotlib"
+    - "seaborn"
+    - "scikit-learn"
+
+
+# Optional QMD integration.
+qmd:
+  # If true, attempt to install qmd when it is missing.
+  install_if_missing: true
+
+  # Which collection name to create for k-ai sessions.
+  collection_name: "k-ai"
+
+  # File glob used when indexing session files.
+  collection_mask: "**/*.{jsonl,json}"
+
+  # Human-readable context attached to the collection.
+  context_summary: >-
+    k-ai session history — JSONL message logs (user/assistant/tool exchanges)
+    and session metadata. Search past conversations, decisions, code, context.
+
+
+# Final verification behavior.
+verification:
+  # Prefer `make check` when available.
+  prefer_make_check: true
+
+  # Run `k-ai doctor` at the end of installation.
+  run_doctor: true

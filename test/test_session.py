@@ -228,6 +228,13 @@ class TestSystemPrompt:
         rendered = session._render_prompt_template("Hello {user_name} from {assistant_name}.")
         assert rendered == "Hello Ivann from k-ai."
 
+    def test_internal_memory_has_priority_over_external_memory(self, session):
+        session.external_memory = "Preferred user name: OldExternal"
+        session.memory.add("Preferred user name: NewInternal.")
+        prompt = session._build_system_prompt()
+        assert "Preferred user name: NewInternal." in prompt
+        assert "internal remembered facts as the latest source of truth" in prompt
+
     def test_build_system_prompt_includes_init_guidance_when_active(self, session):
         session._init_mode = True
         prompt = session._build_system_prompt()

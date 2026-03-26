@@ -98,6 +98,19 @@ class TestCommandHandler:
         assert tool_call.arguments == {}
 
     @pytest.mark.asyncio
+    async def test_sandbox_add_routes_through_internal_tool_executor(self, session_for_commands):
+        handler = CommandHandler(session_for_commands)
+        session_for_commands._execute_internal_tool = AsyncMock(
+            return_value=ToolResult(success=True, message="ok")
+        )
+
+        await handler.handle("/sandbox add polars pyarrow")
+
+        tool_call = session_for_commands._execute_internal_tool.await_args.args[0]
+        assert tool_call.function_name == "python_sandbox_install_packages"
+        assert tool_call.arguments == {"packages": ["polars", "pyarrow"]}
+
+    @pytest.mark.asyncio
     async def test_config_edit_opens_requested_fragment(self, session_for_commands):
         handler = CommandHandler(session_for_commands)
         session_for_commands.cm.set("config.editor", "nano")

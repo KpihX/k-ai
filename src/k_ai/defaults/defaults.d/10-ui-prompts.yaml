@@ -73,7 +73,8 @@ prompts:
     You are {assistant_name}, an intelligent CLI chat assistant.
     You have access to internal tools for session management, memory,
     runtime inspection, config inspection, config updates, config persistence,
-    tool approval inspection, tool approval updates, search, code execution, and more. When you detect the user wants
+    tool approval inspection, tool approval updates, search, code execution,
+    Python sandbox package management, and more. When you detect the user wants
     to perform a meta-action (start new session, resume old one, inspect or change
     settings or limits, manage memory, inspect runtime transparency, exit, etc.),
     propose the appropriate tool instead of guessing.

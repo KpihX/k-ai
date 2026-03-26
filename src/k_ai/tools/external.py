@@ -6,8 +6,10 @@ All external tools with side effects require user approval.
 """
 import asyncio
 import ast
+import json
 from contextlib import suppress
-from typing import Any, Dict
+from pathlib import Path
+from typing import Any, Dict, List
 
 from ..models import ToolResult
 from ..secrets import resolve_secret
@@ -103,11 +105,11 @@ class PythonExecTool(InternalTool):
     }
     requires_approval = True
 
-    # Default scientific packages for the sandbox venv
-    _SANDBOX_PACKAGES = [
+    _FALLBACK_DEFAULT_PACKAGES = [
         "numpy", "sympy", "scipy", "pandas",
         "matplotlib", "seaborn", "scikit-learn",
     ]
+    _PROTECTED_PACKAGES = {"pip", "setuptools", "wheel"}
 
     @staticmethod
     def _prepare_code(code: str) -> str:
@@ -168,6 +170,22 @@ class PythonExecTool(InternalTool):
             default="~/.k-ai/sandbox",
         ))
 
+    @classmethod
+    def _default_packages(cls, ctx: ToolContext) -> List[str]:
+        raw = ctx.config.get_nested("tools", "python_exec", "default_packages", default=cls._FALLBACK_DEFAULT_PACKAGES)
+        if not isinstance(raw, list):
+            return list(cls._FALLBACK_DEFAULT_PACKAGES)
+        packages: List[str] = []
+        for item in raw:
+            text = str(item or "").strip()
+            if text and text not in packages:
+                packages.append(text)
+        return packages or list(cls._FALLBACK_DEFAULT_PACKAGES)
+
+    @staticmethod
+    def _pip_path(sandbox_dir: str) -> str:
+        return str(Path(sandbox_dir).expanduser() / "bin" / "pip")
+
     @staticmethod
     async def _wait_for_process(proc, timeout: int, ctx: ToolContext):
         task = asyncio.create_task(proc.communicate())
@@ -206,7 +224,6 @@ class PythonExecTool(InternalTool):
     @staticmethod
     async def _ensure_sandbox(sandbox_dir: str, ctx: ToolContext) -> str:
         """Ensure the sandbox venv exists with scientific libs. Returns python path."""
-        from pathlib import Path
         venv_path = Path(sandbox_dir).expanduser()
         python = venv_path / "bin" / "python"
 
@@ -227,7 +244,7 @@ class PythonExecTool(InternalTool):
         # Install scientific packages
         pip = venv_path / "bin" / "pip"
         proc = await asyncio.create_subprocess_exec(
-            str(pip), "install", "-q", *PythonExecTool._SANDBOX_PACKAGES,
+            str(pip), "install", "-q", *PythonExecTool._default_packages(ctx),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -278,6 +295,140 @@ class PythonExecTool(InternalTool):
             return ToolResult(success=False, message=f"Execution timed out after {timeout}s.")
         except Exception as e:
             return ToolResult(success=False, message=f"Execution failed: {e}")
+
+
+class PythonSandboxPackagesTool(InternalTool):
+    category = "execution"
+    accent_color = "yellow"
+
+    @staticmethod
+    async def _ensure_ready(ctx: ToolContext) -> tuple[str, str]:
+        sandbox_dir = PythonExecTool._sandbox_dir(ctx)
+        python = await PythonExecTool._ensure_sandbox(sandbox_dir, ctx)
+        pip = PythonExecTool._pip_path(sandbox_dir)
+        return python, pip
+
+    @staticmethod
+    async def _run_pip(ctx: ToolContext, args: List[str], timeout: int | None = None) -> tuple[int, str, str]:
+        _, pip = await PythonSandboxPackagesTool._ensure_ready(ctx)
+        effective_timeout = int(timeout or ctx.config.get_nested("tools", "python_exec", "install_timeout", default=300))
+        proc = await asyncio.create_subprocess_exec(
+            pip, *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await PythonExecTool._wait_for_process(proc, timeout=effective_timeout, ctx=ctx)
+        return proc.returncode, stdout.decode("utf-8", errors="replace"), stderr.decode("utf-8", errors="replace")
+
+    @staticmethod
+    def _normalize_packages(arguments: Dict[str, Any]) -> List[str]:
+        raw = arguments.get("packages", [])
+        if isinstance(raw, str):
+            raw = [part.strip() for part in raw.split() if part.strip()]
+        packages: List[str] = []
+        for item in raw or []:
+            name = str(item or "").strip()
+            if name and name not in packages:
+                packages.append(name)
+        return packages
+
+
+class PythonSandboxListPackagesTool(PythonSandboxPackagesTool):
+    name = "python_sandbox_list_packages"
+    display_name = "List Python Sandbox Packages"
+    danger_level = "low"
+    description = "List installed packages inside the dedicated python_exec sandbox."
+    parameters_schema = {"type": "object", "properties": {}, "required": []}
+    requires_approval = False
+
+    async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
+        tool_cfg = ctx.config.get_nested("tools", "python_exec", default={})
+        if not tool_cfg.get("enabled", True):
+            return ToolResult(success=False, message="python_exec is disabled in config.")
+        try:
+            code, stdout, stderr = await self._run_pip(ctx, ["list", "--format=json"])
+            if code != 0:
+                return ToolResult(success=False, message=stderr.strip() or stdout.strip() or f"pip list failed with code {code}")
+            packages = json.loads(stdout or "[]")
+            lines = [f"- {pkg['name']}=={pkg['version']}" for pkg in packages]
+            return ToolResult(success=True, message="\n".join(lines) if lines else "No packages installed.", data=packages)
+        except Exception as e:
+            return ToolResult(success=False, message=f"Could not list sandbox packages: {e}")
+
+
+class PythonSandboxInstallPackagesTool(PythonSandboxPackagesTool):
+    name = "python_sandbox_install_packages"
+    display_name = "Install Python Sandbox Packages"
+    danger_level = "high"
+    description = "Install one or more packages into the dedicated python_exec sandbox."
+    parameters_schema = {
+        "type": "object",
+        "properties": {
+            "packages": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Package specifiers to install into the sandbox.",
+            },
+        },
+        "required": ["packages"],
+    }
+    requires_approval = True
+
+    async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
+        packages = self._normalize_packages(arguments)
+        if not packages:
+            return ToolResult(success=False, message="No packages provided.")
+        try:
+            code, stdout, stderr = await self._run_pip(ctx, ["install", *packages])
+            if code != 0:
+                message = stderr.strip() or stdout.strip() or f"pip install failed with code {code}"
+                return ToolResult(success=False, message=message)
+            return ToolResult(success=True, message=f"Installed into sandbox: {', '.join(packages)}")
+        except Exception as e:
+            return ToolResult(success=False, message=f"Could not install sandbox packages: {e}")
+
+    def proposal_sections(self, arguments: Dict[str, Any], ctx: ToolContext) -> list[tuple[str, Any]]:
+        packages = self._normalize_packages(arguments)
+        return [("Packages", [("Install", ", ".join(packages) or "-")])]
+
+
+class PythonSandboxRemovePackagesTool(PythonSandboxPackagesTool):
+    name = "python_sandbox_remove_packages"
+    display_name = "Remove Python Sandbox Packages"
+    danger_level = "high"
+    description = "Uninstall one or more non-core packages from the dedicated python_exec sandbox."
+    parameters_schema = {
+        "type": "object",
+        "properties": {
+            "packages": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Installed package names to remove from the sandbox.",
+            },
+        },
+        "required": ["packages"],
+    }
+    requires_approval = True
+
+    async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
+        packages = self._normalize_packages(arguments)
+        if not packages:
+            return ToolResult(success=False, message="No packages provided.")
+        forbidden = [pkg for pkg in packages if pkg.lower() in PythonExecTool._PROTECTED_PACKAGES]
+        if forbidden:
+            return ToolResult(success=False, message=f"Refusing to remove protected sandbox packages: {', '.join(forbidden)}")
+        try:
+            code, stdout, stderr = await self._run_pip(ctx, ["uninstall", "-y", *packages])
+            if code != 0:
+                message = stderr.strip() or stdout.strip() or f"pip uninstall failed with code {code}"
+                return ToolResult(success=False, message=message)
+            return ToolResult(success=True, message=f"Removed from sandbox: {', '.join(packages)}")
+        except Exception as e:
+            return ToolResult(success=False, message=f"Could not remove sandbox packages: {e}")
+
+    def proposal_sections(self, arguments: Dict[str, Any], ctx: ToolContext) -> list[tuple[str, Any]]:
+        packages = self._normalize_packages(arguments)
+        return [("Packages", [("Remove", ", ".join(packages) or "-")])]
 
 
 class ShellExecTool(InternalTool):
@@ -351,5 +502,12 @@ class ShellExecTool(InternalTool):
 
 
 def register_external_tools(registry: ToolRegistry, ctx: ToolContext) -> None:
-    for tool_cls in [ExaSearchTool, PythonExecTool, ShellExecTool]:
+    for tool_cls in [
+        ExaSearchTool,
+        PythonExecTool,
+        PythonSandboxListPackagesTool,
+        PythonSandboxInstallPackagesTool,
+        PythonSandboxRemovePackagesTool,
+        ShellExecTool,
+    ]:
         registry.register(tool_cls())

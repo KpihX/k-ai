@@ -43,6 +43,7 @@ SLASH_COMMANDS = [
     "/qmd query", "/qmd search", "/qmd vsearch",
     "/qmd get", "/qmd ls", "/qmd collections",
     "/qmd status", "/qmd update", "/qmd embed", "/qmd cleanup",
+    "/sandbox list", "/sandbox add", "/sandbox remove",
 ]
 
 
@@ -137,6 +138,9 @@ _HELP: dict[str, tuple[str, str, str]] = {
     "/qmd update [--pull]": ("Refresh the QMD index, optionally pulling sources first.", "optional --pull", "/qmd update --pull"),
     "/qmd embed [-f]": ("Refresh or force-refresh vector embeddings.", "optional -f", "/qmd embed -f"),
     "/qmd cleanup": ("Vacuum caches and cleanup QMD index artifacts.", "-", "/qmd cleanup"),
+    "/sandbox list": ("List installed packages inside the python_exec sandbox.", "-", "/sandbox list"),
+    "/sandbox add <package...>": ("Install one or more extra packages into the python_exec sandbox.", "one or many package specifiers", "/sandbox add polars pyarrow"),
+    "/sandbox remove <package...>": ("Remove one or more non-core packages from the python_exec sandbox.", "one or many package names", "/sandbox remove polars"),
 }
 
 
@@ -201,6 +205,7 @@ class CommandHandler:
             "memory": self._memory,
             "doctor": self._doctor,
             "qmd": self._qmd,
+            "sandbox": self._sandbox,
         }
 
         handler = dispatch.get(cmd)
@@ -531,6 +536,30 @@ class CommandHandler:
             "  /tools ask <target> [session|global] [tool|category|risk]\n"
             "  /tools auto <target> [session|global] [tool|category|risk]\n"
             "  /tools reset <target> [session|global] [tool|category|risk]"
+        )
+        return True
+
+    async def _sandbox(self, args: List[str]) -> bool:
+        sub = args[0].lower() if args else "list"
+        if sub == "list":
+            return await self._run_internal_tool("python_sandbox_list_packages", {})
+        if sub == "add":
+            packages = [item for item in args[1:] if item.strip()]
+            if not packages:
+                self.console.print("[yellow]Usage:[/yellow] /sandbox add <package...>")
+                return True
+            return await self._run_internal_tool("python_sandbox_install_packages", {"packages": packages})
+        if sub in {"remove", "rm"}:
+            packages = [item for item in args[1:] if item.strip()]
+            if not packages:
+                self.console.print("[yellow]Usage:[/yellow] /sandbox remove <package...>")
+                return True
+            return await self._run_internal_tool("python_sandbox_remove_packages", {"packages": packages})
+        self.console.print(
+            "[yellow]Usage:[/yellow]\n"
+            "  /sandbox list\n"
+            "  /sandbox add <package...>\n"
+            "  /sandbox remove <package...>"
         )
         return True
 
