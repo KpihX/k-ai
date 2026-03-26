@@ -11,14 +11,20 @@ The format is based on Keep a Changelog.
 - Managed runtime-store git tracking for `~/.k-ai/`, including a committed `.gitignore` template that keeps only `config.yaml`, `MEMORY.json`, and `sessions/*`.
 - Automatic runtime-store commit support on interactive chat exit, with commit subjects derived from the session digest.
 - Installation profile support for runtime git defaults (`runtime_git.*`) and installer-side initialization of the runtime git repo.
+- Integration tests for `scripts/install.sh` and `scripts/purge.sh`, including custom runtime roots and purge edge cases.
 
 ### Changed
 
 - The installer now copies `install/.gitignore.runtime` into `~/.k-ai/.gitignore` instead of generating an overly broad ignore file inline.
+- The installer now persists runtime-root paths and the QMD session collection coherently into runtime config, and can skip the verification phase entirely via `verification.enabled`.
+- `scripts/purge.sh` now supports `--yes` and `--runtime-dir`, and resolves the uv package name dynamically from `pyproject.toml`.
 
 ### Fixed
 
 - Runtime coherence checks now warn when `config.persist_path`, `memory.internal_file`, and `sessions.directory` do not share the same parent, which would make runtime git tracking ambiguous.
+- Boolean config persistence bugs in `scripts/install.sh` that broke real installs.
+- Missing local git identity in runtime-store repos, which could block the initial commit and later auto-commits on machines without global git identity.
+- Non-interactive purge hanging on stdin instead of aborting safely.
 
 ## [0.1.1] - 2026-03-26
 

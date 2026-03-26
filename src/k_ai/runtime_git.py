@@ -28,6 +28,9 @@ RUNTIME_GITIGNORE_TEXT = """# Managed by k-ai
 !sessions/*.jsonl
 """
 
+RUNTIME_GIT_USER_NAME = "k-ai runtime"
+RUNTIME_GIT_USER_EMAIL = "runtime@k-ai.local"
+
 
 def _expanded_path(value: str) -> Path:
     return Path(str(value)).expanduser()
@@ -82,6 +85,40 @@ def _run_git(runtime_root: Path, *args: str) -> subprocess.CompletedProcess[str]
     )
 
 
+def ensure_runtime_repo_identity(runtime_root: Path) -> Dict[str, Any]:
+    name_result = _run_git(runtime_root, "config", "--get", "user.name")
+    email_result = _run_git(runtime_root, "config", "--get", "user.email")
+    changed = False
+
+    if name_result.returncode != 0 or not name_result.stdout.strip():
+        set_name = _run_git(runtime_root, "config", "user.name", RUNTIME_GIT_USER_NAME)
+        if set_name.returncode != 0:
+            return {
+                "ok": False,
+                "reason": "git_config_failed",
+                "stderr": set_name.stderr.strip(),
+                "runtime_root": runtime_root,
+            }
+        changed = True
+
+    if email_result.returncode != 0 or not email_result.stdout.strip():
+        set_email = _run_git(runtime_root, "config", "user.email", RUNTIME_GIT_USER_EMAIL)
+        if set_email.returncode != 0:
+            return {
+                "ok": False,
+                "reason": "git_config_failed",
+                "stderr": set_email.stderr.strip(),
+                "runtime_root": runtime_root,
+            }
+        changed = True
+
+    return {
+        "ok": True,
+        "runtime_root": runtime_root,
+        "changed": changed,
+    }
+
+
 def ensure_runtime_repo(
     cm: ConfigManager,
     *,
@@ -111,6 +148,11 @@ def ensure_runtime_repo(
                 "runtime_root": runtime_root,
             }
         initialized = True
+
+    if initialized:
+        identity_result = ensure_runtime_repo_identity(runtime_root)
+        if not identity_result.get("ok"):
+            return identity_result
 
     return {
         "ok": initialized,

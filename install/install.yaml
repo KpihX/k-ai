@@ -175,6 +175,10 @@ qmd:
 
 # Final verification behavior.
 verification:
+  # If false, skip the entire verification phase. This is useful for controlled
+  # test harnesses or very constrained environments.
+  enabled: true
+
   # Prefer `make check` when available.
   prefer_make_check: true
 

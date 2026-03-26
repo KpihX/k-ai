@@ -76,6 +76,7 @@ Installer behavior highlights:
 - if `uv` is missing, proposes installing it
 - if `uv` is declined, falls back to an isolated `k-ai` bootstrap virtualenv instead of polluting the system Python
 - asks which live capability families should start enabled: `exa`, `python`, `shell`, `qmd`
+- can skip verification entirely via `install/install.yaml` when used inside controlled test harnesses
 - installs a managed runtime `.gitignore` in `~/.k-ai/`
 - initializes a local git repo in `~/.k-ai/` and creates the first commit
 - can auto-commit runtime state on each interactive chat exit using the session digest as the commit subject
@@ -130,7 +131,9 @@ Purge runtime state:
 ```bash
 make purge
 # or directly:
-./scripts/purge.sh
+./scripts/purge.sh --yes
+# or for a custom runtime root:
+./scripts/purge.sh --yes --runtime-dir /path/to/runtime
 ```
 
 Make targets:

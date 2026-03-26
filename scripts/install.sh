@@ -15,6 +15,11 @@ warn() { echo -e "${YELLOW}  WARN${RESET} $*"; }
 fail() { echo -e "${RED}  ERR${RESET} $*"; }
 step() { echo -e "\n${CYAN}━━━ $* ━━━${RESET}"; }
 
+HAS_TTY_INPUT="false"
+if [[ -t 0 ]]; then
+  HAS_TTY_INPUT="true"
+fi
+
 ask_yes_no() {
   local prompt="$1"
   local default="${2:-y}"
@@ -234,6 +239,7 @@ print(f"QMD_COLLECTION_NAME={q(qmd.get('collection_name', 'k-ai'))}")
 print(f"QMD_COLLECTION_MASK={q(qmd.get('collection_mask', '**/*.{jsonl,json}'))}")
 print(f"QMD_CONTEXT_SUMMARY={q(qmd.get('context_summary', 'k-ai session history.'))}")
 print(f"VERIFY_PREFER_MAKE={q(str(bool(verification.get('prefer_make_check', True))).lower())}")
+print(f"VERIFY_ENABLED={q(str(bool(verification.get('enabled', True))).lower())}")
 print(f"VERIFY_RUN_DOCTOR={q(str(bool(verification.get('run_doctor', True))).lower())}")
 PY
 )"
@@ -346,7 +352,7 @@ if [[ -n "${EDITOR_PREFERRED}" ]] && command -v "${EDITOR_PREFERRED%% *}" >/dev/
 elif command -v micro >/dev/null 2>&1; then
   EDITOR_CHOICE="micro"
   ok "micro already available"
-elif [[ "${EDITOR_OFFER_MICRO}" == "true" ]] && [[ "${INSTALL_INTERACTIVE}" == "true" ]]; then
+elif [[ "${EDITOR_OFFER_MICRO}" == "true" ]] && [[ "${INSTALL_INTERACTIVE}" == "true" ]] && [[ "${HAS_TTY_INPUT}" == "true" ]]; then
   info "Editor choices:"
   info "  - yes: install and use micro as the default editor"
   info "  - no: keep the system editor chain (K_AI_EDITOR / VISUAL / EDITOR / ${EDITOR_FALLBACK})"
@@ -367,6 +373,11 @@ elif [[ "${EDITOR_OFFER_MICRO}" == "true" ]] && [[ "${INSTALL_INTERACTIVE}" == "
       warn "apt-get not available; cannot auto-install micro"
     fi
   fi
+fi
+
+if [[ "${RUNTIME_GIT_ENABLED}" == "true" ]] && ! command -v git >/dev/null 2>&1; then
+  warn "git is not available. Runtime git tracking will be disabled for this installation."
+  RUNTIME_GIT_ENABLED="false"
 fi
 
 if [[ -z "${EDITOR_CHOICE}" ]]; then
@@ -412,20 +423,46 @@ if [[ "${INSTALL_INTERACTIVE}" == "true" ]]; then
   fi
 fi
 
-run_managed_python -c '
+CONFIG_FILE="${CONFIG_FILE}" \
+EDITOR_CHOICE="${EDITOR_CHOICE}" \
+K_AI_DIR="${K_AI_DIR}" \
+SESSIONS_DIR="${SESSIONS_DIR}" \
+MEMORY_FILE="${MEMORY_FILE}" \
+SANDBOX_DIR="${SANDBOX_DIR}" \
+RUNTIME_GIT_ENABLED="${RUNTIME_GIT_ENABLED}" \
+RUNTIME_GIT_AUTO_COMMIT_ON_EXIT="${RUNTIME_GIT_AUTO_COMMIT_ON_EXIT}" \
+RUNTIME_GIT_COMMIT_PREFIX="${RUNTIME_GIT_COMMIT_PREFIX}" \
+CAP_EXA="${CAP_EXA}" \
+CAP_PYTHON="${CAP_PYTHON}" \
+CAP_SHELL="${CAP_SHELL}" \
+CAP_QMD="${CAP_QMD}" \
+QMD_COLLECTION_NAME="${QMD_COLLECTION_NAME}" \
+run_managed_python - <<'PY' >/dev/null
+import os
+
 from k_ai.config import ConfigManager
-cm = ConfigManager(override_path=r"'"${CONFIG_FILE}"'")
-cm.set("config.editor", r"'"${EDITOR_CHOICE}"'")
-cm.set("runtime_git.enabled", '"${RUNTIME_GIT_ENABLED}"' == "true")
-cm.set("runtime_git.auto_commit_on_chat_exit", '"${RUNTIME_GIT_AUTO_COMMIT_ON_EXIT}"' == "true")
-cm.set("runtime_git.commit_prefix", r"'"${RUNTIME_GIT_COMMIT_PREFIX}"'")
-cm.set("tools.exa.enabled", '"${CAP_EXA}"' == "true")
-cm.set("tools.python.enabled", '"${CAP_PYTHON}"' == "true")
-cm.set("tools.python.sandbox_dir", r"'"${SANDBOX_DIR}"'")
-cm.set("tools.shell.enabled", '"${CAP_SHELL}"' == "true")
-cm.set("tools.qmd.enabled", '"${CAP_QMD}"' == "true")
-cm.save_active_yaml(r"'"${CONFIG_FILE}"'")
-' >/dev/null
+
+
+def as_bool(name: str) -> bool:
+    return os.environ[name].strip().lower() == "true"
+
+
+cm = ConfigManager(override_path=os.environ["CONFIG_FILE"])
+cm.set("config.persist_path", os.environ["CONFIG_FILE"])
+cm.set("memory.internal_file", os.environ["MEMORY_FILE"])
+cm.set("sessions.directory", os.environ["SESSIONS_DIR"])
+cm.set("config.editor", os.environ["EDITOR_CHOICE"])
+cm.set("runtime_git.enabled", as_bool("RUNTIME_GIT_ENABLED"))
+cm.set("runtime_git.auto_commit_on_chat_exit", as_bool("RUNTIME_GIT_AUTO_COMMIT_ON_EXIT"))
+cm.set("runtime_git.commit_prefix", os.environ["RUNTIME_GIT_COMMIT_PREFIX"])
+cm.set("tools.exa.enabled", as_bool("CAP_EXA"))
+cm.set("tools.python.enabled", as_bool("CAP_PYTHON"))
+cm.set("tools.python.sandbox_dir", os.environ["SANDBOX_DIR"])
+cm.set("tools.shell.enabled", as_bool("CAP_SHELL"))
+cm.set("tools.qmd.enabled", as_bool("CAP_QMD"))
+cm.set("tools.qmd.session_collection", os.environ["QMD_COLLECTION_NAME"])
+cm.save_active_yaml(os.environ["CONFIG_FILE"])
+PY
 ok "Configured config.editor=${EDITOR_CHOICE}"
 
 if [[ "${RUNTIME_GIT_ENABLED}" == "true" ]]; then
@@ -440,13 +477,25 @@ if [[ "${RUNTIME_GIT_ENABLED}" == "true" ]]; then
 
   if [[ ! -d "${K_AI_DIR}/.git" ]]; then
     git -C "${K_AI_DIR}" init -q
+    git -C "${K_AI_DIR}" config user.name "k-ai runtime"
+    git -C "${K_AI_DIR}" config user.email "runtime@k-ai.local"
     git -C "${K_AI_DIR}" add .
-    git -C "${K_AI_DIR}" commit -q -m "${RUNTIME_GIT_INITIAL_COMMIT_MESSAGE}" || true
-    ok "Initialized git repo in ${K_AI_DIR}"
+    if git -C "${K_AI_DIR}" diff --cached --quiet --exit-code; then
+      ok "Initialized git repo in ${K_AI_DIR} (nothing to commit)"
+    else
+      git -C "${K_AI_DIR}" commit -q -m "${RUNTIME_GIT_INITIAL_COMMIT_MESSAGE}"
+      ok "Initialized git repo in ${K_AI_DIR}"
+    fi
   else
+    git -C "${K_AI_DIR}" config user.name "k-ai runtime"
+    git -C "${K_AI_DIR}" config user.email "runtime@k-ai.local"
     git -C "${K_AI_DIR}" add .
-    git -C "${K_AI_DIR}" commit -q -m "${RUNTIME_GIT_INITIAL_COMMIT_MESSAGE}" || true
-    ok "Git repo already present in ${K_AI_DIR}; runtime state staged and committed if needed"
+    if git -C "${K_AI_DIR}" diff --cached --quiet --exit-code; then
+      ok "Git repo already present in ${K_AI_DIR}; runtime state already clean"
+    else
+      git -C "${K_AI_DIR}" commit -q -m "${RUNTIME_GIT_INITIAL_COMMIT_MESSAGE}"
+      ok "Git repo already present in ${K_AI_DIR}; runtime state committed"
+    fi
   fi
 else
   warn "Runtime git tracking disabled by install profile"
@@ -545,28 +594,36 @@ fi
 
 step "Installing runtime git hook"
 
-mkdir -p "$(dirname "${HOOK_FILE}")"
-cat > "${HOOK_FILE}" <<'HOOK'
+if [[ "${RUNTIME_GIT_ENABLED}" == "true" ]]; then
+  mkdir -p "$(dirname "${HOOK_FILE}")"
+  cat > "${HOOK_FILE}" <<'HOOK'
 #!/usr/bin/env bash
 set -euo pipefail
 if command -v qmd >/dev/null 2>&1; then
   (qmd update >/dev/null 2>&1 || true)
 fi
 HOOK
-chmod +x "${HOOK_FILE}"
-ok "Installed ${HOOK_FILE}"
+  chmod +x "${HOOK_FILE}"
+  ok "Installed ${HOOK_FILE}"
+else
+  warn "Runtime git hook skipped because runtime git tracking is disabled"
+fi
 
 step "Running verification"
 
-if [[ "${VERIFY_PREFER_MAKE}" == "true" && "${INSTALL_BACKEND}" == "uv" ]] && [[ -f "${PROJECT_DIR}/Makefile" ]] && command -v make >/dev/null 2>&1; then
-  make check
-else
-  python3 -m py_compile src/k_ai/*.py src/k_ai/tools/*.py src/k_ai/ui/*.py test/*.py
-  run_managed_pytest
-fi
+if [[ "${VERIFY_ENABLED}" == "true" ]]; then
+  if [[ "${VERIFY_PREFER_MAKE}" == "true" && "${INSTALL_BACKEND}" == "uv" ]] && [[ -f "${PROJECT_DIR}/Makefile" ]] && command -v make >/dev/null 2>&1; then
+    make check
+  else
+    python3 -m py_compile src/k_ai/*.py src/k_ai/tools/*.py src/k_ai/ui/*.py test/*.py
+    run_managed_pytest
+  fi
 
-if [[ "${VERIFY_RUN_DOCTOR}" == "true" ]]; then
-  run_managed_kai doctor || warn "Doctor reported issues. Review the output above."
+  if [[ "${VERIFY_RUN_DOCTOR}" == "true" ]]; then
+    run_managed_kai doctor || warn "Doctor reported issues. Review the output above."
+  fi
+else
+  warn "Verification disabled by install profile"
 fi
 
 echo

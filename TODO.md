@@ -16,6 +16,7 @@
 - [x] Add runtime transparency panel.
 - [x] Add interrupt handling for prompt, generation, and tool execution.
 - [x] Add installation finalization and purge workflow.
+- [x] Harden `install.sh` and `purge.sh` with real integration coverage, custom-runtime support, safe non-interactive purge behavior, and runtime-git identity fallback.
 - [x] Refresh README, CHANGELOG, TODO, scripts, and Makefile.
 - [x] Split built-in config into sectioned YAML fragments with cached loading.
 - [x] Expose config sections from CLI and slash commands.

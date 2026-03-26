@@ -33,6 +33,8 @@ What `install.yaml` controls:
 - whether extra packages can be added interactively
 - QMD setup defaults
 - final verification behavior
+- full verification toggle (`verification.enabled`)
+- safe purge options for non-default runtime roots (`./scripts/purge.sh --yes --runtime-dir ...`)
 
 Design rule:
 
@@ -47,6 +49,7 @@ Runtime git behavior:
 
 - the installer copies [`install/.gitignore.runtime`](.gitignore.runtime) into `~/.k-ai/.gitignore`
 - it initializes a local git repo in `~/.k-ai/` when runtime git tracking is enabled
+- it writes a local git identity for the runtime repo so the first commit and later auto-commits do not depend on global git config
 - it runs the first `git add .` and initial commit after install
 - later, interactive chat exits can auto-commit `config.yaml`, `MEMORY.json`, and `sessions/*`
 
