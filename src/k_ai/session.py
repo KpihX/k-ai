@@ -385,10 +385,12 @@ class ChatSession:
                     return
 
                 # Execute tool calls and loop back
+                # The assistant's text content before tool calls is the "rationale"
+                rationale = full_content.strip() if full_content else ""
                 any_executed = False
                 for tc in pending_tool_calls:
                     if self.tool_registry.is_internal(tc.function_name):
-                        result = await self._execute_internal_tool(tc)
+                        result = await self._execute_internal_tool(tc, rationale=rationale)
                         tool_msg = Message(
                             role=MessageRole.TOOL,
                             content=result.message,
@@ -425,7 +427,7 @@ class ChatSession:
     # Internal tool execution with inline confirmation
     # ------------------------------------------------------------------
 
-    async def _execute_internal_tool(self, tc: ToolCall) -> ToolResult:
+    async def _execute_internal_tool(self, tc: ToolCall, rationale: str = "") -> ToolResult:
         """Execute an internal tool with inline human-in-the-loop."""
         tool = self.tool_registry.get(tc.function_name)
         if not tool:
@@ -437,9 +439,13 @@ class ChatSession:
             from rich.console import Group
 
             parts = []
+
+            # Show rationale if present (extracted from assistant text)
+            if rationale:
+                parts.append(Text(rationale, style="dim italic"))
+
             for k, v in (tc.arguments or {}).items():
                 if k == "code" and isinstance(v, str) and len(v) > 40:
-                    # Render code with syntax highlighting
                     lang = "python" if tc.function_name == "python_exec" else "bash"
                     parts.append(Syntax(v, lang, theme="monokai", line_numbers=True, word_wrap=True))
                 elif k == "command" and isinstance(v, str):
@@ -516,21 +522,37 @@ class ChatSession:
             f"({len(messages)} messages)"
         )
 
-        # Show the last N messages for context
+        # Show the last N messages with proper rendering (same as live chat)
         keep_n = int(self.cm.get_nested("compaction", "keep_last_n", default=10))
         recent = messages[-keep_n:] if len(messages) > keep_n else messages
         if recent:
-            self.console.print("[dim]--- Recent history ---[/dim]")
+            render_mode = self.cm.get_nested("cli", "render_mode", default="rich")
+            from .ui.markdown import render_content
+            skipped = len(messages) - len(recent)
+            if skipped > 0:
+                self.console.print(f"[dim]  ({skipped} older messages not shown)[/dim]")
             for m in recent:
                 if m.role == MessageRole.SYSTEM:
                     continue
-                role_style = "cyan" if m.role == MessageRole.USER else "green"
-                label = "You" if m.role == MessageRole.USER else self.llm.model_name
-                preview = m.content[:150].replace("\n", " ")
-                if len(m.content) > 150:
-                    preview += "..."
-                self.console.print(f"  [{role_style}]{label}:[/{role_style}] {preview}")
-            self.console.print("[dim]--- End of history ---[/dim]")
+                elif m.role == MessageRole.USER:
+                    self.console.print(f"\n[bold cyan]You:[/bold cyan] {m.content}")
+                elif m.role == MessageRole.ASSISTANT:
+                    content_renderable = render_content(m.content, render_mode) if m.content else Text("[dim](empty)[/dim]")
+                    self.console.print(RichPanel(
+                        content_renderable,
+                        title=f"[bold green]{self.llm.model_name}[/bold green]",
+                        border_style="green",
+                    ))
+                elif m.role == MessageRole.TOOL:
+                    name = m.name or "tool"
+                    border = "green"
+                    self.console.print(RichPanel(
+                        m.content[:300] + ("..." if len(m.content) > 300 else ""),
+                        title=f"[bold {border}]Agent[/bold {border}] [dim]{name}[/dim]",
+                        border_style=border,
+                        expand=False,
+                        padding=(0, 1),
+                    ))
 
     def _persist_message(self, message: Message) -> None:
         if self._session_id:
