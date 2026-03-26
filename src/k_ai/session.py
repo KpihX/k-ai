@@ -17,6 +17,7 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.completion import WordCompleter, FuzzyCompleter, ConditionalCompleter
 from prompt_toolkit.filters import Condition
+from prompt_toolkit.formatted_text import ANSI
 
 from .config import ConfigManager
 from .llm_core import get_provider, LLMProvider
@@ -237,8 +238,9 @@ class ChatSession:
                 continue
 
             try:
-                # Bold cyan prompt via ANSI escape (works in all terminals)
-                user_input = await prompt_session.prompt_async("\033[1;36mYou:\033[0m ")
+                user_input = await prompt_session.prompt_async(
+                    ANSI("\033[1;36mYou:\033[0m ")
+                )
                 user_input = user_input.strip()
                 if not user_input:
                     continue
