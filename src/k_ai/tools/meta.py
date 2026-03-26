@@ -71,13 +71,27 @@ class NewSessionTool(InternalTool):
     requires_approval = True
 
     async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
+        history = ctx.get_history() if ctx.get_history else []
+        carry_message = ""
+        for message in reversed(history or []):
+            if message.role.value == "user" and message.content.strip():
+                carry_message = message.content
+                break
+
         if ctx.request_new_session:
-            ctx.request_new_session(seed={
-                "session_type": arguments.get("session_type", "classic"),
-                "summary": arguments.get("summary", ""),
-                "themes": arguments.get("themes", []),
-            })
-        return ToolResult(success=True, message="New session started.")
+            ctx.request_new_session(
+                seed={
+                    "session_type": arguments.get("session_type", "classic"),
+                    "summary": arguments.get("summary", ""),
+                    "themes": arguments.get("themes", []),
+                },
+                carry_over_message=carry_message,
+            )
+        return ToolResult(
+            success=True,
+            message="New session requested.",
+            data={"carry_over_message": bool(carry_message)},
+        )
 
 
 class InitSystemTool(InternalTool):

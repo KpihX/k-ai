@@ -17,6 +17,7 @@
 - [x] Add interrupt handling for prompt, generation, and tool execution.
 - [x] Add installation finalization and purge workflow.
 - [x] Harden `install.sh` and `purge.sh` with real integration coverage, custom-runtime support, safe non-interactive purge behavior, and runtime-git identity fallback.
+- [x] Make explicit topic-change requests reliably trigger session-tool proposals, and let approved `new_session` requests continue the carried conversation in the fresh session.
 - [x] Refresh README, CHANGELOG, TODO, scripts, and Makefile.
 - [x] Split built-in config into sectioned YAML fragments with cached loading.
 - [x] Expose config sections from CLI and slash commands.

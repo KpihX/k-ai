@@ -953,6 +953,43 @@ class TestTurnRollback:
         assert session.history[-1].content == "ancien sujet"
 
     @pytest.mark.asyncio
+    async def test_new_session_rolls_back_current_turn_and_queues_carry_message(self, session):
+        session._do_new_session(seed={"session_type": "classic", "summary": "Sujet initial"})
+        old = Message(role=MessageRole.USER, content="ancien sujet")
+        session.history.append(old)
+        session._persist_message(old)
+        turn_start = len(session.history)
+
+        tc = ToolCall(
+            id="c1",
+            function_name="new_session",
+            arguments={"summary": "Méca céleste", "themes": ["orbites"], "session_type": "classic"},
+        )
+
+        async def _stream(messages, config=None, tools=None):
+            yield CompletionChunk(tool_calls=[tc], finish_reason="tool_calls")
+
+        async def _execute(tool_call, rationale=""):
+            session._handle_new_session(
+                seed={"summary": "Méca céleste", "themes": ["orbites"], "session_type": "classic"},
+                carry_over_message="parle moi de meca celeste",
+            )
+            return ToolResult(success=True, message="new session requested", data={"carry_over_message": True})
+
+        session.llm.chat_stream = _stream
+        session.console = MagicMock()
+        session._tool_ctx.console = session.console
+        session._execute_internal_tool = AsyncMock(side_effect=_execute)
+        session.generate_session_digest = AsyncMock(return_value={"summary": "Sujet initial", "themes": ["ancien"], "session_type": "classic"})
+
+        await session._process_message("parle moi de meca celeste")
+
+        assert session._new_session_requested is True
+        assert session._queued_new_session_message == "parle moi de meca celeste"
+        assert len(session.history) == turn_start
+        assert session.history[-1].content == "ancien sujet"
+
+    @pytest.mark.asyncio
     async def test_process_message_suppresses_switch_session_after_already_switched(self, session):
         tc = ToolCall(
             id="c1",
@@ -981,6 +1018,16 @@ class TestTurnRollback:
         session._execute_internal_tool.assert_not_awaited()
         assistant_msgs = [m for m in session.history if m.role == MessageRole.ASSISTANT]
         assert assistant_msgs[-1].content == "Je suis k-ai."
+
+    def test_session_shift_guidance_detects_explicit_new_session_request(self, session):
+        session._do_new_session(seed={"session_type": "classic", "summary": "Sport"})
+        guidance = session._session_shift_guidance_for_turn("bascule sur une nouvelle session et parle moi de meca celeste")
+        assert "explicitly asks for a new session" in guidance
+
+    def test_session_shift_guidance_detects_explicit_topic_change(self, session):
+        session._do_new_session(seed={"session_type": "classic", "summary": "Sport"})
+        guidance = session._session_shift_guidance_for_turn("on va changer de sujet ; on va parler de meca quantique")
+        assert "explicitly signals a topic change" in guidance
 
 
 class TestPersistenceConsistency:

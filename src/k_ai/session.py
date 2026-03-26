@@ -108,6 +108,7 @@ class ChatSession:
         self._queued_new_session_seed: Optional[Dict[str, Any]] = None
         self._queued_new_session_message: Optional[str] = None
         self._continuation_after_switch: Optional[Dict[str, str]] = None
+        self._turn_session_guidance: Optional[str] = None
         self._session_tool_policy_overrides: Dict[str, Dict[str, str]] = {
             "tools": {},
             "categories": {},
@@ -951,6 +952,9 @@ class ChatSession:
         if self.system_prompt:
             parts.append(f"## Custom Instructions\n{self.system_prompt}")
 
+        if self._turn_session_guidance:
+            parts.append(f"## Current Turn Guidance\n{self._turn_session_guidance}")
+
         return "\n\n".join(parts)
 
     def _messages_with_system(self, include_sessions: bool = False) -> List[Message]:
@@ -1037,6 +1041,52 @@ class ChatSession:
         except TypeError:
             args = json.dumps({"_raw": str(tc.arguments)}, sort_keys=True, ensure_ascii=True)
         return f"{tc.function_name}:{args}"
+
+    def _has_explicit_new_session_request(self, user_input: str) -> bool:
+        text = str(user_input or "").lower()
+        patterns = [
+            r"\bnew session\b",
+            r"\bnouvelle session\b",
+            r"\bnouveau chat\b",
+            r"\bbascule\b",
+            r"\bouvre une nouvelle session\b",
+            r"\bstart a new session\b",
+        ]
+        return any(re.search(pattern, text) for pattern in patterns)
+
+    def _has_explicit_topic_shift_signal(self, user_input: str) -> bool:
+        text = str(user_input or "").lower()
+        patterns = [
+            r"\bchanger de sujet\b",
+            r"\bon va changer de sujet\b",
+            r"\bnouveau sujet\b",
+            r"\bon va parler d[' ]autre chose\b",
+            r"\bon va parler de\b",
+            r"\bparlons maintenant de\b",
+            r"\bpassons à\b",
+            r"\bon va parler\b",
+            r"\bchange topic\b",
+            r"\bdifferent topic\b",
+            r"\blet's talk about\b",
+        ]
+        return any(re.search(pattern, text) for pattern in patterns)
+
+    def _session_shift_guidance_for_turn(self, user_input: str) -> str:
+        if not self._session_id or not user_input.strip():
+            return ""
+        if self._has_explicit_new_session_request(user_input):
+            return (
+                "The latest user message explicitly asks for a new session and also contains substantive content to continue. "
+                "Prefer proposing new_session before answering the new topic directly. "
+                "If the user rejects the proposal, answer the substantive request naturally in the current session."
+            )
+        if self._has_explicit_topic_shift_signal(user_input):
+            return (
+                "The latest user message explicitly signals a topic change away from the active session. "
+                "Prefer proposing switch_session before mixing this new topic into the current session. "
+                "If the user rejects the proposal, answer the substantive request naturally in the current session."
+            )
+        return ""
 
     def _deduplicate_tool_calls(self, tool_calls: List[ToolCall]) -> List[ToolCall]:
         seen: set[str] = set()
@@ -1311,6 +1361,9 @@ class ChatSession:
         executed_tool_cache: Dict[str, str] = {}
         pending_tool_calls: List[ToolCall] = []
         full_content = ""
+        self._turn_session_guidance = ""
+        if not suppress_switch:
+            self._turn_session_guidance = self._session_shift_guidance_for_turn(user_input)
 
         try:
             for _round in range(_MAX_TOOL_ROUNDS):
@@ -1426,7 +1479,7 @@ class ChatSession:
                             continue
 
                         result = await self._execute_internal_tool(tc, rationale=rationale)
-                        if tc.function_name == "switch_session" and result.success and self._new_session_requested:
+                        if tc.function_name in {"switch_session", "new_session"} and result.success and self._new_session_requested:
                             current_session_id = self._session_id
                             self._rollback_turn(turn_start)
                             if current_session_id:
@@ -1443,7 +1496,7 @@ class ChatSession:
                                     pass
                             render_notice(
                                 self.console,
-                                "Changement d'intent détecté. Proposition validée: ouverture d'une nouvelle session dédiée.",
+                                "Changement de session validé. La requête continue dans une nouvelle session dédiée.",
                                 level="info",
                                 title="Session Split",
                             )
@@ -1491,6 +1544,8 @@ class ChatSession:
         except Exception as e:
             self._rollback_turn(turn_start)
             self.console.print(f"[bold red]Unexpected error:[/bold red] {e}")
+        finally:
+            self._turn_session_guidance = None
 
     # ------------------------------------------------------------------
     # Internal tool execution with inline confirmation

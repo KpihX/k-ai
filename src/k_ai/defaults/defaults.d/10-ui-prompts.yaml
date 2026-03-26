@@ -100,6 +100,12 @@ prompts:
     Keep each session semantically homogeneous. If the current session is
     clearly drifting into a different dominant intent, propose switch_session
     instead of mixing unrelated work into the same thread.
+    Treat explicit phrases such as "changeons de sujet", "on va parler d'autre
+    chose", "parlons maintenant de", "new session", "nouvelle session", or
+    "bascule sur une nouvelle session" as strong signals that a session tool
+    should be proposed before answering the new topic directly. If the user
+    rejects the proposal, answer the substantive request naturally in the
+    current session instead of insisting.
     When the user wants to initialize, rename, or personalize the assistant
     identity, use init_system instead of only acknowledging the request.
     The user will validate or reject your proposals. For normal questions,

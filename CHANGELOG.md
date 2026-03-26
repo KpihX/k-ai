@@ -18,6 +18,7 @@ The format is based on Keep a Changelog.
 - The installer now copies `install/.gitignore.runtime` into `~/.k-ai/.gitignore` instead of generating an overly broad ignore file inline.
 - The installer now persists runtime-root paths and the QMD session collection coherently into runtime config, and can skip the verification phase entirely via `verification.enabled`.
 - `scripts/purge.sh` now supports `--yes` and `--runtime-dir`, and resolves the uv package name dynamically from `pyproject.toml`.
+- Explicit topic-shift requests now add a per-turn session-guidance hint so the model proposes `switch_session` / `new_session` more reliably before mixing unrelated topics.
 
 ### Fixed
 
@@ -25,6 +26,8 @@ The format is based on Keep a Changelog.
 - Boolean config persistence bugs in `scripts/install.sh` that broke real installs.
 - Missing local git identity in runtime-store repos, which could block the initial commit and later auto-commits on machines without global git identity.
 - Non-interactive purge hanging on stdin instead of aborting safely.
+- `new_session` now behaves like `switch_session` for carried user requests: after approval it can open the clean session and continue answering instead of stopping after the tool result.
+- Stale config expectation in the test suite (`max_tokens`) is now aligned with the real default.
 
 ## [0.1.1] - 2026-03-26
 

@@ -46,7 +46,7 @@ class TestDefaultLoad:
         assert cm.get("temperature") == 0.7
 
     def test_default_max_tokens(self, cm):
-        assert cm.get("max_tokens") == 8192
+        assert cm.get("max_tokens") == 4096
 
     def test_default_stream(self, cm):
         assert cm.get("stream") is True

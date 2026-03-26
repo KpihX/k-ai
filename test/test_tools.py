@@ -116,6 +116,7 @@ class TestToolRegistry:
 class TestMetaTools:
     @pytest.mark.asyncio
     async def test_new_session(self, ctx):
+        ctx.get_history = MagicMock(return_value=[])
         tool = NewSessionTool()
         result = await tool.execute({}, ctx)
         assert result.success is True
@@ -123,10 +124,30 @@ class TestMetaTools:
 
     @pytest.mark.asyncio
     async def test_new_session_with_type_seed(self, ctx):
+        ctx.get_history = MagicMock(return_value=[])
         tool = NewSessionTool()
         result = await tool.execute({"session_type": "meta", "summary": "Admin tools", "themes": ["config"]}, ctx)
         assert result.success is True
-        ctx.request_new_session.assert_called_with(seed={"session_type": "meta", "summary": "Admin tools", "themes": ["config"]})
+        ctx.request_new_session.assert_called_with(
+            seed={"session_type": "meta", "summary": "Admin tools", "themes": ["config"]},
+            carry_over_message="",
+        )
+
+    @pytest.mark.asyncio
+    async def test_new_session_carries_last_user_message(self, ctx):
+        ctx.get_history = MagicMock(return_value=[
+            Message(role=MessageRole.USER, content="ancien"),
+            Message(role=MessageRole.ASSISTANT, content="ok"),
+            Message(role=MessageRole.USER, content="parle moi de mécanique céleste"),
+        ])
+        tool = NewSessionTool()
+        result = await tool.execute({"summary": "Méca céleste"}, ctx)
+        assert result.success is True
+        assert result.data["carry_over_message"] is True
+        ctx.request_new_session.assert_called_with(
+            seed={"session_type": "classic", "summary": "Méca céleste", "themes": []},
+            carry_over_message="parle moi de mécanique céleste",
+        )
 
     @pytest.mark.asyncio
     async def test_init_system_without_names_starts_init_flow(self, ctx):

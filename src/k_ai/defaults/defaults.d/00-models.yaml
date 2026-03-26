@@ -11,7 +11,7 @@
 
 # Default provider used when the user does not force one with --provider or
 # via /provider in chat. Must match a key under no_auth, api_key, or oauth.
-provider: "gemini"
+provider: "mistral"
 
 # Optional model override. Leave empty to use the provider's default_model.
 model: ""
@@ -24,7 +24,7 @@ temperature: 0.7
 
 # Max completion tokens requested from the backend for a single answer.
 # This is a hard runtime knob and can be changed live from chat.
-max_tokens: 8192
+max_tokens: 4096
 
 # Stream tokens live in the terminal. False waits for the full answer first.
 stream: true
