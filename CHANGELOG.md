@@ -6,6 +6,8 @@ The format is based on Keep a Changelog.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-03-26
+
 ### Added
 
 - High-robustness config normalization for legacy tool paths (`tools.exa_search`, `tools.python_exec`, `tools.shell_exec`, `tools.qmd_search`) toward canonical capability families.

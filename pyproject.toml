@@ -1,6 +1,6 @@
 [project]
 name = "kpihx-ai"
-version = "0.1.0"
+version = "0.1.1"
 description = "A next-generation, highly configurable, and user-friendly Command Line Interface for interacting with Large Language Models."
 readme = "README.md"
 authors = [
