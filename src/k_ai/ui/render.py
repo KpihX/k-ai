@@ -188,7 +188,9 @@ def render_tool_result(
     result: ToolResult,
     max_display_length: int = 500,
 ) -> None:
-    """Display a tool execution result in a styled panel."""
+    """Display a tool execution result in a styled panel with smart formatting."""
+    from rich.syntax import Syntax
+
     if result.success:
         border = "green"
         label = "Agent"
@@ -198,10 +200,18 @@ def render_tool_result(
 
     msg = result.message
     if len(msg) > max_display_length:
-        msg = msg[:max_display_length] + "\n[dim]...(truncated)[/dim]"
+        msg = msg[:max_display_length] + "\n...(truncated)"
+
+    # Smart content: detect if output looks like code/traceback
+    if not result.success and ("Traceback" in msg or "Error" in msg):
+        content = Syntax(msg, "pytb", theme="monokai", word_wrap=True)
+    elif name in ("python_exec", "shell_exec") and result.success and msg.strip():
+        content = Syntax(msg, "text", theme="monokai", word_wrap=True)
+    else:
+        content = Text(msg) if msg else Text("[dim](no output)[/dim]")
 
     console.print(Panel(
-        msg,
+        content,
         title=f"[bold {border}]{label}[/bold {border}] [dim]{name}[/dim]",
         border_style=border,
         expand=False,

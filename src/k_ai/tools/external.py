@@ -77,8 +77,9 @@ class ExaSearchTool(InternalTool):
 class PythonExecTool(InternalTool):
     name = "python_exec"
     description = (
-        "Execute Python code in a subprocess and return stdout/stderr. "
-        "Use for calculations, data processing, or quick scripts."
+        "Execute Python code in a sandboxed environment with scientific libraries "
+        "(numpy, sympy, scipy, pandas, matplotlib, seaborn, scikit-learn). "
+        "Use for calculations, data processing, plotting, or quick scripts."
     )
     parameters_schema = {
         "type": "object",
@@ -92,6 +93,48 @@ class PythonExecTool(InternalTool):
     }
     requires_approval = True
 
+    # Default scientific packages for the sandbox venv
+    _SANDBOX_PACKAGES = [
+        "numpy", "sympy", "scipy", "pandas",
+        "matplotlib", "seaborn", "scikit-learn",
+    ]
+
+    @staticmethod
+    def _sandbox_dir(ctx: ToolContext) -> str:
+        return str(ctx.config.get_nested(
+            "tools", "python_exec", "sandbox_dir",
+            default="~/.k-ai/sandbox",
+        ))
+
+    @staticmethod
+    async def _ensure_sandbox(sandbox_dir: str) -> str:
+        """Ensure the sandbox venv exists with scientific libs. Returns python path."""
+        from pathlib import Path
+        venv_path = Path(sandbox_dir).expanduser()
+        python = venv_path / "bin" / "python"
+
+        if python.exists():
+            return str(python)
+
+        # Create venv
+        proc = await asyncio.create_subprocess_exec(
+            "python3", "-m", "venv", str(venv_path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await asyncio.wait_for(proc.communicate(), timeout=30)
+
+        # Install scientific packages
+        pip = venv_path / "bin" / "pip"
+        proc = await asyncio.create_subprocess_exec(
+            str(pip), "install", "-q", *PythonExecTool._SANDBOX_PACKAGES,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await asyncio.wait_for(proc.communicate(), timeout=120)
+
+        return str(python)
+
     async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
         tool_cfg = ctx.config.get_nested("tools", "python_exec", default={})
         if not tool_cfg.get("enabled", True):
@@ -102,9 +145,14 @@ class PythonExecTool(InternalTool):
             return ToolResult(success=False, message="No code provided.")
 
         timeout = int(tool_cfg.get("timeout", 30))
+
         try:
+            # Use sandbox venv with scientific libs
+            sandbox_dir = self._sandbox_dir(ctx)
+            python = await self._ensure_sandbox(sandbox_dir)
+
             proc = await asyncio.create_subprocess_exec(
-                "python3", "-c", code,
+                python, "-c", code,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )

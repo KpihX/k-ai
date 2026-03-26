@@ -13,11 +13,12 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 from rich.console import Console
 from rich.panel import Panel as RichPanel
 from rich.prompt import Confirm
+from rich.text import Text
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.completion import WordCompleter, FuzzyCompleter, ConditionalCompleter
 from prompt_toolkit.filters import Condition
-from prompt_toolkit.formatted_text import ANSI
+from prompt_toolkit.styles import Style as PTStyle
 
 from .config import ConfigManager
 from .llm_core import get_provider, LLMProvider
@@ -199,15 +200,21 @@ class ChatSession:
         # Boot greeting (ephemeral)
         await self._boot_greeting(recent)
 
-        # Build prompt session — completion only triggers when line starts with /
+        # Build prompt session with styled prompt and slash autocompletion
         slash_completer = FuzzyCompleter(
             WordCompleter(SLASH_COMMANDS, sentence=True)
         )
+
+        pt_style = PTStyle.from_dict({
+            "prompt": "bold ansicyan",
+        })
+
         prompt_session: PromptSession = PromptSession(
             history=InMemoryHistory(),
             completer=slash_completer,
             complete_while_typing=True,
             reserve_space_for_menu=4,
+            style=pt_style,
         )
 
         @Condition
@@ -239,7 +246,7 @@ class ChatSession:
 
             try:
                 user_input = await prompt_session.prompt_async(
-                    ANSI("\033[1;36mYou:\033[0m ")
+                    [("class:prompt", "You: ")]
                 )
                 user_input = user_input.strip()
                 if not user_input:
@@ -424,15 +431,28 @@ class ChatSession:
         if not tool:
             return ToolResult(success=False, message=f"Unknown tool: {tc.function_name}")
 
-        # Human-in-the-loop: show tool call in a panel, ask confirmation
+        # Human-in-the-loop: show tool call with proper rendering
         if tool.requires_approval:
-            args_str = ", ".join(f"{k}={v!r}" for k, v in tc.arguments.items()) if tc.arguments else ""
-            call_display = f"{tc.function_name}({args_str})"
+            from rich.syntax import Syntax
+            from rich.console import Group
+
+            parts = []
+            for k, v in (tc.arguments or {}).items():
+                if k == "code" and isinstance(v, str) and len(v) > 40:
+                    # Render code with syntax highlighting
+                    lang = "python" if tc.function_name == "python_exec" else "bash"
+                    parts.append(Syntax(v, lang, theme="monokai", line_numbers=True, word_wrap=True))
+                elif k == "command" and isinstance(v, str):
+                    parts.append(Syntax(v, "bash", theme="monokai", word_wrap=True))
+                else:
+                    parts.append(Text(f"{k}: {v}"))
+
+            content = Group(*parts) if parts else Text(tc.function_name)
             self.console.print(RichPanel(
-                call_display,
-                title="[bold yellow]Tool[/bold yellow]",
+                content,
+                title=f"[bold yellow]{tc.function_name}[/bold yellow]",
                 border_style="yellow",
-                expand=False,
+                expand=True,
                 padding=(0, 1),
             ))
             approved = Confirm.ask("  Execute?", console=self.console, default=True)

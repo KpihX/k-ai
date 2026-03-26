@@ -271,6 +271,9 @@ tools:
     enabled: true
     timeout: 30
     require_approval: true
+    # Sandboxed venv with scientific libs (numpy, sympy, scipy, pandas, matplotlib, seaborn, scikit-learn).
+    # Created automatically on first use.
+    sandbox_dir: "~/.k-ai/sandbox"
 
   shell_exec:
     enabled: true
