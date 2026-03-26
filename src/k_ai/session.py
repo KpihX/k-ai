@@ -36,6 +36,7 @@ from .models import (
     Message, MessageRole, ToolCall, TokenUsage, SessionMetadata, ToolResult,
 )
 from .memory import MemoryStore, load_external_memory
+from .runtime_git import commit_runtime_state
 from .session_store import SessionStore
 from .tools import create_registry, ToolRegistry
 from .tools.base import ToolContext
@@ -1150,6 +1151,7 @@ class ChatSession:
         if self._session_id:
             try:
                 await self._auto_rename_on_exit()
+                await self._auto_commit_runtime_store_on_exit()
             except KeyboardInterrupt:
                 render_notice(self.console, "Finalisation interrompue. Session conservée telle quelle.", level="warning", title="Interruption")
             except Exception as e:
@@ -1800,6 +1802,36 @@ class ChatSession:
                     self.session_store.update_summary(self._session_id, summary, meta.themes, meta.session_type)
         except Exception:
             pass
+
+    async def _auto_commit_runtime_store_on_exit(self) -> None:
+        if not self._session_id or len(self.history) < 2:
+            return
+        if not bool(self.cm.get_nested("runtime_git", "enabled", default=True)):
+            return
+        if not bool(self.cm.get_nested("runtime_git", "auto_commit_on_chat_exit", default=True)):
+            return
+
+        meta = self.session_store.get_session(self._session_id)
+        if not meta:
+            return
+
+        result = commit_runtime_state(
+            self.cm,
+            summary=meta.summary or meta.title,
+            session_id=meta.id,
+            session_type=meta.session_type,
+            themes=meta.themes,
+            create_if_missing=True,
+        )
+        if result.get("ok") and result.get("reason") == "committed":
+            self.console.print(f"[dim]Runtime state committed: {result.get('subject', '')}[/dim]")
+        elif result.get("ok") and result.get("reason") == "clean":
+            self.console.print("[dim]Runtime state unchanged; no git commit created.[/dim]")
+        elif not result.get("ok"):
+            reason = result.get("reason", "unknown")
+            detail = result.get("stderr") or "; ".join(result.get("issues", [])) or ""
+            suffix = f": {detail}" if detail else ""
+            self.console.print(f"[dim]Runtime git auto-commit skipped ({reason}){suffix}[/dim]")
 
     async def generate_session_digest(
         self,

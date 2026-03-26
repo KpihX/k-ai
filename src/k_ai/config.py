@@ -15,6 +15,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from .runtime_git import runtime_store_root_issues
+
 DEFAULT_CONFIG_DIRNAME = "defaults.d"
 DEFAULT_CONFIG_SECTIONS: Tuple[Tuple[str, str, str], ...] = (
     ("models", "00-models.yaml", "Provider, model, temperature, auth-backed provider definitions."),
@@ -246,6 +248,22 @@ class ConfigManager:
             enabled = bucket.get("enabled", True)
             if not isinstance(enabled, bool):
                 errors.append(f"tools.{capability}.enabled must be boolean.")
+
+        runtime_git = self.get_nested("runtime_git", default={})
+        if not isinstance(runtime_git, dict):
+            errors.append("runtime_git must be a mapping.")
+        else:
+            for key in ("enabled", "auto_commit_on_chat_exit"):
+                value = runtime_git.get(key, True)
+                if not isinstance(value, bool):
+                    errors.append(f"runtime_git.{key} must be boolean.")
+            prefix = runtime_git.get("commit_prefix", "chat:")
+            if not isinstance(prefix, str) or not prefix.strip():
+                errors.append("runtime_git.commit_prefix must be a non-empty string.")
+            subject_max = runtime_git.get("commit_subject_max_length", 72)
+            if not isinstance(subject_max, int) or subject_max < 16:
+                errors.append("runtime_git.commit_subject_max_length must be an integer >= 16.")
+            warnings.extend(runtime_store_root_issues(self))
 
         approval = self.get_nested("tool_approval", default={})
         if not isinstance(approval, dict):

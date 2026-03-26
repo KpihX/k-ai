@@ -1,0 +1,9 @@
+# Managed by k-ai
+# Track only the durable runtime state that matters to the user.
+*
+!.gitignore
+!MEMORY.json
+!config.yaml
+!sessions/
+!sessions/index.json
+!sessions/*.jsonl

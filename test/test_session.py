@@ -53,6 +53,7 @@ def mock_llm(response_chunks: list[CompletionChunk], provider="ollama", model="p
 @pytest.fixture
 def session(cm, tmp_path):
     """ChatSession with ollama (no key needed); uses tmp dir for isolation."""
+    cm.set("provider", "ollama")
     cm.set("sessions.directory", str(tmp_path / "sessions"))
     cm.set("memory.internal_file", str(tmp_path / "MEMORY.json"))
     sess = ChatSession(cm)
@@ -1079,6 +1080,39 @@ class TestSessionDigest:
         meta = session.session_store.get_session(sid)
         assert meta.title == "Titre final"
         assert meta.summary == "Résumé final de sortie"
+
+    @pytest.mark.asyncio
+    async def test_auto_commit_runtime_store_on_exit_uses_session_digest(self, session):
+        session._do_new_session()
+        sid = session._session_id
+        session.session_store.save_message(sid, Message(role=MessageRole.USER, content="Sujet test"))
+        session.session_store.save_message(sid, Message(role=MessageRole.ASSISTANT, content="Réponse test"))
+        session.history = session.session_store.load_messages(sid)
+        session.session_store.update_summary(sid, "Résumé de commit", ["test"], "classic")
+
+        with patch("k_ai.session.commit_runtime_state", return_value={"ok": True, "reason": "committed", "subject": "chat: Résumé de commit"}) as mocked:
+            await session._auto_commit_runtime_store_on_exit()
+
+        mocked.assert_called_once()
+        kwargs = mocked.call_args.kwargs
+        assert kwargs["summary"] == "Résumé de commit"
+        assert kwargs["session_id"] == sid
+        assert kwargs["session_type"] == "classic"
+        assert kwargs["themes"] == ["test"]
+
+    @pytest.mark.asyncio
+    async def test_auto_commit_runtime_store_on_exit_respects_disable_flag(self, session):
+        session.cm.set("runtime_git.auto_commit_on_chat_exit", False)
+        session._do_new_session()
+        sid = session._session_id
+        session.session_store.save_message(sid, Message(role=MessageRole.USER, content="Sujet test"))
+        session.session_store.save_message(sid, Message(role=MessageRole.ASSISTANT, content="Réponse test"))
+        session.history = session.session_store.load_messages(sid)
+
+        with patch("k_ai.session.commit_runtime_state") as mocked:
+            await session._auto_commit_runtime_store_on_exit()
+
+        mocked.assert_not_called()
 
 
 class TestReloadProvider:

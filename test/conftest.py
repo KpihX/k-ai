@@ -49,6 +49,7 @@ def isolated_test_secrets(monkeypatch):
         "OPENAI_API_KEY": "test-openai-key",
         "GROQ_API_KEY": "test-groq-key",
         "GEMINI_API_KEY": "test-gemini-key",
+        "GOOGLE_API_KEY": "test-google-key",
     }
     for name, value in dummy_keys.items():
         monkeypatch.setenv(name, value)

@@ -319,6 +319,13 @@ class TestGetAllDump:
         report = cm.validate_runtime_coherence()
         assert any("tools.python.enabled must be boolean" in item for item in report["errors"])
 
+    def test_validate_runtime_coherence_warns_when_runtime_git_paths_are_misaligned(self, cm, tmp_path):
+        cm.set("config.persist_path", str(tmp_path / "cfg" / "config.yaml"))
+        cm.set("memory.internal_file", str(tmp_path / "mem" / "MEMORY.json"))
+        cm.set("sessions.directory", str(tmp_path / "sessions" / "store"))
+        report = cm.validate_runtime_coherence()
+        assert any("must share the same parent" in item for item in report["warnings"])
+
 
 # ---------------------------------------------------------------------------
 # lru_cache

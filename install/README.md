@@ -25,6 +25,7 @@ What `install.yaml` controls:
 
 - uv bootstrap policy and fallback behavior
 - installer interactivity
+- runtime-store git tracking defaults
 - initial capability defaults (`exa`, `python`, `shell`, `qmd`)
 - editor choice defaults
 - python sandbox path
@@ -41,6 +42,13 @@ Design rule:
 The installer persists the final editor choice and selected default sandbox
 packages into the runtime config so the installed environment remains coherent
 after first boot.
+
+Runtime git behavior:
+
+- the installer copies [`install/.gitignore.runtime`](.gitignore.runtime) into `~/.k-ai/.gitignore`
+- it initializes a local git repo in `~/.k-ai/` when runtime git tracking is enabled
+- it runs the first `git add .` and initial commit after install
+- later, interactive chat exits can auto-commit `config.yaml`, `MEMORY.json`, and `sessions/*`
 
 Bootstrap behavior:
 

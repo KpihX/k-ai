@@ -6,6 +6,20 @@ The format is based on Keep a Changelog.
 
 ## [Unreleased]
 
+### Added
+
+- Managed runtime-store git tracking for `~/.k-ai/`, including a committed `.gitignore` template that keeps only `config.yaml`, `MEMORY.json`, and `sessions/*`.
+- Automatic runtime-store commit support on interactive chat exit, with commit subjects derived from the session digest.
+- Installation profile support for runtime git defaults (`runtime_git.*`) and installer-side initialization of the runtime git repo.
+
+### Changed
+
+- The installer now copies `install/.gitignore.runtime` into `~/.k-ai/.gitignore` instead of generating an overly broad ignore file inline.
+
+### Fixed
+
+- Runtime coherence checks now warn when `config.persist_path`, `memory.internal_file`, and `sessions.directory` do not share the same parent, which would make runtime git tracking ambiguous.
+
 ## [0.1.1] - 2026-03-26
 
 ### Added

@@ -47,3 +47,30 @@ memory:
 
   # Internal mutable memory store managed by k-ai tools.
   internal_file: "~/.k-ai/MEMORY.json"
+
+
+# ==============================================================================
+# Runtime State Git Tracking
+# ==============================================================================
+
+runtime_git:
+  # When enabled, k-ai treats the runtime store (~/.k-ai by default) as a local
+  # git repo that snapshots the durable conversational state:
+  #   - config.yaml
+  #   - MEMORY.json
+  #   - sessions/index.json
+  #   - sessions/*.jsonl
+  #
+  # The runtime git helper intentionally ignores the Python sandbox and other
+  # bulky or ephemeral artifacts.
+  enabled: true
+
+  # On interactive chat exit, automatically `git add .` and create a commit
+  # when tracked runtime state changed.
+  auto_commit_on_chat_exit: true
+
+  # Prefix used for automatic runtime-store commit subjects.
+  commit_prefix: "chat:"
+
+  # Maximum length of the git commit subject generated from the session digest.
+  commit_subject_max_length: 72

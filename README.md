@@ -76,6 +76,9 @@ Installer behavior highlights:
 - if `uv` is missing, proposes installing it
 - if `uv` is declined, falls back to an isolated `k-ai` bootstrap virtualenv instead of polluting the system Python
 - asks which live capability families should start enabled: `exa`, `python`, `shell`, `qmd`
+- installs a managed runtime `.gitignore` in `~/.k-ai/`
+- initializes a local git repo in `~/.k-ai/` and creates the first commit
+- can auto-commit runtime state on each interactive chat exit using the session digest as the commit subject
 
 You can keep the default interactive install, explicitly target the default
 profile, or point to your own:
@@ -142,6 +145,30 @@ make publish
 make push
 make push-docs
 make release
+```
+
+## Runtime Store Versioning
+
+The local runtime store `~/.k-ai/` is now treated as a narrow git repo.
+
+Tracked:
+
+- `config.yaml`
+- `MEMORY.json`
+- `sessions/index.json`
+- `sessions/*.jsonl`
+
+Ignored:
+
+- `sandbox/`
+- any other runtime-heavy or ephemeral artifact outside the tracked list
+
+The installer copies the managed template from [`install/.gitignore.runtime`](install/.gitignore.runtime), initializes `~/.k-ai/.git/`, runs the first `git add .`, and creates the initial commit.
+
+During normal interactive use, `k-ai` can also auto-commit runtime changes on chat exit. The generated commit subject uses the session digest, for example:
+
+```text
+chat: Présentation détaillée de l'assistant k-ai
 ```
 
 ## CLI Usage

@@ -191,6 +191,7 @@ def q(value: str) -> str:
 interactive = data.get("interactive", {}) or {}
 bootstrap = data.get("bootstrap", {}) or {}
 runtime_store = data.get("runtime_store", {}) or {}
+runtime_git = data.get("runtime_git", {}) or {}
 capabilities = data.get("capabilities", {}) or {}
 editor = data.get("editor", {}) or {}
 python_sandbox = data.get("python_sandbox", {}) or {}
@@ -214,6 +215,10 @@ print(f"BOOTSTRAP_VENV_DIR={q(bootstrap.get('bootstrap_venv', '~/.k-ai/bootstrap
 print(f"BOOTSTRAP_BIN_DIR={q(bootstrap.get('bin_dir', '~/.local/bin'))}")
 print(f"BOOTSTRAP_UV_INSTALLER_URL={q(bootstrap.get('uv_installer_url', 'https://astral.sh/uv/install.sh'))}")
 print(f"K_AI_DIR={q(runtime_store.get('home_dir', '~/.k-ai'))}")
+print(f"RUNTIME_GIT_ENABLED={q(str(bool(runtime_git.get('enabled', True))).lower())}")
+print(f"RUNTIME_GIT_AUTO_COMMIT_ON_EXIT={q(str(bool(runtime_git.get('auto_commit_on_chat_exit', True))).lower())}")
+print(f"RUNTIME_GIT_COMMIT_PREFIX={q(runtime_git.get('commit_prefix', 'chat:'))}")
+print(f"RUNTIME_GIT_INITIAL_COMMIT_MESSAGE={q(runtime_git.get('initial_commit_message', 'init: k-ai runtime store'))}")
 print(f"CAP_EXA={q(str(bool(capabilities.get('exa', True))).lower())}")
 print(f"CAP_PYTHON={q(str(bool(capabilities.get('python', True))).lower())}")
 print(f"CAP_SHELL={q(str(bool(capabilities.get('shell', True))).lower())}")
@@ -241,6 +246,7 @@ HOOK_FILE="${K_AI_DIR}/.git/hooks/post-commit"
 SANDBOX_DIR="$(expand_path "${PYTHON_SANDBOX_DIR}")"
 BOOTSTRAP_VENV="$(expand_path "${BOOTSTRAP_VENV_DIR}")"
 BOOTSTRAP_BIN_DIR="$(expand_path "${BOOTSTRAP_BIN_DIR}")"
+RUNTIME_GITIGNORE_TEMPLATE="${PROJECT_DIR}/install/.gitignore.runtime"
 
 step "Selecting installation backend"
 
@@ -410,6 +416,9 @@ run_managed_python -c '
 from k_ai.config import ConfigManager
 cm = ConfigManager(override_path=r"'"${CONFIG_FILE}"'")
 cm.set("config.editor", r"'"${EDITOR_CHOICE}"'")
+cm.set("runtime_git.enabled", '"${RUNTIME_GIT_ENABLED}"' == "true")
+cm.set("runtime_git.auto_commit_on_chat_exit", '"${RUNTIME_GIT_AUTO_COMMIT_ON_EXIT}"' == "true")
+cm.set("runtime_git.commit_prefix", r"'"${RUNTIME_GIT_COMMIT_PREFIX}"'")
 cm.set("tools.exa.enabled", '"${CAP_EXA}"' == "true")
 cm.set("tools.python.enabled", '"${CAP_PYTHON}"' == "true")
 cm.set("tools.python.sandbox_dir", r"'"${SANDBOX_DIR}"'")
@@ -419,20 +428,28 @@ cm.save_active_yaml(r"'"${CONFIG_FILE}"'")
 ' >/dev/null
 ok "Configured config.editor=${EDITOR_CHOICE}"
 
-if [[ ! -f "${K_AI_DIR}/.gitignore" ]]; then
-  printf 'sandbox/\n*.tmp\n' > "${K_AI_DIR}/.gitignore"
-  ok "Created ${K_AI_DIR}/.gitignore"
-fi
+if [[ "${RUNTIME_GIT_ENABLED}" == "true" ]]; then
+  if [[ -f "${RUNTIME_GITIGNORE_TEMPLATE}" ]]; then
+    cp "${RUNTIME_GITIGNORE_TEMPLATE}" "${K_AI_DIR}/.gitignore"
+    ok "Installed managed runtime .gitignore in ${K_AI_DIR}"
+  else
+    warn "Runtime gitignore template not found: ${RUNTIME_GITIGNORE_TEMPLATE}"
+  fi
 
-step "Initializing ~/.k-ai git repo"
+  step "Initializing ~/.k-ai git repo"
 
-if [[ ! -d "${K_AI_DIR}/.git" ]]; then
-  git -C "${K_AI_DIR}" init -q
-  git -C "${K_AI_DIR}" add -A
-  git -C "${K_AI_DIR}" commit -q -m "init: k-ai runtime store" || true
-  ok "Initialized git repo in ${K_AI_DIR}"
+  if [[ ! -d "${K_AI_DIR}/.git" ]]; then
+    git -C "${K_AI_DIR}" init -q
+    git -C "${K_AI_DIR}" add .
+    git -C "${K_AI_DIR}" commit -q -m "${RUNTIME_GIT_INITIAL_COMMIT_MESSAGE}" || true
+    ok "Initialized git repo in ${K_AI_DIR}"
+  else
+    git -C "${K_AI_DIR}" add .
+    git -C "${K_AI_DIR}" commit -q -m "${RUNTIME_GIT_INITIAL_COMMIT_MESSAGE}" || true
+    ok "Git repo already present in ${K_AI_DIR}; runtime state staged and committed if needed"
+  fi
 else
-  ok "Git repo already present in ${K_AI_DIR}"
+  warn "Runtime git tracking disabled by install profile"
 fi
 
 step "Preparing Python sandbox"

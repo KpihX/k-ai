@@ -85,6 +85,23 @@ runtime_store:
   home_dir: "~/.k-ai"
 
 
+# Local git repo for the runtime store (~/.k-ai by default).
+runtime_git:
+  # If true, the installer writes a managed .gitignore, initializes a local git
+  # repo in the runtime store, and writes runtime_git.* into config.yaml.
+  enabled: true
+
+  # If true, k-ai automatically commits runtime changes on interactive chat exit
+  # using the session digest as the commit message subject.
+  auto_commit_on_chat_exit: true
+
+  # Prefix used for automatic runtime-store commit messages.
+  commit_prefix: "chat:"
+
+  # First commit created by the installer after initializing the runtime repo.
+  initial_commit_message: "init: k-ai runtime store"
+
+
 # Initial high-level tool capabilities written into ~/.k-ai/config.yaml.
 # These are the live-switchable families that the user can later manage via the
 # chat/runtime layer:
