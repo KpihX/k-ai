@@ -1129,3 +1129,34 @@ class TestReloadProvider:
             mock_gp.return_value = mock_llm_obj
             session.reload_provider()
         mock_gp.assert_called_once_with(session.cm, provider=original_name, model=None)
+
+    def test_preserve_simple_history_only_removes_tool_related_messages(self, session):
+        session._do_new_session()
+        session.history = [
+            Message(role=MessageRole.USER, content="u1"),
+            Message(role=MessageRole.ASSISTANT, content="", tool_calls=[ToolCall(id="call_1", function_name="memory_list", arguments={})]),
+            Message(role=MessageRole.TOOL, content="tool", tool_call_id="call_1", name="memory_list"),
+            Message(role=MessageRole.ASSISTANT, content="plain answer"),
+        ]
+
+        removed = session.preserve_simple_history_only()
+
+        assert removed == 2
+        assert [m.role for m in session.history] == [MessageRole.USER, MessageRole.ASSISTANT]
+        assert session.history[-1].content == "plain answer"
+
+    def test_apply_config_change_provider_preserves_simple_history_before_reload(self, session):
+        session._do_new_session()
+        session.history = [
+            Message(role=MessageRole.USER, content="u1"),
+            Message(role=MessageRole.ASSISTANT, content="", tool_calls=[ToolCall(id="call_1", function_name="memory_list", arguments={})]),
+            Message(role=MessageRole.TOOL, content="tool", tool_call_id="call_1", name="memory_list"),
+            Message(role=MessageRole.ASSISTANT, content="plain answer"),
+        ]
+        session.cm.set("model", "")
+
+        with patch.object(session, "reload_provider") as reload_mock:
+            session.apply_config_change("provider", "mistral")
+
+        reload_mock.assert_called_once()
+        assert [m.role for m in session.history] == [MessageRole.USER, MessageRole.ASSISTANT]

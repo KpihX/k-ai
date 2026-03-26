@@ -90,7 +90,7 @@ _HELP: dict[str, tuple[str, str, str]] = {
         "/extract a3b5b372 20 15",
     ),
     "/history": ("Show current in-context history size and first/last message previews.", "-", "/history"),
-    "/model [name]": ("Show current model or change it live for this session.", "optional model name", "/model mistral-large-latest"),
+    "/model [name|default]": ("Reset to the current provider default model when omitted or set to default, or switch to a specific model live.", "optional model name", "/model mistral-large-latest"),
     "/provider [name] [model]": (
         "Show current provider or switch provider, optionally changing model at the same time.",
         "provider + optional model",
@@ -466,16 +466,53 @@ class CommandHandler:
         return True
 
     async def _model(self, args: List[str]) -> bool:
-        if not args:
-            return await self._run_internal_tool("runtime_status", {"mode": "compact"})
+        if not args or args[0].lower() == "default":
+            default_model = self.session.provider_default_model()
+            if not default_model:
+                self.console.print("[red]No default model is configured for the current provider.[/red]")
+                return True
+            return await self._run_internal_tool("set_config", {"key": "model", "value": default_model})
         return await self._run_internal_tool("set_config", {"key": "model", "value": args[0]})
 
     async def _provider(self, args: List[str]) -> bool:
         if not args:
             return await self._run_internal_tool("runtime_status", {"mode": "compact"})
-        await self._run_internal_tool("set_config", {"key": "provider", "value": args[0]})
-        if len(args) > 1:
-            await self._run_internal_tool("set_config", {"key": "model", "value": args[1]})
+        target_provider = args[0]
+        target_model = args[1] if len(args) > 1 else self.session.provider_default_model(target_provider)
+
+        if (
+            self.session._session_id
+            and self.session.history
+            and target_provider != self.session.llm.provider_name
+            and self.session.history_has_nonportable_tool_state()
+        ):
+            self.console.print(
+                "[yellow]This session contains tool-call history from the current provider.[/yellow]"
+            )
+            start_new = Confirm.ask(
+                "Start a new session for this provider change?",
+                console=self.console,
+                default=True,
+            )
+            if start_new:
+                current_meta = self.session.session_store.get_session(self.session._session_id) if self.session._session_id else None
+                seed = None
+                if current_meta:
+                    seed = {
+                        "session_type": current_meta.session_type,
+                    }
+                await self.session._finalize_active_session()
+                self.session._do_new_session(seed=seed)
+                self.console.print("[green]Started a new session for the provider switch.[/green]")
+            else:
+                removed = self.session.preserve_simple_history_only()
+                self.console.print(
+                    f"[yellow]Kept only simple user/assistant text history ({removed} complex tool messages removed) before switching provider.[/yellow]"
+                )
+
+        await self._run_internal_tool("set_config", {"key": "provider", "value": target_provider})
+        if target_model:
+            await self._run_internal_tool("set_config", {"key": "model", "value": target_model})
         return True
 
     async def _system(self, args: List[str]) -> bool:

@@ -8,6 +8,7 @@ from k_ai.session import ChatSession
 
 @pytest.fixture
 def session_for_commands(cm, tmp_path):
+    cm.set("provider", "ollama")
     cm.set("sessions.directory", str(tmp_path / "sessions"))
     cm.set("memory.internal_file", str(tmp_path / "MEMORY.json"))
     sess = ChatSession(cm)
@@ -149,6 +150,34 @@ class TestCommandHandler:
         session_for_commands._do_load_session.assert_called_once_with("abc123", last_n=20)
 
     @pytest.mark.asyncio
+    async def test_model_without_argument_resets_to_current_provider_default(self, session_for_commands):
+        handler = CommandHandler(session_for_commands)
+        session_for_commands._execute_internal_tool = AsyncMock(
+            return_value=ToolResult(success=True, message="ok")
+        )
+
+        await handler.handle("/model")
+
+        tool_call = session_for_commands._execute_internal_tool.await_args.args[0]
+        assert tool_call.function_name == "set_config"
+        assert tool_call.arguments["key"] == "model"
+        assert tool_call.arguments["value"] == "phi4-mini:latest"
+
+    @pytest.mark.asyncio
+    async def test_model_default_resets_to_current_provider_default(self, session_for_commands):
+        handler = CommandHandler(session_for_commands)
+        session_for_commands._execute_internal_tool = AsyncMock(
+            return_value=ToolResult(success=True, message="ok")
+        )
+
+        await handler.handle("/model default")
+
+        tool_call = session_for_commands._execute_internal_tool.await_args.args[0]
+        assert tool_call.function_name == "set_config"
+        assert tool_call.arguments["key"] == "model"
+        assert tool_call.arguments["value"] == "phi4-mini:latest"
+
+    @pytest.mark.asyncio
     async def test_set_routes_through_internal_tool_executor(self, session_for_commands):
         handler = CommandHandler(session_for_commands)
         session_for_commands._execute_internal_tool = AsyncMock(
@@ -213,6 +242,48 @@ class TestCommandHandler:
         tool_call = session_for_commands._execute_internal_tool.await_args.args[0]
         assert tool_call.function_name == "tool_capability_set"
         assert tool_call.arguments == {"capability": "python", "enabled": False}
+
+    @pytest.mark.asyncio
+    async def test_provider_change_with_complex_history_can_start_new_session(self, session_for_commands):
+        handler = CommandHandler(session_for_commands)
+        session_for_commands._execute_internal_tool = AsyncMock(
+            return_value=ToolResult(success=True, message="ok")
+        )
+        session_for_commands._do_new_session = MagicMock()
+        session_for_commands._finalize_active_session = AsyncMock()
+        session_for_commands._session_id = "abc123"
+        session_for_commands.history = [MagicMock(role="tool", tool_calls=None)]
+        session_for_commands.history_has_nonportable_tool_state = MagicMock(return_value=True)
+        session_for_commands.provider_default_model = MagicMock(return_value="mistral-medium-latest")
+
+        with patch("k_ai.commands.Confirm.ask", return_value=True):
+            await handler.handle("/provider mistral")
+
+        session_for_commands._finalize_active_session.assert_awaited_once()
+        session_for_commands._do_new_session.assert_called_once()
+        calls = session_for_commands._execute_internal_tool.await_args_list
+        assert calls[0].args[0].arguments == {"key": "provider", "value": "mistral"}
+        assert calls[1].args[0].arguments == {"key": "model", "value": "mistral-medium-latest"}
+
+    @pytest.mark.asyncio
+    async def test_provider_change_with_complex_history_can_keep_only_simple_history(self, session_for_commands):
+        handler = CommandHandler(session_for_commands)
+        session_for_commands._execute_internal_tool = AsyncMock(
+            return_value=ToolResult(success=True, message="ok")
+        )
+        session_for_commands._session_id = "abc123"
+        session_for_commands.history = [MagicMock(role="tool", tool_calls=None)]
+        session_for_commands.history_has_nonportable_tool_state = MagicMock(return_value=True)
+        session_for_commands.preserve_simple_history_only = MagicMock(return_value=4)
+        session_for_commands.provider_default_model = MagicMock(return_value="mistral-medium-latest")
+
+        with patch("k_ai.commands.Confirm.ask", return_value=False):
+            await handler.handle("/provider mistral")
+
+        session_for_commands.preserve_simple_history_only.assert_called_once()
+        calls = session_for_commands._execute_internal_tool.await_args_list
+        assert calls[0].args[0].arguments == {"key": "provider", "value": "mistral"}
+        assert calls[1].args[0].arguments == {"key": "model", "value": "mistral-medium-latest"}
 
     @pytest.mark.asyncio
     async def test_tools_auto_routes_through_policy_set_tool(self, session_for_commands):

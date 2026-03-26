@@ -176,6 +176,34 @@ class ChatSession:
         effective_model = model if model is not None else (self.cm.get("model") or None)
         self.llm = get_provider(self.cm, provider=effective_provider, model=effective_model)
 
+    def provider_default_model(self, provider: Optional[str] = None) -> Optional[str]:
+        effective_provider = provider or self.cm.get("provider") or self.llm.provider_name
+        cfg, _auth_mode = self.cm.get_provider_config_with_auth_mode(str(effective_provider))
+        if not cfg:
+            return None
+        default_model = cfg.get("default_model")
+        return str(default_model) if default_model else None
+
+    def history_has_nonportable_tool_state(self) -> bool:
+        return any(
+            message.role == MessageRole.TOOL or bool(message.tool_calls)
+            for message in self.history
+        )
+
+    def preserve_simple_history_only(self) -> int:
+        filtered = [
+            message
+            for message in self.history
+            if message.role in {MessageRole.USER, MessageRole.ASSISTANT} and not message.tool_calls
+        ]
+        removed = len(self.history) - len(filtered)
+        if removed <= 0:
+            return 0
+        self.history = filtered
+        if self._session_id:
+            self.session_store.rewrite_messages(self._session_id, self.history)
+        return removed
+
     def _estimate_context_tokens(self, messages: Optional[List[Message]] = None) -> int:
         payload = messages if messages is not None else self.history
         return sum(len(m.content) for m in payload) // 4
@@ -274,6 +302,8 @@ class ChatSession:
         saved_to: Optional[str] = None
         try:
             if key in {"provider", "model"}:
+                if key == "provider" and current != applied and self.history_has_nonportable_tool_state():
+                    self.preserve_simple_history_only()
                 provider_name = self.cm.get("provider")
                 model_name = self.cm.get("model") or None
                 self.reload_provider(provider=provider_name, model=model_name)
