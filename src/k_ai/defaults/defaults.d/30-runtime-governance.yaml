@@ -53,6 +53,12 @@ tool_approval:
         default_policy: ask
         protected: false
         description: Start a fresh session, optionally seeded with type/summary/themes.
+      init_system:
+        category: session
+        risk: medium
+        default_policy: ask
+        protected: false
+        description: Start or complete the assistant/user naming and onboarding flow.
       switch_session:
         category: session
         risk: medium

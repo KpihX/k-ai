@@ -12,7 +12,7 @@ from k_ai.tools.meta import (
     NewSessionTool, LoadSessionTool, ExitSessionTool, RenameSessionTool,
     ListSessionsTool, SessionDigestTool, SessionExtractTool, DeleteSessionTool, ClearScreenTool, SetConfigTool,
     GetConfigTool, ListConfigTool, RuntimeStatusTool, SaveConfigTool,
-    ToolPolicyListTool, ToolPolicySetTool, ToolPolicyResetTool, SwitchSessionTool,
+    ToolPolicyListTool, ToolPolicySetTool, ToolPolicyResetTool, SwitchSessionTool, InitSystemTool,
     register_meta_tools,
 )
 from k_ai.tools.memory_tools import MemoryAddTool, MemoryListTool, MemoryRemoveTool
@@ -45,6 +45,8 @@ def ctx(tmp_path, monkeypatch):
         request_new_session=MagicMock(),
         request_load_session=MagicMock(),
         request_compact=MagicMock(),
+        request_init=MagicMock(),
+        complete_init=MagicMock(),
         get_tool_policy_overview=MagicMock(return_value={"rows": [], "defaults_by_risk": {"low": "auto"}, "protected_tools": [], "counts": {"ask": 0, "auto": 0, "protected": 0, "session_overrides": 0, "global_overrides": 0}}),
         update_tool_policy=MagicMock(return_value={"target_kind": "tool", "target": "clear_screen", "policy": "auto", "scope": "session", "previous": None, "saved_to": None}),
         reset_tool_policy=MagicMock(return_value={"target_kind": "tool", "target": "clear_screen", "scope": "session", "previous": "auto", "removed": True, "saved_to": None}),
@@ -93,7 +95,7 @@ class TestToolRegistry:
     def test_register_meta_tools(self, ctx):
         registry = ToolRegistry()
         register_meta_tools(registry, ctx)
-        assert len(registry.list_tools()) == 19  # all meta/runtime/config/admin tools
+        assert len(registry.list_tools()) == 20  # all meta/runtime/config/admin tools
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +116,22 @@ class TestMetaTools:
         result = await tool.execute({"session_type": "meta", "summary": "Admin tools", "themes": ["config"]}, ctx)
         assert result.success is True
         ctx.request_new_session.assert_called_with(seed={"session_type": "meta", "summary": "Admin tools", "themes": ["config"]})
+
+    @pytest.mark.asyncio
+    async def test_init_system_without_names_starts_init_flow(self, ctx):
+        tool = InitSystemTool()
+        result = await tool.execute({}, ctx)
+        assert result.success is True
+        ctx.request_init.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_init_system_persists_assistant_and_user_names(self, ctx):
+        tool = InitSystemTool()
+        result = await tool.execute({"assistant_name": "K-Prime", "user_name": "Ivann"}, ctx)
+        assert result.success is True
+        assert ctx.config.get_nested("prompts", "assistant_name") == "K-Prime"
+        assert any(entry.text == "Preferred user name: Ivann." for entry in ctx.memory.list_entries())
+        ctx.complete_init.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_exit_session(self, ctx):

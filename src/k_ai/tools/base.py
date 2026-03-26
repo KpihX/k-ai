@@ -57,6 +57,8 @@ class ToolContext:
     request_new_session: Optional[Callable] = None
     request_load_session: Optional[Callable] = None
     request_compact: Optional[Callable] = None
+    request_init: Optional[Callable[[], None]] = None
+    complete_init: Optional[Callable[[], None]] = None
     apply_config_change: Optional[Callable[..., Dict[str, Any]]] = None
     generate_session_digest: Optional[Callable[..., Awaitable[dict[str, Any]]]] = None
     get_runtime_snapshot: Optional[Callable[..., Dict[str, Any]]] = None

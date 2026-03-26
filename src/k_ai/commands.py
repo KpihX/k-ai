@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 
 SLASH_COMMANDS = [
     "/help", "/exit", "/quit", "/bye",
-    "/new", "/load", "/sessions", "/rename", "/delete",
+    "/new", "/init", "/load", "/sessions", "/rename", "/delete",
     "/compact", "/clear", "/reset",
     "/digest", "/extract",
     "/history", "/model", "/provider", "/system",
@@ -57,6 +57,11 @@ _HELP: dict[str, tuple[str, str, str]] = {
         "Start a fresh session. Use [cyan]classic[/cyan] for a real task/topic, [cyan]meta[/cyan] for admin/config work.",
         "type=classic|meta",
         "/new meta",
+    ),
+    "/init": (
+        "Start or restart onboarding: choose the assistant name, choose how you want to be addressed, then receive a guided capability overview.",
+        "-",
+        "/init",
     ),
     "/load <id> [last_n]": (
         "Resume a previous session by exact ID or prefix, optionally loading only the last N messages.",
@@ -171,6 +176,7 @@ class CommandHandler:
             "bye": self._exit,
             "q": self._exit,
             "new": self._new,
+            "init": self._init,
             "load": self._load,
             "sessions": self._sessions,
             "rename": self._rename,
@@ -223,6 +229,9 @@ class CommandHandler:
         session_type = seed.get("session_type", "classic")
         self.console.print(f"[green]New {session_type} session started.[/green]")
         return True
+
+    async def _init(self, args: List[str]) -> bool:
+        return await self._run_internal_tool("init_system", {})
 
     async def _load(self, args: List[str]) -> bool:
         if not args:

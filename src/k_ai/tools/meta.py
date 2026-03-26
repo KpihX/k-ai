@@ -5,6 +5,7 @@ Meta/session management tools.
 These tools handle session lifecycle, runtime transparency, and config control.
 """
 import json
+import re
 from typing import Any, Dict
 
 import yaml
@@ -76,6 +77,88 @@ class NewSessionTool(InternalTool):
                 "themes": arguments.get("themes", []),
             })
         return ToolResult(success=True, message="New session started.")
+
+
+class InitSystemTool(InternalTool):
+    name = "init_system"
+    display_name = "Initialize Assistant"
+    category = "session"
+    danger_level = "medium"
+    accent_color = "blue"
+    description = (
+        "Start or complete the onboarding flow: set the assistant display name in config, "
+        "store how the user wants to be addressed in memory, then continue with a capability overview."
+    )
+    parameters_schema = {
+        "type": "object",
+        "properties": {
+            "assistant_name": {
+                "type": "string",
+                "description": "Preferred assistant name to persist in config.",
+            },
+            "user_name": {
+                "type": "string",
+                "description": "Preferred user name to persist in internal memory.",
+            },
+        },
+        "required": [],
+    }
+    requires_approval = True
+
+    @staticmethod
+    def _normalize_name(raw: str) -> str:
+        value = str(raw or "").strip()
+        value = re.sub(r"\s+", " ", value)
+        return value[:60]
+
+    async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
+        assistant_name = self._normalize_name(arguments.get("assistant_name", ""))
+        user_name = self._normalize_name(arguments.get("user_name", ""))
+
+        if not assistant_name and not user_name:
+            if ctx.request_init:
+                ctx.request_init()
+            return ToolResult(
+                success=True,
+                message="Initialization flow started. I will ask how I should be called and how the user wants to be addressed.",
+            )
+
+        if assistant_name:
+            ctx.config.set("prompts.assistant_name", assistant_name)
+            ctx.config.save_active_yaml()
+
+        user_memory_updated = False
+        if user_name:
+            pattern = re.compile(r"^Preferred user name:\s*", re.IGNORECASE)
+            for entry in list(ctx.memory.list_entries()):
+                if pattern.match(entry.text):
+                    ctx.memory.remove(entry.id)
+            ctx.memory.add(f"Preferred user name: {user_name}.")
+            user_memory_updated = True
+
+        if ctx.complete_init:
+            ctx.complete_init()
+
+        details = []
+        if assistant_name:
+            details.append(f"assistant name set to '{assistant_name}'")
+        if user_memory_updated:
+            details.append(f"user preferred name stored as '{user_name}'")
+        return ToolResult(
+            success=True,
+            message="Initialization saved: " + ", ".join(details) if details else "Initialization saved.",
+            data={"assistant_name": assistant_name, "user_name": user_name},
+        )
+
+    def proposal_sections(self, arguments: Dict[str, Any], ctx: ToolContext) -> list[tuple[str, Any]]:
+        from rich.table import Table
+
+        table = Table(show_header=False, box=None, padding=(0, 1))
+        table.add_column("field", style="dim")
+        table.add_column("value")
+        table.add_row("Assistant name", str(arguments.get("assistant_name", "") or "-"))
+        table.add_row("User name", str(arguments.get("user_name", "") or "-"))
+        return [("Initialization", table)]
 
 
 class SwitchSessionTool(InternalTool):
@@ -977,6 +1060,7 @@ def register_meta_tools(registry: ToolRegistry, ctx: ToolContext) -> None:
     """Register all meta/session tools."""
     for tool_cls in [
         NewSessionTool,
+        InitSystemTool,
         SwitchSessionTool,
         LoadSessionTool,
         ExitSessionTool,

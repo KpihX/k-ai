@@ -11,6 +11,7 @@ from pathlib import Path
 from contextlib import contextmanager
 import json
 import os
+import re
 import select
 import signal
 import sys
@@ -96,6 +97,8 @@ class ChatSession:
         self._load_session_id: Optional[str] = None
         self._load_session_last_n: Optional[int] = None
         self._compact_requested: bool = False
+        self._init_requested: bool = False
+        self._init_mode: bool = False
         self._interrupt_requested: bool = False
         self._prompt_interrupt_count: int = 0
         self._queued_new_session_seed: Optional[Dict[str, Any]] = None
@@ -121,6 +124,8 @@ class ChatSession:
             request_new_session=self._handle_new_session,
             request_load_session=self._queue_load_session,
             request_compact=lambda: setattr(self, "_compact_requested", True),
+            request_init=self.request_init,
+            complete_init=self.complete_init,
             apply_config_change=self.apply_config_change,
             generate_session_digest=self.generate_session_digest,
             get_runtime_snapshot=self.get_runtime_snapshot,
@@ -771,9 +776,9 @@ class ChatSession:
     def _build_system_prompt(self, include_sessions: bool = False) -> str:
         parts: List[str] = []
 
-        identity = self.cm.get_nested("prompts", "identity", default=(
-            "You are k-ai, an intelligent CLI chat assistant."
-        ))
+        identity = self._render_prompt_template(self.cm.get_nested("prompts", "identity", default=(
+            "You are {assistant_name}, an intelligent CLI chat assistant."
+        )))
         parts.append(identity)
 
         if self.external_memory:
@@ -797,6 +802,22 @@ class ChatSession:
                     "Keep this session semantically homogeneous. If the user clearly changes to a different dominant intent, "
                     "propose switch_session instead of mixing unrelated topics into the current session."
                 )
+
+        if self._init_mode:
+            parts.append("## Active Tools\n" + ", ".join(self._active_tool_names()))
+            parts.append(
+                "## Initialization Mode\n"
+                + self._render_prompt_template(
+                    self.cm.get_nested(
+                        "prompts",
+                        "init_active",
+                        default=(
+                            "Initialization mode is active. Ask for missing names, then call init_system "
+                            "with assistant_name and user_name, then present the system capabilities."
+                        ),
+                    )
+                )
+            )
 
         if include_sessions:
             max_recent = self.cm.get_nested("sessions", "max_recent", default=10)
@@ -832,6 +853,49 @@ class ChatSession:
     def _messages_with_system(self, include_sessions: bool = False) -> List[Message]:
         system_text = self._build_system_prompt(include_sessions=include_sessions)
         return [Message(role=MessageRole.SYSTEM, content=system_text)] + self.history
+
+    def _prompt_template_vars(self) -> Dict[str, str]:
+        provider = str(getattr(self.llm, "provider_name", "") or "")
+        model = str(getattr(self.llm, "model_name", "") or "")
+        assistant_name = str(self.cm.get_nested("prompts", "assistant_name", default="k-ai") or "k-ai").strip()
+        user_name = self._remembered_user_name()
+        active_tools = ", ".join(self._active_tool_names())
+        return {
+            "assistant_name": assistant_name,
+            "user_name": user_name or "the user",
+            "provider": provider,
+            "model": model,
+            "active_tools": active_tools,
+        }
+
+    def _render_prompt_template(self, text: str) -> str:
+        class _SafeDict(dict):
+            def __missing__(self, key):
+                return "{" + key + "}"
+
+        return str(text or "").format_map(_SafeDict(self._prompt_template_vars()))
+
+    def _remembered_user_name(self) -> str:
+        pattern = re.compile(r"^Preferred user name:\s*(.+?)\.?$", re.IGNORECASE)
+        for entry in self.memory.list_entries():
+            match = pattern.match(entry.text.strip())
+            if match:
+                return match.group(1).strip()
+        return ""
+
+    def _active_tool_names(self) -> List[str]:
+        return sorted(
+            tool["function"]["name"]
+            for tool in self._get_active_tools()
+            if tool.get("function", {}).get("name")
+        )
+
+    def _should_offer_init(self) -> bool:
+        if self.history:
+            return False
+        if self.memory.list_entries():
+            return False
+        return not bool(self.session_store.list_sessions(limit=1))
 
     def _boot_tools(self) -> Optional[List[Dict[str, Any]]]:
         tools = self._get_active_tools()
@@ -878,8 +942,15 @@ class ChatSession:
         if recent:
             render_sessions_table(self.console, recent)
 
-        # Boot greeting (ephemeral)
-        await self._boot_greeting(recent)
+        if self._should_offer_init():
+            self.request_init()
+
+        if self._init_requested:
+            self._init_requested = False
+            await self._run_init_intro(trigger="first_launch")
+        else:
+            # Boot greeting (ephemeral)
+            await self._boot_greeting(recent)
 
         # Build prompt session with styled prompt and slash autocompletion
         slash_completer = FuzzyCompleter(
@@ -925,6 +996,11 @@ class ChatSession:
                     )
                     await self._process_message(carry_message)
                     await self._maybe_compact()
+                continue
+
+            if self._init_requested:
+                self._init_requested = False
+                await self._run_init_intro(trigger="manual")
                 continue
 
             if self._load_session_id:
@@ -990,15 +1066,15 @@ class ChatSession:
 
     async def _boot_greeting(self, recent: List[SessionMetadata]) -> None:
         if recent:
-            boot_instruction = self.cm.get_nested(
+            boot_instruction = self._render_prompt_template(self.cm.get_nested(
                 "prompts", "boot_with_sessions",
                 default="[SESSION_BOOT] Greet the user and suggest resuming a session.",
-            )
+            ))
         else:
-            boot_instruction = self.cm.get_nested(
+            boot_instruction = self._render_prompt_template(self.cm.get_nested(
                 "prompts", "boot_no_sessions",
                 default="[SESSION_BOOT] Greet the user warmly.",
-            )
+            ))
 
         boot_messages = [
             Message(role=MessageRole.SYSTEM, content=self._build_system_prompt(include_sessions=True)),
@@ -1035,6 +1111,48 @@ class ChatSession:
             render_notice(self.console, "Boot interrompu. Retour au prompt.", level="warning", title="Interruption")
         except Exception as e:
             self.console.print(f"[dim]Boot greeting skipped: {e}[/dim]")
+
+    async def _run_init_intro(self, trigger: str) -> None:
+        self._init_mode = True
+        prompt_key = "init_intro"
+        init_instruction = self._render_prompt_template(
+            self.cm.get_nested(
+                "prompts",
+                prompt_key,
+                default=(
+                    "[INIT] Ask what you should be called and how the user wants to be addressed. "
+                    "Do not call tools yet."
+                ),
+            )
+        )
+        if trigger == "manual":
+            init_instruction += "\nThe user explicitly asked to initialize or re-initialize the system."
+
+        boot_messages = [
+            Message(role=MessageRole.SYSTEM, content=self._build_system_prompt(include_sessions=True)),
+            Message(role=MessageRole.USER, content=init_instruction),
+        ]
+
+        try:
+            render_mode = self.cm.get_nested("cli", "render_mode", default="rich")
+            spinner_name = self.cm.get_nested("cli", "thinking_indicator", default="dots")
+            theme_name = self.cm.get_nested("cli", "theme", default="default")
+            with self._interrupt_scope(allow_escape=True):
+                with StreamingRenderer(
+                    self.console,
+                    self.llm.model_name,
+                    render_mode=render_mode,
+                    spinner_name=spinner_name,
+                    theme_name=theme_name,
+                ) as renderer:
+                    async for chunk in self.llm.chat_stream(boot_messages):
+                        if self._interrupt_requested:
+                            raise KeyboardInterrupt
+                        renderer.update(chunk)
+        except KeyboardInterrupt:
+            render_notice(self.console, "Initialisation interrompue. Retour au prompt.", level="warning", title="Interruption")
+        except Exception as e:
+            self.console.print(f"[dim]Initialization intro skipped: {e}[/dim]")
 
     # ------------------------------------------------------------------
     # Agentic message processing loop
@@ -1157,7 +1275,7 @@ class ChatSession:
                         self._persist_message(tool_msg)
                         any_executed = True
 
-                        if self._exit_requested or self._new_session_requested or self._load_session_id:
+                        if self._exit_requested or self._new_session_requested or self._load_session_id or self._init_requested:
                             return
 
                 if not any_executed:
@@ -1437,6 +1555,7 @@ class ChatSession:
             "prompts", "compact_summarize",
             default="Summarize the following conversation concisely.",
         )
+        compact_instruction = self._render_prompt_template(compact_instruction)
         summary_prompt = compact_instruction + "\n\n"
         for m in old_messages:
             summary_prompt += f"[{m.role.value}]: {m.content[:500]}\n"
@@ -1492,6 +1611,7 @@ class ChatSession:
                 if m.role != MessageRole.SYSTEM
             )[:6000]
             title_prompt = self.cm.get_nested("prompts", "exit_title", default="").strip()
+            title_prompt = self._render_prompt_template(title_prompt)
             if title_prompt and transcript:
                 raw_title = ""
                 msgs = [
@@ -1505,6 +1625,7 @@ class ChatSession:
                     self.session_store.rename_session(self._session_id, title)
 
             exit_summary_prompt = self.cm.get_nested("prompts", "exit_summary", default="").strip()
+            exit_summary_prompt = self._render_prompt_template(exit_summary_prompt)
             if exit_summary_prompt and transcript:
                 raw_summary = ""
                 msgs = [
@@ -1545,10 +1666,12 @@ class ChatSession:
                 "or 'meta' for a session mainly about administration, settings, tooling, or chat management."
             ),
         )
+        digest_prompt = self._render_prompt_template(digest_prompt)
         summary_guidance = self.cm.get_nested(
             "prompts", "session_summary",
             default="Summarize the user's intent and the discussion topic in one short sentence.",
         )
+        summary_guidance = self._render_prompt_template(summary_guidance)
         transcript = "\n".join(
             f"[{m.role.value}] {m.content[:300]}"
             for m in messages
@@ -1676,12 +1799,21 @@ class ChatSession:
         self._queued_new_session_message = carry_over_message.strip() if carry_over_message else None
         self._new_session_requested = True
 
+    def request_init(self) -> None:
+        self._init_requested = True
+        self._init_mode = True
+
+    def complete_init(self) -> None:
+        self._init_requested = False
+        self._init_mode = False
+
     def _print_welcome_panel(self) -> None:
         theme_name = self.cm.get_nested("cli", "theme", default="default")
+        assistant_name = str(self.cm.get_nested("prompts", "assistant_name", default="k-ai") or "k-ai")
         self.console.print(
             render_runtime_panel(
                 self.get_runtime_snapshot(),
-                title="k-ai  |  Unified LLM Chat",
+                title=f"{assistant_name}  |  Unified LLM Chat",
                 mode="welcome",
                 theme_name=theme_name,
             )

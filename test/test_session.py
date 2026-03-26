@@ -218,6 +218,22 @@ class TestSystemPrompt:
         assert msgs[0].role == MessageRole.SYSTEM
         assert len(msgs) == 2
 
+    def test_prompt_template_inserts_assistant_name(self, session):
+        session.cm.set("prompts.assistant_name", "K-Prime")
+        prompt = session._build_system_prompt()
+        assert "You are K-Prime" in prompt
+
+    def test_prompt_template_inserts_user_name_from_memory(self, session):
+        session.memory.add("Preferred user name: Ivann.")
+        rendered = session._render_prompt_template("Hello {user_name} from {assistant_name}.")
+        assert rendered == "Hello Ivann from k-ai."
+
+    def test_build_system_prompt_includes_init_guidance_when_active(self, session):
+        session._init_mode = True
+        prompt = session._build_system_prompt()
+        assert "Initialization mode is active" in prompt
+        assert "init_system" in prompt
+
 
 class TestRuntimeConfig:
     def test_runtime_snapshot_contains_context_stats(self, session):
@@ -242,6 +258,13 @@ class TestRuntimeConfig:
         tokens = session.get_token_snapshot()
         assert tokens["token_source"] == "estimated"
         assert tokens["total_tokens"] > 0
+
+    def test_should_offer_init_when_no_sessions_and_memory_empty(self, session):
+        assert session._should_offer_init() is True
+
+    def test_should_not_offer_init_when_memory_exists(self, session):
+        session.memory.add("Preferred user name: Ivann.")
+        assert session._should_offer_init() is False
 
 
 class TestToolPolicies:
@@ -644,6 +667,12 @@ class TestBootFlow:
 
         boot_no = session.cm.get_nested("prompts", "boot_no_sessions")
         assert boot_no is not None
+
+        init_intro = session.cm.get_nested("prompts", "init_intro")
+        assert init_intro is not None
+
+        init_active = session.cm.get_nested("prompts", "init_active")
+        assert init_active is not None
 
         compact = session.cm.get_nested("prompts", "compact_summarize")
         assert compact is not None

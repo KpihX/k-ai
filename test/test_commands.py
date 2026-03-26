@@ -85,6 +85,19 @@ class TestCommandHandler:
         assert session_for_commands.console.print.called
 
     @pytest.mark.asyncio
+    async def test_init_routes_through_internal_tool_executor(self, session_for_commands):
+        handler = CommandHandler(session_for_commands)
+        session_for_commands._execute_internal_tool = AsyncMock(
+            return_value=ToolResult(success=True, message="ok")
+        )
+
+        await handler.handle("/init")
+
+        tool_call = session_for_commands._execute_internal_tool.await_args.args[0]
+        assert tool_call.function_name == "init_system"
+        assert tool_call.arguments == {}
+
+    @pytest.mark.asyncio
     async def test_config_edit_opens_requested_fragment(self, session_for_commands):
         handler = CommandHandler(session_for_commands)
         session_for_commands.cm.set("config.editor", "nano")
