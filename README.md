@@ -123,6 +123,10 @@ make purge
 make check
 make test
 make build
+make publish
+make push
+make push-docs
+make release
 ```
 
 ## CLI Usage
@@ -203,6 +207,8 @@ Run diagnostics:
 
 ```bash
 k-ai doctor
+k-ai doctor --reset config
+k-ai doctor --reset all
 ```
 
 ## Slash Commands

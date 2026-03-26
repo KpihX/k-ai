@@ -2,6 +2,10 @@
 
 ## Done in this pass
 
+- [x] Normalize legacy tool config paths into canonical capability families.
+- [x] Add live capability toggles shared by install, slash commands, and LLM tools.
+- [x] Harden doctor with coherence audits, tool/catalog alignment, and backup-first resets.
+- [x] Add release automation targets for package publishing and docs pushing/publishing.
 - [x] Unify tool proposal/result UI.
 - [x] Restrict QMD session retrieval to the `k-ai` collection.
 - [x] Add session digest generation with themes.
@@ -23,3 +27,4 @@
 - [ ] Improve per-provider token estimation quality beyond character-based heuristics.
 - [ ] Add snapshot/export command for runtime transparency as JSON/YAML.
 - [ ] Add integration tests for interruption behavior in an interactive PTY.
+- [ ] Add a doctor sub-check that verifies Git remotes and publish prerequisites before `make release`.

@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help install purge test check build publish push status
+.PHONY: help install purge test check build publish push push-docs publish-docs release status
 
 help:
 	@echo "Available targets:"
@@ -10,6 +10,9 @@ help:
 	@echo "  check    - py_compile + pytest"
 	@echo "  build    - build package"
 	@echo "  publish  - publish package with uv"
+	@echo "  push-docs - push the standalone docs repo to all remotes"
+	@echo "  publish-docs - publish the standalone docs repo"
+	@echo "  release  - check + build + publish + push + push-docs"
 	@echo "  status   - git status --short"
 	@echo "  push     - push current branch to all remotes"
 
@@ -32,6 +35,12 @@ build:
 publish: build
 	@uv publish
 
+push-docs:
+	@$(MAKE) -C docs push
+
+publish-docs:
+	@$(MAKE) -C docs publish
+
 status:
 	@git status --short
 
@@ -41,3 +50,5 @@ push:
 		echo "==> pushing $$branch to $$remote"; \
 		git push "$$remote" "$$branch"; \
 	done
+
+release: check build publish push push-docs

@@ -12,7 +12,7 @@ sessions:
   # When resuming a session:
   #   0  => load full history
   #   N  => load only the last N messages into active context
-  load_last_n: 0
+  load_last_n: 10
 
   # Number of recent messages echoed in the terminal after /load.
   preview_last_n: 10

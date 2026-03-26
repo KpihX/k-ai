@@ -8,6 +8,17 @@ The format is based on Keep a Changelog.
 
 ### Added
 
+- High-robustness config normalization for legacy tool paths (`tools.exa_search`, `tools.python_exec`, `tools.shell_exec`, `tools.qmd_search`) toward canonical capability families.
+- Live capability switches for `exa`, `python`, `shell`, and `qmd`, shared by install, slash commands, LLM tools, and runtime filtering.
+- Dedicated tool capability admin tools and slash commands:
+  `tool_capability_list`
+  `tool_capability_set`
+  `/tools capabilities`
+  `/tools enable|disable <exa|python|shell|qmd>`
+- Doctor recovery workflows with backup-first resets:
+  `k-ai doctor --reset config|memory|sessions|all`
+  `/doctor reset ...`
+- Isolated `uv` bootstrap fallback for installation when `uv` is absent or declined.
 - Runtime transparency panel showing context usage, compaction threshold, active limits, config persistence path, and token source.
 - Live config management from chat for nested config keys, provider/model changes, config inspection, config listing, and config persistence.
 - Session digest generation with summary + themes, including manual refresh for current or past sessions.
@@ -32,9 +43,14 @@ The format is based on Keep a Changelog.
 - Install script now prefers `make check` during verification and keeps setup idempotent.
 - Programmatic `send()` and `send_with_tools()` now follow the same session lifecycle guarantees as the interactive CLI.
 - CLI theming/spinner config is now actually consumed by the runtime UI.
+- Tool availability is now modeled by capability family, not by per-tool duplicated `enabled` flags.
+- Doctor now audits config coherence and tool/catalog alignment instead of only reporting shallow environment state.
+- Release automation now includes `make push-docs`, `make publish-docs`, and `make release`.
 
 ### Fixed
 
+- Silent drift between legacy user config keys and the canonical runtime tool capability config.
+- Potential availability mismatches between tool families exposed to the LLM and tool execution at runtime.
 - Session lookup and QMD remapping for short IDs.
 - Rollback after failed tool-follow-up turns to avoid mismatched tool call/result history.
 - Duplicate validation UI around tool execution.
