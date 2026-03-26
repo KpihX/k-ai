@@ -134,6 +134,24 @@ class TestOverrideFile:
         cm = ConfigManager(override_path="/does/not/exist.yaml")
         assert cm.get("provider") is not None
 
+    def test_legacy_tool_override_paths_are_normalized(self, tmp_path):
+        p = write_yaml(
+            tmp_path,
+            {
+                "tools": {
+                    "python_exec": {
+                        "enabled": False,
+                        "sandbox_dir": "/tmp/legacy-sandbox",
+                    }
+                }
+            },
+        )
+        cm = ConfigManager(override_path=str(p))
+        assert cm.get_nested("tools", "python", "enabled") is False
+        assert cm.get_nested("tools", "python", "sandbox_dir") == "/tmp/legacy-sandbox"
+        assert cm.get_nested("tools", "python_exec", "enabled") is False
+        assert any("tools.python_exec" in item for item in cm.normalization_notes())
+
 
 # ---------------------------------------------------------------------------
 # Inline kwargs
@@ -209,6 +227,11 @@ class TestSet:
         """If coercion fails, keep the string."""
         cm.set("max_tokens", "not-a-number")
         assert cm.get("max_tokens") == "not-a-number"
+
+    def test_set_accepts_legacy_tool_path_and_writes_canonical_location(self, cm):
+        cm.set("tools.exa_search.enabled", "false")
+        assert cm.get_nested("tools", "exa", "enabled") is False
+        assert cm.get_path("tools.exa_search.enabled") is False
 
 
 # ---------------------------------------------------------------------------
@@ -290,6 +313,11 @@ class TestGetAllDump:
         monkeypatch.setattr("k_ai.config.shutil.which", lambda name: None)
         with pytest.raises(FileNotFoundError):
             cm.resolve_editor_command()
+
+    def test_validate_runtime_coherence_rejects_non_boolean_capability_enabled(self, cm):
+        cm.config.setdefault("tools", {}).setdefault("python", {})["enabled"] = "yes"
+        report = cm.validate_runtime_coherence()
+        assert any("tools.python.enabled must be boolean" in item for item in report["errors"])
 
 
 # ---------------------------------------------------------------------------

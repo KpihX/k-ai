@@ -240,3 +240,13 @@ class TestCommandHandler:
         tool_call = session_for_commands._execute_internal_tool.await_args.args[0]
         assert tool_call.function_name == "tool_policy_reset"
         assert tool_call.arguments["scope"] == "global"
+
+    @pytest.mark.asyncio
+    async def test_doctor_reset_routes_reset_targets(self, session_for_commands):
+        handler = CommandHandler(session_for_commands)
+
+        with patch("k_ai.doctor.run_doctor") as doctor_mock:
+            await handler.handle("/doctor reset config memory")
+
+        doctor_mock.assert_called_once()
+        assert doctor_mock.call_args.kwargs["reset"] == ["config", "memory"]

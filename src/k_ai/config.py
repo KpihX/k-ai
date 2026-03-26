@@ -26,6 +26,12 @@ DEFAULT_CONFIG_SECTIONS: Tuple[Tuple[str, str, str], ...] = (
 # Sentinel used by get_nested() to distinguish "key absent" from "key present
 # with a null value" — a plain None would be ambiguous in the latter case.
 _SENTINEL = object()
+_LEGACY_PATH_ALIASES: Dict[Tuple[str, ...], Tuple[str, ...]] = {
+    ("tools", "exa_search"): ("tools", "exa"),
+    ("tools", "python_exec"): ("tools", "python"),
+    ("tools", "shell_exec"): ("tools", "shell"),
+    ("tools", "qmd_search"): ("tools", "qmd"),
+}
 
 
 @lru_cache(maxsize=8)
@@ -117,6 +123,7 @@ class ConfigManager:
         self.default_config_sections = self._build_default_section_index(self.default_config_path)
         self.override_path = Path(override_path).expanduser() if override_path else None
         self._kwargs: Dict[str, Any] = kwargs
+        self._normalization_notes: List[str] = []
 
         self.config: Dict[str, Any] = {}
         self._load_and_merge()
@@ -158,16 +165,125 @@ class ConfigManager:
 
         # Layer 2: user override file
         if self.override_path and self.override_path.exists():
-            self._deep_merge(self.config, _load_yaml(self.override_path))
+            override_data = copy.deepcopy(_load_yaml(self.override_path))
+            self._normalize_mapping_in_place(override_data)
+            self._deep_merge(self.config, override_data)
 
         # Layer 3: inline kwargs (top-level only)
         for key, value in self._kwargs.items():
             self.config[key] = value
 
+        self._normalize_loaded_config()
+
+    def _normalize_mapping_in_place(self, mapping: Dict[str, Any]) -> None:
+        tools = mapping.get("tools")
+        if not isinstance(tools, dict):
+            return
+        for old_parts, new_parts in _LEGACY_PATH_ALIASES.items():
+            old_name = old_parts[1]
+            new_name = new_parts[1]
+            if old_name not in tools:
+                continue
+            old_value = tools.get(old_name)
+            new_value = tools.get(new_name)
+            if isinstance(old_value, dict) and isinstance(new_value, dict):
+                merged = copy.deepcopy(old_value)
+                self._deep_merge(merged, new_value)
+                tools[new_name] = merged
+                self._normalization_notes.append(
+                    f"Merged legacy config tools.{old_name} into tools.{new_name}; canonical path is tools.{new_name}."
+                )
+            else:
+                tools[new_name] = copy.deepcopy(old_value)
+                self._normalization_notes.append(
+                    f"Moved legacy config tools.{old_name} to tools.{new_name}; canonical path is tools.{new_name}."
+                )
+            del tools[old_name]
+
     @staticmethod
     def _deep_merge(base: Dict, overlay: Dict) -> Dict:
         """Recursively merge `overlay` into `base` in-place. `overlay` wins."""
         return _deep_merge_dicts(base, overlay)
+
+    @staticmethod
+    def _normalize_path_parts(parts: Tuple[str, ...]) -> Tuple[str, ...]:
+        if len(parts) >= 2:
+            alias = _LEGACY_PATH_ALIASES.get(parts[:2])
+            if alias:
+                return alias + parts[2:]
+        return parts
+
+    @classmethod
+    def normalize_dot_path(cls, key: str) -> str:
+        parts = tuple(part for part in str(key or "").split(".") if part)
+        if not parts:
+            return ""
+        return ".".join(cls._normalize_path_parts(parts))
+
+    def _normalize_loaded_config(self) -> None:
+        existing_notes = list(self._normalization_notes)
+        self._normalization_notes = []
+        self._normalize_mapping_in_place(self.config)
+        self._normalization_notes = existing_notes + self._normalization_notes
+
+    def normalization_notes(self) -> List[str]:
+        return list(self._normalization_notes)
+
+    def validate_runtime_coherence(self) -> Dict[str, List[str]]:
+        errors: List[str] = []
+        warnings: List[str] = list(self._normalization_notes)
+
+        tools = self.get_nested("tools", default={})
+        if not isinstance(tools, dict):
+            errors.append("tools must be a mapping.")
+            return {"errors": errors, "warnings": warnings}
+
+        for capability in ("exa", "python", "shell", "qmd"):
+            bucket = tools.get(capability)
+            if not isinstance(bucket, dict):
+                errors.append(f"tools.{capability} must be a mapping.")
+                continue
+            enabled = bucket.get("enabled", True)
+            if not isinstance(enabled, bool):
+                errors.append(f"tools.{capability}.enabled must be boolean.")
+
+        approval = self.get_nested("tool_approval", default={})
+        if not isinstance(approval, dict):
+            errors.append("tool_approval must be a mapping.")
+            return {"errors": errors, "warnings": warnings}
+        catalog = approval.get("catalog", {})
+        if not isinstance(catalog, dict):
+            errors.append("tool_approval.catalog must be a mapping.")
+        global_overrides = approval.get("global_overrides", {})
+        if not isinstance(global_overrides, dict):
+            errors.append("tool_approval.global_overrides must be a mapping.")
+        else:
+            known_tools = {
+                tool_name
+                for group in catalog.values()
+                if isinstance(group, dict)
+                for tool_name in group.keys()
+            }
+            overrides_tools = global_overrides.get("tools", {})
+            if isinstance(overrides_tools, dict):
+                unknown = sorted(name for name in overrides_tools if name not in known_tools)
+                if unknown:
+                    errors.append(
+                        "tool_approval.global_overrides.tools contains unknown tools: "
+                        + ", ".join(unknown)
+                    )
+        return {"errors": errors, "warnings": warnings}
+
+    def backup_active_yaml(self, suffix: str = ".bak") -> Optional[Path]:
+        target_path = self.override_path or Path(
+            str(self.get_nested("config", "persist_path", default="~/.k-ai/config.yaml"))
+        ).expanduser()
+        if not target_path.exists():
+            return None
+        backup = target_path.with_suffix(target_path.suffix + suffix)
+        backup.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(target_path, backup)
+        return backup
 
     # ------------------------------------------------------------------
     # Read API
@@ -188,8 +304,9 @@ class ConfigManager:
         Example::
             cm.get_nested("cli", "theme")  # equivalent to config["cli"]["theme"]
         """
+        normalized_keys = self._normalize_path_parts(tuple(str(key) for key in keys))
         node = self.config
-        for key in keys:
+        for key in normalized_keys:
             if not isinstance(node, dict):
                 return default
             node = node.get(key, _SENTINEL)
@@ -223,7 +340,7 @@ class ConfigManager:
         """Return a value from a dot-notation path."""
         if not key:
             return self.get_all()
-        parts = key.split(".")
+        parts = self.normalize_dot_path(key).split(".")
         return self.get_nested(*parts, default=default)
 
     # ------------------------------------------------------------------
@@ -241,7 +358,7 @@ class ConfigManager:
             cm.set("cli.show_token_usage", "false")  # auto-coerced to bool
             cm.set("max_tokens", "8192")        # auto-coerced to int
         """
-        parts = key.split(".")
+        parts = self.normalize_dot_path(key).split(".")
         node = self.config
         for part in parts[:-1]:
             if not isinstance(node.get(part), dict):
@@ -258,7 +375,7 @@ class ConfigManager:
         """Delete a dot-notation path if it exists. Returns True when removed."""
         if not key:
             return False
-        parts = key.split(".")
+        parts = self.normalize_dot_path(key).split(".")
         node = self.config
         parents: List[tuple[Dict[str, Any], str]] = []
         for part in parts[:-1]:

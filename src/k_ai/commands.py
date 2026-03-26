@@ -39,7 +39,7 @@ SLASH_COMMANDS = [
     "/config show", "/config save", "/config get", "/config sections", "/config edit",
     "/save", "/tokens",
     "/memory list", "/memory add", "/memory remove",
-    "/doctor",
+    "/doctor", "/doctor reset",
     "/qmd query", "/qmd search", "/qmd vsearch",
     "/qmd get", "/qmd ls", "/qmd collections",
     "/qmd status", "/qmd update", "/qmd embed", "/qmd cleanup",
@@ -127,7 +127,11 @@ _HELP: dict[str, tuple[str, str, str]] = {
     "/memory list": ("List persistent memory entries.", "-", "/memory list"),
     "/memory add <text>": ("Add one persistent memory entry.", "free text", "/memory add User prefers French."),
     "/memory remove <id>": ("Remove one persistent memory entry by ID.", "memory id", "/memory remove 3"),
-    "/doctor": ("Run the same environment diagnostic as [cyan]k-ai doctor[/cyan].", "-", "/doctor"),
+    "/doctor": (
+        "Run the same environment diagnostic as [cyan]k-ai doctor[/cyan], including config coherence, tool/catalog alignment, and recovery paths.",
+        "optional: reset <config|memory|sessions|all>",
+        "/doctor reset config",
+    ),
     "/qmd query <text>": ("Run the recommended hybrid semantic search over QMD.", "free text query", "/qmd query diagonalisation matrice"),
     "/qmd search <text>": ("Run keyword-first BM25 search in QMD.", "free text query", "/qmd search Francis Ngannou"),
     "/qmd vsearch <text>": ("Run vector similarity search in QMD.", "free text query", "/qmd vsearch startup camerounaise"),
@@ -415,7 +419,16 @@ class CommandHandler:
 
     async def _doctor(self, args: List[str]) -> bool:
         from .doctor import run_doctor
-        run_doctor(self.session.cm, self.session.memory, self.session.session_store, self.console)
+        reset = []
+        if args and args[0].lower() == "reset":
+            reset = args[1:] or ["all"]
+        run_doctor(
+            self.session.cm,
+            self.session.memory,
+            self.session.session_store,
+            self.console,
+            reset=reset,
+        )
         return True
 
     # ------------------------------------------------------------------

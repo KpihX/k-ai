@@ -257,11 +257,17 @@ def config_cmd(
     help=(
         "Run a full diagnostic of the local k-ai environment.\n\n"
         "The doctor checks the merged config, provider declarations, auth modes, memory store,\n"
-        "session store, and general runtime readability. Use it after changing config files,\n"
-        "installing the package, or debugging a provider issue.\n\n"
+        "session store, tool/catalog alignment, and general runtime readability. Use it after\n"
+        "changing config files, installing the package, or debugging a provider issue.\n\n"
+        "Recovery mode:\n"
+        "  • [cyan]--reset config[/cyan]   restore the config to built-in defaults after backup\n"
+        "  • [cyan]--reset memory[/cyan]   clear persistent memory after backup\n"
+        "  • [cyan]--reset sessions[/cyan] clear persisted sessions after backup\n"
+        "  • [cyan]--reset all[/cyan]      backup then reset config + memory + sessions\n\n"
         "Examples:\n"
         "  • [cyan]k-ai doctor[/cyan]\n"
-        "  • [cyan]k-ai doctor -c ./config.yaml[/cyan]"
+        "  • [cyan]k-ai doctor -c ./config.yaml[/cyan]\n"
+        "  • [cyan]k-ai doctor --reset config[/cyan]"
     ),
 )
 def doctor_cmd(
@@ -271,6 +277,14 @@ def doctor_cmd(
         "-c",
         help=(
             "Path to an override YAML config file to validate instead of using only the built-in defaults."
+        ),
+    ),
+    reset: List[str] = typer.Option(
+        None,
+        "--reset",
+        help=(
+            "Optional last-resort recovery target. Repeatable. Allowed values: "
+            "config, memory, sessions, all. Each reset creates a backup first."
         ),
     ),
 ):
@@ -291,7 +305,7 @@ def doctor_cmd(
         store = SessionStore(sessions_dir)
         store.init()
 
-        run_doctor(cm, memory, store, console)
+        run_doctor(cm, memory, store, console, reset=reset)
     except Exception as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
         raise typer.Exit(1)
