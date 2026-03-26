@@ -53,6 +53,10 @@ The format is based on Keep a Changelog.
 
 - Silent drift between legacy user config keys and the canonical runtime tool capability config.
 - Potential availability mismatches between tool families exposed to the LLM and tool execution at runtime.
+- Empty/silent interactive turns are no longer accepted as successful turns; they retry briefly, then rollback cleanly instead of forcing the user to retype the same request.
+- Duplicate tool calls within the same interactive turn now reuse the earlier result instead of repeatedly asking for the same validation.
+- Session-switch carry-over no longer loops on repeated `switch_session` proposals when the transported user message explicitly mentioned switching.
+- Internal memory now has explicit absolute precedence over internal prompts, which themselves take precedence over external memory when instructions conflict.
 - Session lookup and QMD remapping for short IDs.
 - Rollback after failed tool-follow-up turns to avoid mismatched tool call/result history.
 - Duplicate validation UI around tool execution.

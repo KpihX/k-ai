@@ -25,6 +25,7 @@
 
 ## Next candidates
 
+- [ ] Refactor long-response streaming away from a single full-height Rich `Live` panel to avoid bottom ellipsis/clipping, blinking redraws, and delayed visibility when content exceeds terminal height.
 - [ ] Add a dedicated visual hint in the streaming UI for `Ctrl+C` / `Esc` interruption.
 - [ ] Improve per-provider token estimation quality beyond character-based heuristics.
 - [ ] Add snapshot/export command for runtime transparency as JSON/YAML.

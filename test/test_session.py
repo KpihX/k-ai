@@ -232,14 +232,27 @@ class TestSystemPrompt:
         session.external_memory = "Preferred user name: OldExternal"
         session.memory.add("Preferred user name: NewInternal.")
         prompt = session._build_system_prompt()
+        assert "1. Internal remembered facts" in prompt
+        assert "2. Built-in and session-specific internal prompts/instructions." in prompt
+        assert "3. External user context loaded from a file." in prompt
         assert "Preferred user name: NewInternal." in prompt
-        assert "internal remembered facts as the latest source of truth" in prompt
+        assert prompt.index("## Remembered Facts") < prompt.index("## User Context")
 
     def test_build_system_prompt_includes_init_guidance_when_active(self, session):
         session._init_mode = True
         prompt = session._build_system_prompt()
         assert "Initialization mode is active" in prompt
         assert "init_system" in prompt
+
+    def test_build_system_prompt_includes_post_switch_continuation_guidance(self, session):
+        session._continuation_after_switch = {
+            "summary": "Présentation de l'assistant",
+            "reason": "Le sujet a changé",
+        }
+        prompt = session._build_system_prompt()
+        assert "Continuation After Session Switch" in prompt
+        assert "do not call switch_session again" in prompt
+        assert "Présentation de l'assistant" in prompt
 
 
 class TestRuntimeConfig:
@@ -731,6 +744,22 @@ class TestDebugMode:
 
 class TestTurnRollback:
     @pytest.mark.asyncio
+    async def test_process_message_rolls_back_empty_assistant_turn(self, session):
+        async def _stream(messages, config=None, tools=None):
+            yield CompletionChunk(delta_content="", finish_reason="stop")
+
+        session.llm.chat_stream = _stream
+        session.console = MagicMock()
+        session._tool_ctx.console = session.console
+        session._do_new_session()
+
+        await session._process_message("requete silencieuse")
+
+        assert session.history == []
+        persisted = session.session_store.load_messages(session._session_id)
+        assert persisted == []
+
+    @pytest.mark.asyncio
     async def test_llm_error_after_tool_execution_rolls_back_whole_turn(self, session):
         tc = ToolCall(id="c1", function_name="clear_screen", arguments={})
         call_count = 0
@@ -815,6 +844,39 @@ class TestTurnRollback:
         session._execute_internal_tool.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_process_message_reuses_duplicate_tool_call_within_same_turn(self, session):
+        tc1 = ToolCall(id="c1", function_name="clear_screen", arguments={})
+        tc2 = ToolCall(id="c2", function_name="clear_screen", arguments={})
+        call_count = 0
+
+        async def _stream(messages, config=None, tools=None):
+            nonlocal call_count
+            if call_count == 0:
+                call_count += 1
+                yield CompletionChunk(tool_calls=[tc1], finish_reason="tool_calls")
+            elif call_count == 1:
+                call_count += 1
+                yield CompletionChunk(tool_calls=[tc2], finish_reason="tool_calls")
+            else:
+                yield CompletionChunk(delta_content="done", finish_reason="stop")
+
+        session.llm.chat_stream = _stream
+        session._do_new_session()
+        session.console = MagicMock()
+        session._tool_ctx.console = session.console
+        session._execute_internal_tool = AsyncMock(
+            return_value=ToolResult(success=True, message="cleared")
+        )
+
+        await session._process_message("double")
+
+        session._execute_internal_tool.assert_awaited_once()
+        tool_msgs = [m for m in session.history if m.role == MessageRole.TOOL]
+        assert len(tool_msgs) == 2
+        assert tool_msgs[0].content == "cleared"
+        assert tool_msgs[1].content == "cleared"
+
+    @pytest.mark.asyncio
     async def test_switch_session_rolls_back_current_turn_and_queues_new_session(self, session):
         session._do_new_session(seed={"session_type": "meta", "summary": "Admin"})
         old = Message(role=MessageRole.USER, content="ancien sujet")
@@ -850,6 +912,36 @@ class TestTurnRollback:
         assert session._queued_new_session_message == "nouveau sujet"
         assert len(session.history) == turn_start
         assert session.history[-1].content == "ancien sujet"
+
+    @pytest.mark.asyncio
+    async def test_process_message_suppresses_switch_session_after_already_switched(self, session):
+        tc = ToolCall(
+            id="c1",
+            function_name="switch_session",
+            arguments={"summary": "Présentation", "session_type": "meta", "reason": "nouveau sujet"},
+        )
+        call_count = 0
+
+        async def _stream(messages, config=None, tools=None):
+            nonlocal call_count
+            if call_count == 0:
+                call_count += 1
+                yield CompletionChunk(tool_calls=[tc], finish_reason="tool_calls")
+            else:
+                yield CompletionChunk(delta_content="Je suis k-ai.", finish_reason="stop")
+
+        session.llm.chat_stream = _stream
+        session._do_new_session(seed={"session_type": "meta", "summary": "Présentation"})
+        session.console = MagicMock()
+        session._tool_ctx.console = session.console
+        session._continuation_after_switch = {"summary": "Présentation", "reason": "nouveau sujet"}
+        session._execute_internal_tool = AsyncMock()
+
+        await session._process_message("switch la session et parle de toi", suppress_switch=True)
+
+        session._execute_internal_tool.assert_not_awaited()
+        assistant_msgs = [m for m in session.history if m.role == MessageRole.ASSISTANT]
+        assert assistant_msgs[-1].content == "Je suis k-ai."
 
 
 class TestPersistenceConsistency:

@@ -56,6 +56,7 @@ from .tool_capabilities import capability_enabled, capability_for_tool, list_cap
 
 # Max rounds in the agentic tool loop per user message
 _MAX_TOOL_ROUNDS = 10
+_MAX_EMPTY_ASSISTANT_ROUNDS = 2
 
 
 class ChatSession:
@@ -104,6 +105,7 @@ class ChatSession:
         self._prompt_interrupt_count: int = 0
         self._queued_new_session_seed: Optional[Dict[str, Any]] = None
         self._queued_new_session_message: Optional[str] = None
+        self._continuation_after_switch: Optional[Dict[str, str]] = None
         self._session_tool_policy_overrides: Dict[str, Dict[str, str]] = {
             "tools": {},
             "categories": {},
@@ -145,11 +147,12 @@ class ChatSession:
     # Tool definitions (filter disabled tools)
     # ------------------------------------------------------------------
 
-    def _get_active_tools(self) -> list:
+    def _get_active_tools(self, excluded_tools: Optional[set[str]] = None) -> list:
         """Return OpenAI tool definitions excluding disabled tools."""
+        excluded = excluded_tools or set()
         return [
             t.to_openai_tool() for t in self.tool_registry.list_tools()
-            if self.is_tool_enabled(t.name)
+            if self.is_tool_enabled(t.name) and t.name not in excluded
         ]
 
     def is_tool_enabled(self, tool_name: str) -> bool:
@@ -823,6 +826,19 @@ class ChatSession:
     def _build_system_prompt(self, include_sessions: bool = False) -> str:
         parts: List[str] = []
 
+        parts.append(
+            "## Instruction Priority Rule\n"
+            "If instructions conflict, always apply this order of precedence:\n"
+            "1. Internal remembered facts managed through memory_add / memory_remove.\n"
+            "2. Built-in and session-specific internal prompts/instructions.\n"
+            "3. External user context loaded from a file.\n"
+            "When internal remembered facts conflict with any prompt instruction or external context, treat internal remembered facts as the source of truth."
+        )
+
+        if self.memory.entries:
+            entries_text = "\n".join(f"- {e.text}" for e in self.memory.entries)
+            parts.append(f"## Remembered Facts\n{entries_text}")
+
         identity = self._render_prompt_template(self.cm.get_nested("prompts", "identity", default=(
             "You are {assistant_name}, an intelligent CLI chat assistant."
         )))
@@ -830,15 +846,6 @@ class ChatSession:
 
         if self.external_memory:
             parts.append(f"## User Context\n{self.external_memory}")
-
-        if self.memory.entries:
-            entries_text = "\n".join(f"- {e.text}" for e in self.memory.entries)
-            parts.append(f"## Remembered Facts\n{entries_text}")
-            if self.external_memory:
-                parts.append(
-                    "## Memory Priority Rule\n"
-                    "When internal remembered facts conflict with external user context, treat internal remembered facts as the latest source of truth."
-                )
 
         if self._session_id:
             active = self.session_store.get_session(self._session_id)
@@ -854,6 +861,18 @@ class ChatSession:
                     "Keep this session semantically homogeneous. If the user clearly changes to a different dominant intent, "
                     "propose switch_session instead of mixing unrelated topics into the current session."
                 )
+
+        if self._continuation_after_switch:
+            source_summary = self._continuation_after_switch.get("summary", "").strip() or "(unspecified)"
+            source_reason = self._continuation_after_switch.get("reason", "").strip() or "(no reason provided)"
+            parts.append(
+                "## Continuation After Session Switch\n"
+                "A session switch has already been approved and completed for the current carried-over user request. "
+                "You are already inside the new target session, so do not call switch_session again just because the carried-over "
+                "user message mentions switching. Continue the substantive request directly in this session.\n"
+                f"- target summary: {source_summary}\n"
+                f"- switch reason: {source_reason}"
+            )
 
         if self._init_mode:
             parts.append("## Active Tools\n" + ", ".join(self._active_tool_names()))
@@ -980,6 +999,24 @@ class ChatSession:
                 break
         return " ".join(lines).strip()
 
+    def _tool_call_signature(self, tc: ToolCall) -> str:
+        try:
+            args = json.dumps(tc.arguments or {}, sort_keys=True, ensure_ascii=True)
+        except TypeError:
+            args = json.dumps({"_raw": str(tc.arguments)}, sort_keys=True, ensure_ascii=True)
+        return f"{tc.function_name}:{args}"
+
+    def _deduplicate_tool_calls(self, tool_calls: List[ToolCall]) -> List[ToolCall]:
+        seen: set[str] = set()
+        unique: List[ToolCall] = []
+        for tc in tool_calls:
+            signature = self._tool_call_signature(tc)
+            if signature in seen:
+                continue
+            seen.add(signature)
+            unique.append(tc)
+        return unique
+
     # ------------------------------------------------------------------
     # Interactive loop
     # ------------------------------------------------------------------
@@ -1046,8 +1083,15 @@ class ChatSession:
                         level="info",
                         title="Session Switched",
                     )
-                    await self._process_message(carry_message)
-                    await self._maybe_compact()
+                    self._continuation_after_switch = {
+                        "summary": str((seed or {}).get("summary", "") or ""),
+                        "reason": str((seed or {}).get("reason", "") or ""),
+                    }
+                    try:
+                        await self._process_message(carry_message, suppress_switch=True)
+                        await self._maybe_compact()
+                    finally:
+                        self._continuation_after_switch = None
                 continue
 
             if self._init_requested:
@@ -1210,7 +1254,7 @@ class ChatSession:
     # Agentic message processing loop
     # ------------------------------------------------------------------
 
-    async def _process_message(self, user_input: str) -> None:
+    async def _process_message(self, user_input: str, suppress_switch: bool = False) -> None:
         """
         Full agentic loop: send user message, execute tools, loop back
         to the LLM until no more tool calls are pending.
@@ -1228,7 +1272,10 @@ class ChatSession:
         render_mode = self.cm.get_nested("cli", "render_mode", default="rich")
         spinner_name = self.cm.get_nested("cli", "thinking_indicator", default="dots")
         theme_name = self.cm.get_nested("cli", "theme", default="default")
-        tools = self._get_active_tools()
+        blocked_tools = {"switch_session"} if suppress_switch else set()
+        tools = self._get_active_tools(excluded_tools=blocked_tools)
+        empty_rounds = 0
+        executed_tool_cache: Dict[str, str] = {}
 
         try:
             for _round in range(_MAX_TOOL_ROUNDS):
@@ -1271,6 +1318,39 @@ class ChatSession:
                                 justify="right",
                             )
 
+                pending_tool_calls = self._deduplicate_tool_calls(pending_tool_calls)
+                if suppress_switch:
+                    blocked_switch_calls = [tc for tc in pending_tool_calls if tc.function_name == "switch_session"]
+                    if blocked_switch_calls:
+                        pending_tool_calls = [tc for tc in pending_tool_calls if tc.function_name != "switch_session"]
+                        render_notice(
+                            self.console,
+                            "Le changement de session a déjà eu lieu pour cette requête transportée. Nouvelle proposition de switch ignorée.",
+                            level="warning",
+                            title="Switch Déjà Effectué",
+                        )
+
+                if not full_content.strip() and not pending_tool_calls:
+                    empty_rounds += 1
+                    if empty_rounds < _MAX_EMPTY_ASSISTANT_ROUNDS:
+                        render_notice(
+                            self.console,
+                            "Le modèle a renvoyé une réponse vide. Nouvelle tentative automatique.",
+                            level="warning",
+                            title="Réponse vide",
+                        )
+                        continue
+                    self._rollback_turn(turn_start)
+                    render_notice(
+                        self.console,
+                        "Le modèle n'a produit ni réponse ni action. Rien n'a été enregistré pour ce tour.",
+                        level="error",
+                        title="Tour annulé",
+                    )
+                    return
+
+                empty_rounds = 0
+
                 if full_content or pending_tool_calls:
                     msg = Message(
                         role=MessageRole.ASSISTANT,
@@ -1289,6 +1369,26 @@ class ChatSession:
                 any_executed = False
                 for tc in pending_tool_calls:
                     if self.tool_registry.is_internal(tc.function_name):
+                        signature = self._tool_call_signature(tc)
+                        if signature in executed_tool_cache:
+                            tool_content = executed_tool_cache[signature]
+                            tool_msg = Message(
+                                role=MessageRole.TOOL,
+                                content=tool_content,
+                                tool_call_id=tc.id,
+                                name=tc.function_name,
+                            )
+                            self.history.append(tool_msg)
+                            self._persist_message(tool_msg)
+                            any_executed = True
+                            render_notice(
+                                self.console,
+                                f"Appel identique à {tc.function_name} déjà exécuté dans ce tour: résultat réutilisé.",
+                                level="info",
+                                title="Tool Call Dupliqué",
+                            )
+                            continue
+
                         result = await self._execute_internal_tool(tc, rationale=rationale)
                         if tc.function_name == "switch_session" and result.success and self._new_session_requested:
                             current_session_id = self._session_id
@@ -1325,6 +1425,7 @@ class ChatSession:
                         )
                         self.history.append(tool_msg)
                         self._persist_message(tool_msg)
+                        executed_tool_cache[signature] = tool_content
                         any_executed = True
 
                         if self._exit_requested or self._new_session_requested or self._load_session_id or self._init_requested:

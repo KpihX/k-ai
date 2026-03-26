@@ -196,6 +196,7 @@ class SwitchSessionTool(InternalTool):
             "summary": str(arguments.get("summary", "") or "").strip(),
             "themes": arguments.get("themes", []) or [],
             "session_type": str(arguments.get("session_type", "classic") or "classic"),
+            "reason": str(arguments.get("reason", "") or "").strip(),
         }
         reason = str(arguments.get("reason", "") or "").strip()
         if ctx.request_new_session:
