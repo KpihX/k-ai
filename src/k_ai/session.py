@@ -1383,7 +1383,7 @@ class ChatSession:
         render_mode = self.cm.get_nested("cli", "render_mode", default="rich")
         spinner_name = self.cm.get_nested("cli", "thinking_indicator", default="dots")
         theme_name = self.cm.get_nested("cli", "theme", default="default")
-        blocked_tools = {"switch_session"} if suppress_switch else set()
+        blocked_tools = {"switch_session", "new_session"} if suppress_switch else set()
         tools = self._get_active_tools(excluded_tools=blocked_tools)
         empty_rounds = 0
         executed_tool_cache: Dict[str, str] = {}
@@ -1437,14 +1437,20 @@ class ChatSession:
 
                 pending_tool_calls = self._deduplicate_tool_calls(pending_tool_calls)
                 if suppress_switch:
-                    blocked_switch_calls = [tc for tc in pending_tool_calls if tc.function_name == "switch_session"]
-                    if blocked_switch_calls:
-                        pending_tool_calls = [tc for tc in pending_tool_calls if tc.function_name != "switch_session"]
+                    blocked_session_calls = [
+                        tc for tc in pending_tool_calls
+                        if tc.function_name in {"switch_session", "new_session"}
+                    ]
+                    if blocked_session_calls:
+                        pending_tool_calls = [
+                            tc for tc in pending_tool_calls
+                            if tc.function_name not in {"switch_session", "new_session"}
+                        ]
                         render_notice(
                             self.console,
                             self._notice_value(
                                 "switch_already_done_message",
-                                "The session change has already been completed for this carried request. Any further switch proposal for the same carried turn is ignored.",
+                                "The session change has already been completed for this carried request. Any further session-split proposal for the same carried turn is ignored.",
                             ),
                             level="warning",
                             title=self._notice_value("switch_already_done_title", "Switch Already Completed"),

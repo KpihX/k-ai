@@ -30,6 +30,7 @@ The format is based on Keep a Changelog.
 - `new_session` now behaves like `switch_session` for carried user requests: after approval it can open the clean session and continue answering instead of stopping after the tool result.
 - Stale config expectation in the test suite (`max_tokens`) is now aligned with the real default.
 - Hardcoded regex topic-shift detection was removed in favor of prompt-driven per-turn guidance injected from config.
+- Replayed carried messages after an approved session split can no longer loop on `new_session`; both session-split tools are now suppressed on the first carried turn inside the fresh session.
 
 ## [0.1.1] - 2026-03-26
 

@@ -151,7 +151,7 @@ prompts:
       Initialization was interrupted. Control has been returned to the prompt.
     switch_already_done_title: "Switch Already Completed"
     switch_already_done_message: >-
-      The session change has already been completed for this carried request. Any further switch proposal for the same carried turn is ignored.
+      The session change has already been completed for this carried request. Any further session-split proposal for the same carried turn is ignored.
     empty_response_title: "Empty Response"
     empty_response_message: >-
       The model returned neither text nor tool calls. Retrying automatically.

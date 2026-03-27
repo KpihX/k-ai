@@ -1019,6 +1019,36 @@ class TestTurnRollback:
         assistant_msgs = [m for m in session.history if m.role == MessageRole.ASSISTANT]
         assert assistant_msgs[-1].content == "Je suis k-ai."
 
+    @pytest.mark.asyncio
+    async def test_process_message_suppresses_new_session_after_already_switched(self, session):
+        tc = ToolCall(
+            id="c1",
+            function_name="new_session",
+            arguments={},
+        )
+        call_count = 0
+
+        async def _stream(messages, config=None, tools=None):
+            nonlocal call_count
+            if call_count == 0:
+                call_count += 1
+                yield CompletionChunk(tool_calls=[tc], finish_reason="tool_calls")
+            else:
+                yield CompletionChunk(delta_content="Fresh session ready.", finish_reason="stop")
+
+        session.llm.chat_stream = _stream
+        session._do_new_session(seed={"session_type": "classic", "summary": "New discussion"})
+        session.console = MagicMock()
+        session._tool_ctx.console = session.console
+        session._continuation_after_switch = {"summary": "New discussion", "reason": "user requested a new discussion"}
+        session._execute_internal_tool = AsyncMock()
+
+        await session._process_message("lance une nouvelle discussion", suppress_switch=True)
+
+        session._execute_internal_tool.assert_not_awaited()
+        assistant_msgs = [m for m in session.history if m.role == MessageRole.ASSISTANT]
+        assert assistant_msgs[-1].content == "Fresh session ready."
+
     def test_session_shift_guidance_is_prompt_driven_and_includes_user_input(self, session):
         session._do_new_session(seed={"session_type": "classic", "summary": "Sport"})
         guidance = session._session_shift_guidance_for_turn("bascule sur une nouvelle session et parle moi de meca celeste")
