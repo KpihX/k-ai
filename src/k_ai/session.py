@@ -8,6 +8,7 @@ Manages an interactive chat session with consciousness:
   - Memory integration (external read-only + internal read-write)
 """
 from pathlib import Path
+import atexit
 from contextlib import contextmanager
 import json
 import os
@@ -156,6 +157,10 @@ class ChatSession:
             "categories": {},
             "risks": {},
         }
+        self._shutdown_complete: bool = False
+        self._atexit_registered: bool = False
+        atexit.register(self._atexit_cleanup)
+        self._atexit_registered = True
 
         self._tool_ctx = ToolContext(
             config=self.cm,
@@ -342,6 +347,9 @@ class ChatSession:
         if self._python_runner is not None:
             self._python_runner.close()
             self._python_runner = None
+
+    def _atexit_cleanup(self) -> None:
+        self._close_runners()
 
     def history_has_nonportable_tool_state(self) -> bool:
         return any(
@@ -1956,6 +1964,9 @@ class ChatSession:
         return handled
 
     async def shutdown(self) -> None:
+        if self._shutdown_complete:
+            return
+        self._shutdown_complete = True
         if self._session_id:
             try:
                 await self._auto_rename_on_exit()
@@ -1977,6 +1988,12 @@ class ChatSession:
         )
         self._render_hook_warnings(stop_result.warnings)
         self._close_runners()
+        if self._atexit_registered:
+            try:
+                atexit.unregister(self._atexit_cleanup)
+            except Exception:
+                pass
+            self._atexit_registered = False
         self.console.print(f"\n[bold green]{self._notice_value('goodbye_message', 'Goodbye!')}[/bold green]")
 
     # ------------------------------------------------------------------

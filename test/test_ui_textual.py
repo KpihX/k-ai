@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import asyncio
 
 import pytest
+from textual.containers import Vertical
 from textual.widgets import DataTable, TextArea
 
 from k_ai.models import CompletionChunk
@@ -63,6 +65,26 @@ class _StubSession:
         }
 
 
+@dataclass
+class _StreamingStubSession(_StubSession):
+    async def submit_document(self, text: str) -> bool:
+        self.submitted.append(text)
+        assert self.attached_ui is not None
+        self.attached_ui.show_user(text, theme_name="default")
+        with self.attached_ui.stream_assistant(
+            model_name="demo-model",
+            render_mode="rich",
+            spinner_name="dots",
+            theme_name="default",
+            flush_min_chars=1,
+            tail_chars=10,
+            interrupt_hint="",
+        ) as stream:
+            await asyncio.sleep(0)
+            stream.update(CompletionChunk(delta_content="réponse"))
+        return True
+
+
 @pytest.mark.asyncio
 async def test_textual_chat_submits_composer_content(cm):
     session = _StubSession(cm)
@@ -74,6 +96,24 @@ async def test_textual_chat_submits_composer_content(cm):
         await pilot.press("ctrl+s")
 
     assert session.submitted == ["bonjour textual"]
+
+
+@pytest.mark.asyncio
+async def test_textual_chat_enter_adds_newline_and_grows_composer(cm):
+    session = _StubSession(cm)
+    app = TextualChatApp(session)
+
+    async with app.run_test() as pilot:
+        composer = app.query_one("#composer", TextArea)
+        composer.text = "ligne 1"
+        composer.focus()
+        await pilot.pause()
+        before = composer.styles.height
+        await pilot.press("enter")
+        await pilot.pause()
+        assert "\n" in composer.text
+        assert composer.styles.height != before
+        assert session.submitted == []
 
 
 @pytest.mark.asyncio
@@ -97,9 +137,11 @@ async def test_textual_chat_updates_sessions_and_stream(cm):
                 )()
             ]
         )
-        table = app.query_one("#boot-sessions-table", DataTable)
+        app.action_show_sessions()
+        await pilot.pause()
+        await pilot.pause()
+        table = app.query_one("#sessions-inline-table", DataTable)
         assert table.row_count == 1
-        assert "-visible" in app.query_one("#boot-sessions").classes
 
         with app.presenter.stream_assistant(
             model_name="demo-model",
@@ -117,7 +159,7 @@ async def test_textual_chat_updates_sessions_and_stream(cm):
 
 
 @pytest.mark.asyncio
-async def test_textual_chat_hides_boot_sessions_after_submit(cm):
+async def test_textual_chat_opens_sessions_overlay_after_bootstrap(cm):
     session = _StubSession(cm)
     app = TextualChatApp(session)
 
@@ -137,11 +179,97 @@ async def test_textual_chat_hides_boot_sessions_after_submit(cm):
                 )()
             ]
         )
+        await pilot.pause()
+        assert isinstance(app.query_one("#sessions-inline-table", DataTable), DataTable)
+
+
+@pytest.mark.asyncio
+async def test_textual_chat_submits_from_sessions_overlay_selection(cm):
+    session = _StubSession(cm)
+    app = TextualChatApp(session)
+
+    async with app.run_test() as pilot:
+        app.update_sessions(
+            [
+                type(
+                    "Meta",
+                    (),
+                    {
+                        "id": "12345678abcdef",
+                        "session_type": "classic",
+                        "summary": "Résumé",
+                        "title": "Titre",
+                        "message_count": 4,
+                    },
+                )()
+            ]
+        )
+        app.action_show_sessions()
+        await pilot.pause()
+        table = app.query_one("#sessions-inline-table", DataTable)
+        table.move_cursor(row=0, column=0)
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.pause()
+        assert session.submitted == ["/load 12345678abcdef"]
+
+
+@pytest.mark.asyncio
+async def test_textual_chat_keeps_main_flow_after_submit(cm):
+    session = _StubSession(cm)
+    app = TextualChatApp(session)
+
+    async with app.run_test() as pilot:
         composer = app.query_one("#composer", TextArea)
         composer.text = "bonjour"
         await pilot.press("ctrl+s")
         await pilot.pause()
-        assert "-visible" not in app.query_one("#boot-sessions").classes
+        assert len(app.screen_stack) == 1
+        assert session.submitted == ["bonjour"]
+
+
+@pytest.mark.asyncio
+async def test_textual_chat_submit_runs_in_background_and_commits_response(cm):
+    session = _StreamingStubSession(cm)
+    app = TextualChatApp(session)
+
+    async with app.run_test() as pilot:
+        composer = app.query_one("#composer", TextArea)
+        composer.text = "bonjour"
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        await pilot.pause()
+        stack = app.query_one("#conversation-stack", Vertical)
+        assert len(stack.children) >= 2
+        assert app._stream_widget is None
+        assert session.submitted == ["bonjour"]
+
+
+@pytest.mark.asyncio
+async def test_textual_chat_status_bar_contains_runtime_details(cm):
+    session = _StubSession(cm)
+    app = TextualChatApp(session)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        text = str(app._last_status_text)
+        assert "test/demo" in text
+        assert "ctx" in text
+        assert "tok" in text
+        assert "skills" in text
+
+
+@pytest.mark.asyncio
+async def test_textual_chat_inline_approval_resolves_yes(cm):
+    session = _StubSession(cm)
+    app = TextualChatApp(session)
+
+    async with app.run_test() as pilot:
+        task = asyncio.create_task(app.show_inline_approval("approval body", title="approval"))
+        await pilot.pause()
+        await pilot.press("y")
+        await pilot.pause()
+        assert await task is True
 
 
 def test_sanitize_composer_text_strips_terminal_garbage():

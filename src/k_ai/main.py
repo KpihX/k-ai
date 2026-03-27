@@ -90,7 +90,10 @@ def _run_chat(
         asyncio.run(session.start())
         return
     app = TextualChatApp(session)
-    app.run()
+    try:
+        app.run()
+    finally:
+        asyncio.run(session.shutdown())
 
 
 def _run_ask(

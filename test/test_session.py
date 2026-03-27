@@ -260,6 +260,21 @@ class TestSystemPrompt:
         assert "do not propose another session-switch tool" in prompt
         assert "Présentation de l'assistant" in prompt
 
+
+class TestShutdown:
+    @pytest.mark.asyncio
+    async def test_shutdown_closes_persistent_runners_once(self, session):
+        shell_runner = MagicMock()
+        python_runner = MagicMock()
+        session._shell_runner = shell_runner
+        session._python_runner = python_runner
+
+        await session.shutdown()
+        await session.shutdown()
+
+        shell_runner.close.assert_called_once()
+        python_runner.close.assert_called_once()
+
     def test_build_system_prompt_includes_skill_catalog(self, session, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         skill_dir = tmp_path / ".k-ai" / "skills" / "review"

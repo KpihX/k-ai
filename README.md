@@ -44,7 +44,7 @@ It is designed around one principle: the chat loop, the slash commands, and the 
 - Mixed multiline input in chat: plain text to the LLM, `!` shell blocks, `>` Python blocks, and `/?` ephemeral contextual questions.
 - Persistent PTY-backed local shell and Python runners, including secure focus mode for interactive prompts such as `sudo` passwords.
 - Append-only long-response streaming with early visibility and no full-height Live panel clipping/flicker on long answers.
-- Full-screen Textual TUI for `k-ai chat`: stable panes, modal tool approvals, runtime inspector, session sidebar, and a multiline composer.
+- Full-screen Textual TUI for `k-ai chat`: vertical interaction-first layout, inline session browser/tool approvals, live status bar, and a multiline composer that grows on demand.
 
 ## Problem-First Docs
 
@@ -293,11 +293,14 @@ Rules:
 
 `k-ai chat` now opens a full-screen Textual application by default.
 
-Main panes:
+Main structure:
 
-- top boot panel: recent sessions only at startup, then dismissible
-- center: transcript + live streaming slot + multiline composer
-- right: runtime inspector and activity log, hidden automatically on narrow terminals
+- header
+- body: streaming slot + transcript
+- footer area: dynamic composer + live status bar
+- inline at boot: recent sessions in the conversation flow
+- inline during execution: tool approvals in the conversation flow, with direct keyboard focus
+- overlays on demand: runtime snapshot and activity log
 
 Core bindings:
 
@@ -305,9 +308,9 @@ Core bindings:
 - `F2` send the current composer buffer
 - `Ctrl+Enter` send when the terminal forwards it distinctly
 - `Ctrl+J` focus composer
-- `Ctrl+B` focus the boot sessions table when visible
-- `Ctrl+R` focus runtime
-- `Ctrl+L` focus activity
+- `Ctrl+B` open recent sessions inline
+- `Ctrl+R` open runtime overlay
+- `Ctrl+L` open activity overlay
 - `Ctrl+Q` quit the TUI
 
 Tool approvals now open as proper modal dialogs instead of being appended into

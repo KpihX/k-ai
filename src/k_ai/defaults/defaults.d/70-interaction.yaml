@@ -23,11 +23,15 @@ interaction:
     multiline: true
     prompt_label: "You: "
     continuation_label: "... "
-    # Terminal portability is poor for Shift+Enter. Use Esc+Enter or Ctrl+J for a newline.
+    # Textual TUI uses these to decide whether a key submits the composer or
+    # inserts a newline. Keep fallbacks because Ctrl+Enter is not forwarded by
+    # every terminal.
     submit_bindings:
-      - "enter"
+      - "ctrl+enter"
+      - "c-s"
+      - "f2"
     newline_bindings:
-      - "escape-enter"
+      - "enter"
       - "c-j"
     parse_blank_lines: true
 
