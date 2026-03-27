@@ -2099,8 +2099,9 @@ class ChatSession:
         block_output_mode = str(
             self.cm.get_nested("interaction", "runners", "runtime", "block_output_mode", default="buffered") or "buffered"
         ).strip().lower()
-        self.console.print(f"[bold cyan]{title}[/bold cyan] [dim](cwd: {self._current_cwd})[/dim]")
         display_output = block_output_mode == "streamed"
+        if display_output:
+            self.console.print(f"[bold cyan]{title}[/bold cyan] [dim](cwd: {self._current_cwd})[/dim]")
         result = runner.run_block(block.content, display_output=display_output)
         if result.cwd is not None:
             self._current_cwd = result.cwd
@@ -2119,8 +2120,9 @@ class ChatSession:
         block_output_mode = str(
             self.cm.get_nested("interaction", "runners", "runtime", "block_output_mode", default="buffered") or "buffered"
         ).strip().lower()
-        self.console.print(f"[bold cyan]{title}[/bold cyan] [dim](cwd: {self._current_cwd})[/dim]")
         display_output = block_output_mode == "streamed"
+        if display_output:
+            self.console.print(f"[bold cyan]{title}[/bold cyan] [dim](cwd: {self._current_cwd})[/dim]")
         result = runner.run_block(block.content, display_output=display_output)
         if result.cwd is not None:
             self._current_cwd = result.cwd
