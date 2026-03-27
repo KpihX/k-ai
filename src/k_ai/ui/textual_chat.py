@@ -45,15 +45,6 @@ Screen {
   height: 1fr;
 }
 
-#sidebar {
-  width: 22;
-  min-width: 18;
-  max-width: 26;
-  border: round #2e8b57;
-  background: #141821;
-  padding: 0 1;
-}
-
 #sidebar-title {
   height: 3;
   content-align: center middle;
@@ -63,8 +54,30 @@ Screen {
 
 #center-column {
   width: 1fr;
-  min-width: 34;
+  min-width: 40;
+  padding: 0 1 0 1;
+}
+
+#boot-sessions {
+  display: none;
+  height: 12;
+  margin-bottom: 1;
+  border: round #2e8b57;
+  background: #141821;
   padding: 0 1;
+}
+
+#boot-sessions.-visible {
+  display: block;
+}
+
+#boot-sessions-header {
+  height: 3;
+  layout: horizontal;
+}
+
+#boot-sessions-table {
+  height: 1fr;
 }
 
 #streaming-slot {
@@ -98,8 +111,13 @@ Screen {
   text-style: bold;
 }
 
+#composer-actions {
+  height: 3;
+  align: right middle;
+}
+
 #composer {
-  height: 8;
+  height: 9;
   border: round #355b7a;
   background: #0d1218;
 }
@@ -150,6 +168,14 @@ Screen {
   dock: bottom;
   height: 3;
   align: right middle;
+}
+
+Screen.-compact #inspector {
+  display: none;
+}
+
+Screen.-compact #composer-hints {
+  display: none;
 }
 """
 
@@ -418,11 +444,14 @@ class TextualChatApp(App[None]):
     CSS = TEXTUAL_CHAT_CSS
     BINDINGS = [
         Binding("ctrl+enter", "submit", "Send", priority=True),
-        Binding("ctrl+j", "focus_composer", "Composer"),
-        Binding("ctrl+g", "focus_transcript", "Transcript"),
-        Binding("ctrl+b", "focus_sessions", "Sessions"),
+        Binding("ctrl+s", "submit", "Send", priority=True),
+        Binding("f2", "submit", "Send", priority=True),
+        Binding("ctrl+j", "focus_composer", "Composer", priority=True),
+        Binding("ctrl+g", "focus_transcript", "Transcript", priority=True),
+        Binding("ctrl+b", "focus_boot_sessions", "Sessions", priority=True),
         Binding("ctrl+r", "focus_runtime", "Runtime"),
         Binding("ctrl+l", "focus_activity", "Activity"),
+        Binding("escape", "dismiss_boot_sessions", "Hide Sessions", show=False, priority=True),
         Binding("f5", "refresh_runtime", "Refresh"),
         Binding("ctrl+q", "quit", "Quit"),
     ]
@@ -439,14 +468,18 @@ class TextualChatApp(App[None]):
         yield Header(show_clock=True)
         with Container(id="app-shell"):
             with Horizontal(id="body"):
-                with Vertical(id="sidebar"):
-                    yield Static("Sessions", id="sidebar-title")
-                    yield DataTable(id="sessions-table", zebra_stripes=True)
                 with Vertical(id="center-column"):
+                    with Vertical(id="boot-sessions"):
+                        with Horizontal(id="boot-sessions-header"):
+                            yield Static("Recent Sessions", id="sidebar-title")
+                            yield Button("Hide", id="hide-sessions", variant="default")
+                        yield DataTable(id="boot-sessions-table", zebra_stripes=True)
                     yield Static(id="streaming-slot")
                     yield RichLog(id="transcript", wrap=True, markup=True, auto_scroll=True, highlight=True)
                     with Vertical(id="composer-shell"):
-                        yield Static("Composer", id="composer-title")
+                        with Horizontal(id="composer-actions"):
+                            yield Static("Composer", id="composer-title")
+                            yield Button("Send", id="send-button", variant="primary")
                         yield TextArea(
                             id="composer",
                             language="markdown",
@@ -469,10 +502,11 @@ class TextualChatApp(App[None]):
 
     def on_mount(self) -> None:
         self.sub_title = "Textual Chat"
-        table = self.query_one("#sessions-table", DataTable)
+        table = self.query_one("#boot-sessions-table", DataTable)
         table.add_columns("#", "Session", "Type", "Summary", "Msgs")
         self.query_one("#composer", TextArea).clear()
         self.call_after_refresh(self.action_focus_composer)
+        self._update_responsive_mode()
         self.run_worker(self._bootstrap(), exclusive=True, group="session")
 
     async def _bootstrap(self) -> None:
@@ -481,7 +515,7 @@ class TextualChatApp(App[None]):
         self.action_refresh_runtime()
 
     def update_sessions(self, sessions: Sequence[SessionMetadata], *, title: str = "Recent Sessions") -> None:
-        table = self.query_one("#sessions-table", DataTable)
+        table = self.query_one("#boot-sessions-table", DataTable)
         table.clear(columns=False)
         for index, session in enumerate(sessions, start=1):
             table.add_row(
@@ -492,6 +526,11 @@ class TextualChatApp(App[None]):
                 str(session.message_count),
                 key=session.id,
             )
+        container = self.query_one("#boot-sessions", Vertical)
+        if sessions:
+            container.add_class("-visible")
+        else:
+            container.remove_class("-visible")
         self.append_activity(Text(f"{title}: {len(sessions)} session(s)"))
 
     def update_runtime(self, renderable) -> None:
@@ -532,6 +571,7 @@ class TextualChatApp(App[None]):
         if not text.strip():
             return
         composer.clear()
+        self.action_dismiss_boot_sessions()
         async with self._submit_lock:
             await self.session.submit_document(text)
             self.action_refresh_runtime()
@@ -545,8 +585,15 @@ class TextualChatApp(App[None]):
     def action_focus_transcript(self) -> None:
         self.query_one("#transcript", RichLog).focus()
 
-    def action_focus_sessions(self) -> None:
-        self.query_one("#sessions-table", DataTable).focus()
+    def action_focus_boot_sessions(self) -> None:
+        container = self.query_one("#boot-sessions", Vertical)
+        if "-visible" in container.classes:
+            self.query_one("#boot-sessions-table", DataTable).focus()
+            return
+        self.action_focus_composer()
+
+    def action_dismiss_boot_sessions(self) -> None:
+        self.query_one("#boot-sessions", Vertical).remove_class("-visible")
 
     def action_focus_runtime(self) -> None:
         self.query_one("#runtime-view", Static).focus()
@@ -575,9 +622,27 @@ class TextualChatApp(App[None]):
     def _handle_paste(self, event: Paste) -> None:
         self.call_after_refresh(self._sanitize_composer)
 
-    @on(DataTable.RowSelected, "#sessions-table")
+    @on(Button.Pressed, "#send-button")
+    async def _handle_send_button(self) -> None:
+        await self.submit_current_buffer()
+
+    @on(Button.Pressed, "#hide-sessions")
+    def _handle_hide_sessions(self) -> None:
+        self.action_dismiss_boot_sessions()
+
+    @on(DataTable.RowSelected, "#boot-sessions-table")
     async def _load_selected_session(self, event: DataTable.RowSelected) -> None:
         row_key = event.row_key.value if event.row_key else None
         if row_key:
+            self.action_dismiss_boot_sessions()
             await self.session.submit_document(f"/load {row_key}")
             self.action_refresh_runtime()
+
+    def on_resize(self, event=None) -> None:
+        self._update_responsive_mode()
+
+    def _update_responsive_mode(self) -> None:
+        if self.size.width < 120:
+            self.add_class("-compact")
+        else:
+            self.remove_class("-compact")

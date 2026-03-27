@@ -295,15 +295,17 @@ Rules:
 
 Main panes:
 
-- left: recent sessions
+- top boot panel: recent sessions only at startup, then dismissible
 - center: transcript + live streaming slot + multiline composer
-- right: runtime inspector and activity log
+- right: runtime inspector and activity log, hidden automatically on narrow terminals
 
 Core bindings:
 
-- `Ctrl+Enter` send the current composer buffer
+- `Ctrl+S` send the current composer buffer
+- `F2` send the current composer buffer
+- `Ctrl+Enter` send when the terminal forwards it distinctly
 - `Ctrl+J` focus composer
-- `Ctrl+B` focus sessions
+- `Ctrl+B` focus the boot sessions table when visible
 - `Ctrl+R` focus runtime
 - `Ctrl+L` focus activity
 - `Ctrl+Q` quit the TUI

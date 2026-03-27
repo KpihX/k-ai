@@ -71,7 +71,7 @@ async def test_textual_chat_submits_composer_content(cm):
     async with app.run_test() as pilot:
         composer = app.query_one("#composer", TextArea)
         composer.text = "bonjour textual"
-        await pilot.press("ctrl+enter")
+        await pilot.press("ctrl+s")
 
     assert session.submitted == ["bonjour textual"]
 
@@ -97,8 +97,9 @@ async def test_textual_chat_updates_sessions_and_stream(cm):
                 )()
             ]
         )
-        table = app.query_one("#sessions-table", DataTable)
+        table = app.query_one("#boot-sessions-table", DataTable)
         assert table.row_count == 1
+        assert "-visible" in app.query_one("#boot-sessions").classes
 
         with app.presenter.stream_assistant(
             model_name="demo-model",
@@ -113,6 +114,34 @@ async def test_textual_chat_updates_sessions_and_stream(cm):
 
         await pilot.pause()
         assert "-active" not in app.query_one("#streaming-slot").classes
+
+
+@pytest.mark.asyncio
+async def test_textual_chat_hides_boot_sessions_after_submit(cm):
+    session = _StubSession(cm)
+    app = TextualChatApp(session)
+
+    async with app.run_test() as pilot:
+        app.update_sessions(
+            [
+                type(
+                    "Meta",
+                    (),
+                    {
+                        "id": "12345678abcdef",
+                        "session_type": "classic",
+                        "summary": "Résumé",
+                        "title": "Titre",
+                        "message_count": 4,
+                    },
+                )()
+            ]
+        )
+        composer = app.query_one("#composer", TextArea)
+        composer.text = "bonjour"
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        assert "-visible" not in app.query_one("#boot-sessions").classes
 
 
 def test_sanitize_composer_text_strips_terminal_garbage():
