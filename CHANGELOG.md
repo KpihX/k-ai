@@ -18,12 +18,19 @@ The format is based on Keep a Changelog.
 - Persistent PTY-backed user shell and Python runners, plus `/focus shell`, `/focus python`, and `/cwd` slash commands.
 - CLI/root `-C/--cwd` support so chat, ask, shell blocks, Python blocks, and runtime tools all share the same explicit working directory.
 - New tests for parser semantics, ask mode, cwd propagation, persistent runners, CLI root fallback, and local-output injection into mixed batches.
+- Dedicated UI tests for append-only streaming, terminal-output sanitization, sentinel parsing, and focus enter/exit runner hooks.
 
 ### Changed
 
 - `shell_exec` and `python_exec` now honor the session working directory instead of implicitly running in the process cwd.
 - The interactive prompt is now multiline and routes submitted documents through a dedicated interaction parser instead of a single raw user string.
 - `scripts/purge.sh` now detects installed uv tools more robustly before uninstalling them.
+- Long assistant responses now stream append-only under a static assistant header instead of keeping one giant full-height Rich `Live` panel alive.
+- Default `!` and `>` block rendering is now buffered into clean local-result panels, while explicit `/focus` remains the path for raw interactive PTY control.
+
+### Fixed
+
+- Shell/Python local runner output now strips PTY control noise, sentinel-command leakage, and login-shell echo artifacts before those results reach the user-facing UI or the LLM batch context.
 
 ## [0.2.0] - 2026-03-27
 

@@ -31,10 +31,10 @@
 
 ## Next candidates
 
-- [ ] Refactor long-response streaming away from a single full-height Rich `Live` panel to avoid bottom ellipsis/clipping, blinking redraws, and delayed visibility when content exceeds terminal height.
+- [x] Refactor long-response streaming away from a single full-height Rich `Live` panel to avoid bottom ellipsis/clipping, blinking redraws, and delayed visibility when content exceeds terminal height.
 - [x] Implement the hooks layer after skills stabilization: structured lifecycle hooks with timeout policies, discovery roots, auditability, and Claude-style event naming.
 - [ ] Deepen MCP runtime sophistication beyond the current foundation: persistent sessions where useful, richer roots refresh semantics, broader transport tuning, and higher-level server templates.
-- [ ] Add a dedicated visual hint in the streaming UI for `Ctrl+C` / `Esc` interruption.
+- [x] Add a dedicated visual hint in the streaming UI for `Ctrl+C` / `Esc` interruption.
 - [ ] Improve per-provider token estimation quality beyond character-based heuristics.
 - [ ] Add snapshot/export command for runtime transparency as JSON/YAML.
 - [ ] Add integration tests for interruption behavior in an interactive PTY.

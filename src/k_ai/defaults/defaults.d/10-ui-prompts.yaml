@@ -28,6 +28,17 @@ cli:
   #   rich      markdown + richer formatting helpers
   render_mode: "rich"
 
+  streaming:
+    # Flush completed content blocks once the buffered tail reaches this size.
+    flush_min_chars: 600
+
+    # Keep a small trailing tail in memory while waiting for a safer flush
+    # boundary. This avoids rendering incomplete Markdown structures too early.
+    tail_chars: 120
+
+    # Short inline interruption hint shown while waiting for first tokens.
+    interrupt_hint: "Ctrl+C to interrupt"
+
   # Maximum characters shown for a tool result in the UI panel.
   tool_result_max_display: 2000
 

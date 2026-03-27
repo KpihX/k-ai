@@ -209,6 +209,15 @@ def render_thinking_panel(content: str, render_mode: str = "rich", active: bool 
     )
 
 
+def render_assistant_stream_header(model_name: str, theme_name: str = "default") -> Panel:
+    theme = resolve_ui_theme(theme_name)
+    return Panel.fit(
+        Text.from_markup(f"[bold green]Assistant[/bold green] [dim]{model_name}[/dim]"),
+        border_style=str(theme.get("assistant_border", "green")),
+        padding=(0, 1),
+    )
+
+
 # ---------------------------------------------------------------------------
 # StreamingRenderer — handles the live streaming display
 # ---------------------------------------------------------------------------
@@ -220,18 +229,32 @@ class StreamingRenderer:
     Display states:
       1. Spinner       — waiting for the first token (transient)
       2. Thinking panel — <think>...</think> content (transient, then committed)
-      3. Response panel — visible content (NON-transient = stays on screen)
+      3. Response stream — append-only header + incremental static chunks
 
-    The response panel is always non-transient so it persists after Live stops.
-    This avoids the double-print bug where __exit__ would re-print.
+    Content is streamed append-only after the first token instead of using one
+    giant full-height Live panel. This avoids clipping, redraw blinking, and
+    delayed visibility on very long answers.
     """
 
-    def __init__(self, console: Console, model_name: str, render_mode: str = "rich", spinner_name: str = "dots", theme_name: str = "default"):
+    def __init__(
+        self,
+        console: Console,
+        model_name: str,
+        render_mode: str = "rich",
+        spinner_name: str = "dots",
+        theme_name: str = "default",
+        flush_min_chars: int = 600,
+        tail_chars: int = 120,
+        interrupt_hint: str = "",
+    ):
         self.console = console
         self.model_name = model_name
         self.render_mode = render_mode
         self.spinner_name = spinner_name or "dots"
         self.theme_name = theme_name or "default"
+        self.flush_min_chars = max(int(flush_min_chars or 0), 80)
+        self.tail_chars = max(int(tail_chars or 0), 0)
+        self.interrupt_hint = str(interrupt_hint or "").strip()
 
         self.full_content: str = ""
         self.full_thought: str = ""
@@ -239,13 +262,18 @@ class StreamingRenderer:
 
         self._thinking_committed: bool = False
         self._content_started: bool = False
+        self._stream_header_printed: bool = False
+        self._flushed_chars: int = 0
         self._live: Optional[Live] = None
 
     def __enter__(self) -> "StreamingRenderer":
+        spinner_text = "[dim]Generating...[/dim]"
+        if self.interrupt_hint:
+            spinner_text = f"{spinner_text} [dim]({self.interrupt_hint})[/dim]"
         try:
-            spinner = Spinner(self.spinner_name, text="[dim]Generating...[/dim]")
+            spinner = Spinner(self.spinner_name, text=spinner_text)
         except Exception:
-            spinner = Spinner("dots", text="[dim]Generating...[/dim]")
+            spinner = Spinner("dots", text=spinner_text)
         self._live = Live(
             spinner,
             console=self.console,
@@ -270,11 +298,9 @@ class StreamingRenderer:
         if self.full_thought and not self._thinking_committed:
             self.console.print(render_thinking_panel(self.full_thought, self.render_mode, theme_name=self.theme_name))
 
-        # Content panel: only print if we never switched to non-transient Live.
-        # Once _content_started is True, the Live was non-transient and content
-        # is already on screen — no need to re-print.
-        if self.full_content and not self._content_started:
-            self.console.print(self._content_panel())
+        if self.full_content:
+            self._begin_content_stream()
+            self._flush_streamed_content(final=True)
 
     def update(self, chunk: CompletionChunk) -> None:
         if not self._live:
@@ -295,40 +321,74 @@ class StreamingRenderer:
 
         # Transition: first content token arrived
         if has_content and not self._content_started:
-            # Commit thinking if present
-            if has_thought and not self._thinking_committed:
-                self._live.stop()
-                self.console.print(render_thinking_panel(self.full_thought, self.render_mode, theme_name=self.theme_name))
-                self._thinking_committed = True
-            else:
-                # No thinking — stop the transient spinner
-                self._live.stop()
-
-            # Start a NEW non-transient Live for content (stays on screen)
-            self._content_started = True
-            self._live = Live(
-                self._content_panel(),
-                console=self.console,
-                refresh_per_second=15,
-                transient=False,  # Content persists after stop
-            )
-            self._live.start()
+            self._begin_content_stream()
+            self._flush_streamed_content(final=False)
             return
 
-        # Update existing live
         if has_content:
-            self._live.update(self._content_panel())
+            self._flush_streamed_content(final=False)
         elif has_thought:
             self._live.update(render_thinking_panel(self.full_thought, self.render_mode, active=True, theme_name=self.theme_name))
 
-    def _content_panel(self) -> Panel:
-        return render_assistant_panel(
-            self.full_content,
-            self.model_name,
-            render_mode=self.render_mode,
-            usage=self.last_usage,
-            theme_name=self.theme_name,
-        )
+    def _begin_content_stream(self) -> None:
+        if self._content_started:
+            return
+        has_thought = bool(self.full_thought)
+        if self._live:
+            self._live.stop()
+        if has_thought and not self._thinking_committed:
+            self.console.print(render_thinking_panel(self.full_thought, self.render_mode, theme_name=self.theme_name))
+            self._thinking_committed = True
+        self._content_started = True
+        if not self._stream_header_printed:
+            self.console.print(render_assistant_stream_header(self.model_name, theme_name=self.theme_name))
+            self._stream_header_printed = True
+
+    def _flush_streamed_content(self, *, final: bool) -> None:
+        pending = self.full_content[self._flushed_chars:]
+        if not pending:
+            return
+        boundary = self._find_flush_boundary(pending, final=final)
+        if boundary <= 0:
+            return
+        chunk = pending[:boundary]
+        self.console.print(render_content(chunk, self.render_mode))
+        self._flushed_chars += boundary
+
+    def _find_flush_boundary(self, pending: str, *, final: bool) -> int:
+        if not pending:
+            return 0
+        if final:
+            return len(pending)
+
+        last_blank_boundary = -1
+        last_line_boundary = -1
+        offset = 0
+        in_fence = False
+
+        for line in pending.splitlines(keepends=True):
+            stripped = line.lstrip()
+            if stripped.startswith("```") or stripped.startswith("~~~"):
+                in_fence = not in_fence
+            offset += len(line)
+            if in_fence:
+                continue
+            if line.endswith("\n"):
+                last_line_boundary = offset
+                if stripped.strip() == "":
+                    last_blank_boundary = offset
+
+        if last_blank_boundary > 0:
+            return last_blank_boundary
+
+        if len(pending) >= self.flush_min_chars and last_line_boundary > 0:
+            if len(pending) - last_line_boundary >= self.tail_chars:
+                return last_line_boundary
+
+        if len(pending) >= self.flush_min_chars + self.tail_chars:
+            return len(pending) - self.tail_chars
+
+        return 0
 
 
 # ---------------------------------------------------------------------------
@@ -411,6 +471,25 @@ def render_notice(
         title=f"[bold {border}]{title or default_title}[/bold {border}]",
         border_style=border,
         expand=False,
+        padding=(0, 1),
+    ))
+
+
+def render_local_runner_output(
+    console: Console,
+    *,
+    title: str,
+    content: str,
+    cwd: str,
+    border_style: str = "cyan",
+) -> None:
+    body = Text(content) if content.strip() else Text("(no output)", style="dim")
+    console.print(Panel(
+        body,
+        title=f"[bold {border_style}]{title}[/bold {border_style}]",
+        subtitle=f"[dim]{cwd}[/dim]" if cwd else None,
+        border_style=border_style,
+        expand=True,
         padding=(0, 1),
     ))
 

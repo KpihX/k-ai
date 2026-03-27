@@ -59,6 +59,7 @@ from .tools.mcp import build_mcp_tools
 from .ui import (
     StreamingRenderer,
     render_assistant_panel,
+    render_local_runner_output,
     render_notice,
     render_runtime_panel,
     render_sessions_table,
@@ -265,11 +266,27 @@ class ChatSession:
                 )
                 or "zsh -l -i"
             )
+            init_commands = list(
+                self.cm.get_nested("interaction", "runners", "shell", "init_commands", default=[]) or []
+            )
+            focus_enter_commands = list(
+                self.cm.get_nested("interaction", "runners", "shell", "focus_enter_commands", default=[]) or []
+            )
+            focus_exit_commands = list(
+                self.cm.get_nested("interaction", "runners", "shell", "focus_exit_commands", default=[]) or []
+            )
+            sanitize_output = bool(
+                self.cm.get_nested("interaction", "runners", "shell", "sanitize_output", default=True)
+            )
             self._shell_runner = ShellRunner(
                 shell_command=command,
                 cwd=self._current_cwd,
                 console=self.console,
                 env=self._runner_env(),
+                init_commands=init_commands,
+                sanitize_output=sanitize_output,
+                focus_enter_commands=focus_enter_commands,
+                focus_exit_commands=focus_exit_commands,
             )
         return self._shell_runner
 
@@ -286,11 +303,27 @@ class ChatSession:
                 or "current"
             ).strip().lower()
             executable = sys.executable if mode == "current" else str(Path(sys.executable))
+            init_commands = list(
+                self.cm.get_nested("interaction", "runners", "python", "init_commands", default=[]) or []
+            )
+            focus_enter_commands = list(
+                self.cm.get_nested("interaction", "runners", "python", "focus_enter_commands", default=[]) or []
+            )
+            focus_exit_commands = list(
+                self.cm.get_nested("interaction", "runners", "python", "focus_exit_commands", default=[]) or []
+            )
+            sanitize_output = bool(
+                self.cm.get_nested("interaction", "runners", "python", "sanitize_output", default=True)
+            )
             self._python_runner = PythonRunner(
                 python_executable=executable,
                 cwd=self._current_cwd,
                 console=self.console,
                 env=self._runner_env(),
+                init_commands=init_commands,
+                sanitize_output=sanitize_output,
+                focus_enter_commands=focus_enter_commands,
+                focus_exit_commands=focus_exit_commands,
             )
         return self._python_runner
 
@@ -1899,6 +1932,9 @@ class ChatSession:
             render_mode = self.cm.get_nested("cli", "render_mode", default="rich")
             spinner_name = self.cm.get_nested("cli", "thinking_indicator", default="dots")
             theme_name = self.cm.get_nested("cli", "theme", default="default")
+            flush_min_chars = int(self.cm.get_nested("cli", "streaming", "flush_min_chars", default=600) or 600)
+            tail_chars = int(self.cm.get_nested("cli", "streaming", "tail_chars", default=120) or 120)
+            interrupt_hint = str(self.cm.get_nested("cli", "streaming", "interrupt_hint", default="Ctrl+C to interrupt") or "")
             with self._interrupt_scope(allow_escape=True):
                 with StreamingRenderer(
                     self.console,
@@ -1906,6 +1942,9 @@ class ChatSession:
                     render_mode=render_mode,
                     spinner_name=spinner_name,
                     theme_name=theme_name,
+                    flush_min_chars=flush_min_chars,
+                    tail_chars=tail_chars,
+                    interrupt_hint=interrupt_hint,
                 ) as renderer:
                     async for chunk in self.llm.chat_stream(boot_messages, tools=tools):
                         if self._interrupt_requested:
@@ -1956,6 +1995,9 @@ class ChatSession:
             render_mode = self.cm.get_nested("cli", "render_mode", default="rich")
             spinner_name = self.cm.get_nested("cli", "thinking_indicator", default="dots")
             theme_name = self.cm.get_nested("cli", "theme", default="default")
+            flush_min_chars = int(self.cm.get_nested("cli", "streaming", "flush_min_chars", default=600) or 600)
+            tail_chars = int(self.cm.get_nested("cli", "streaming", "tail_chars", default=120) or 120)
+            interrupt_hint = str(self.cm.get_nested("cli", "streaming", "interrupt_hint", default="Ctrl+C to interrupt") or "")
             with self._interrupt_scope(allow_escape=True):
                 with StreamingRenderer(
                     self.console,
@@ -1963,6 +2005,9 @@ class ChatSession:
                     render_mode=render_mode,
                     spinner_name=spinner_name,
                     theme_name=theme_name,
+                    flush_min_chars=flush_min_chars,
+                    tail_chars=tail_chars,
+                    interrupt_hint=interrupt_hint,
                 ) as renderer:
                     async for chunk in self.llm.chat_stream(boot_messages):
                         if self._interrupt_requested:
@@ -2051,19 +2096,41 @@ class ChatSession:
     async def _run_shell_block(self, block: DocumentBlock) -> RunnerExecutionResult:
         runner = await self._get_shell_runner()
         title = str(self.cm.get_nested("interaction", "runners", "runtime", "shell_title", default="User Shell") or "User Shell")
+        block_output_mode = str(
+            self.cm.get_nested("interaction", "runners", "runtime", "block_output_mode", default="buffered") or "buffered"
+        ).strip().lower()
         self.console.print(f"[bold cyan]{title}[/bold cyan] [dim](cwd: {self._current_cwd})[/dim]")
-        result = runner.run_block(block.content)
+        display_output = block_output_mode == "streamed"
+        result = runner.run_block(block.content, display_output=display_output)
         if result.cwd is not None:
             self._current_cwd = result.cwd
+        if not display_output:
+            render_local_runner_output(
+                self.console,
+                title=title,
+                content=result.stdout,
+                cwd=str(result.cwd or self._current_cwd),
+            )
         return result
 
     async def _run_python_block(self, block: DocumentBlock) -> RunnerExecutionResult:
         runner = await self._get_python_runner()
         title = str(self.cm.get_nested("interaction", "runners", "runtime", "python_title", default="User Python") or "User Python")
+        block_output_mode = str(
+            self.cm.get_nested("interaction", "runners", "runtime", "block_output_mode", default="buffered") or "buffered"
+        ).strip().lower()
         self.console.print(f"[bold cyan]{title}[/bold cyan] [dim](cwd: {self._current_cwd})[/dim]")
-        result = runner.run_block(block.content)
+        display_output = block_output_mode == "streamed"
+        result = runner.run_block(block.content, display_output=display_output)
         if result.cwd is not None:
             self._current_cwd = result.cwd
+        if not display_output:
+            render_local_runner_output(
+                self.console,
+                title=title,
+                content=result.stdout,
+                cwd=str(result.cwd or self._current_cwd),
+            )
         return result
 
     async def _answer_ephemeral(self, message: str) -> str:
@@ -2129,6 +2196,9 @@ class ChatSession:
 
                 pending_tool_calls = []
                 full_content = ""
+                flush_min_chars = int(self.cm.get_nested("cli", "streaming", "flush_min_chars", default=600) or 600)
+                tail_chars = int(self.cm.get_nested("cli", "streaming", "tail_chars", default=120) or 120)
+                interrupt_hint = str(self.cm.get_nested("cli", "streaming", "interrupt_hint", default="Ctrl+C to interrupt") or "")
                 with self._interrupt_scope(allow_escape=True):
                     with StreamingRenderer(
                         self.console,
@@ -2136,6 +2206,9 @@ class ChatSession:
                         render_mode=render_mode,
                         spinner_name=spinner_name,
                         theme_name=theme_name,
+                        flush_min_chars=flush_min_chars,
+                        tail_chars=tail_chars,
+                        interrupt_hint=interrupt_hint,
                     ) as renderer:
                         async for chunk in self.llm.chat_stream(messages, tools=tools):
                             if self._interrupt_requested:

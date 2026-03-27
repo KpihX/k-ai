@@ -43,6 +43,7 @@ It is designed around one principle: the chat loop, the slash commands, and the 
 - Session-scoped working directories (`-C/--cwd`) shared by chat, local runners, and runtime tools.
 - Mixed multiline input in chat: plain text to the LLM, `!` shell blocks, `>` Python blocks, and `/?` ephemeral contextual questions.
 - Persistent PTY-backed local shell and Python runners, including secure focus mode for interactive prompts such as `sudo` passwords.
+- Append-only long-response streaming with early visibility and no full-height Live panel clipping/flicker on long answers.
 
 ## Problem-First Docs
 
@@ -155,6 +156,9 @@ Interaction runtime defaults:
   - `!` -> persistent shell block
   - `>` -> persistent Python block
   - `/?` -> contextual but non-persistent, tool-less quick question
+- default local block rendering:
+  - buffered shell/Python result panels for clean UI
+  - `/focus shell` or `/focus python` for truly interactive PTY control
 - runner focus/admin commands:
   - `/cwd [path]`
   - `/focus shell`
