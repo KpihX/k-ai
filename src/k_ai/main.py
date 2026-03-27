@@ -18,6 +18,7 @@ from typer.core import TyperGroup
 from .config import ConfigManager
 from .interaction import normalize_workdir
 from .session import ChatSession
+from .ui.textual_chat import TextualChatApp
 from .ui_theme import resolve_syntax_theme
 
 console = Console()
@@ -78,12 +79,18 @@ def _run_chat(
     max_tokens: Optional[int],
     system: Optional[str],
     cwd: Optional[str],
+    classic_ui: bool = False,
 ) -> None:
     cm = _build_config_manager(config_path, temperature=temperature, max_tokens=max_tokens)
     session = ChatSession(cm, provider=provider, model=model, workspace_root=_resolve_cwd_option(cwd))
     if system:
         session.system_prompt = system
-    asyncio.run(session.start())
+    ui_backend = str(cm.get_nested("cli", "ui", "backend", default="textual") or "textual").strip().lower()
+    if classic_ui or ui_backend == "classic":
+        asyncio.run(session.start())
+        return
+    app = TextualChatApp(session)
+    app.run()
 
 
 def _run_ask(
@@ -133,13 +140,14 @@ def root(
 @app.command(
     help=(
         "Start the interactive chat interface.\n\n"
-        "This is the main runtime entry point. It loads the merged config, opens the rich UI,\n"
+        "This is the main runtime entry point. It loads the merged config, opens the Textual TUI,\n"
         "shows recent sessions, and lets you control everything from chat or slash commands.\n\n"
         "Typical workflow:\n"
         "  1. Start with defaults: [cyan]k-ai chat[/cyan]\n"
         "  2. Override provider/model for one run: [cyan]k-ai chat -p mistral -m mistral-medium-latest[/cyan]\n"
         "  3. Test a custom config file: [cyan]k-ai chat -c ./config.yaml[/cyan]\n"
-        "  4. Force session generation settings: [cyan]k-ai chat -t 0.2 -n 4096[/cyan]\n\n"
+        "  4. Force session generation settings: [cyan]k-ai chat -t 0.2 -n 4096[/cyan]\n"
+        "  5. Fallback to the legacy UI if needed: [cyan]k-ai chat --classic-ui[/cyan]\n\n"
         "Inside chat, use [cyan]/help[/cyan] to see all slash commands."
     )
 )
@@ -202,6 +210,11 @@ def chat(
             "blocks, user Python blocks, and runtime tools such as shell_exec."
         ),
     ),
+    classic_ui: bool = typer.Option(
+        False,
+        "--classic-ui",
+        help="Force the legacy prompt-toolkit + Rich interface instead of the Textual TUI.",
+    ),
 ):
     """Start an interactive chat session."""
     try:
@@ -213,6 +226,7 @@ def chat(
             max_tokens=max_tokens,
             system=system,
             cwd=cwd or (ctx.obj or {}).get("cwd"),
+            classic_ui=classic_ui,
         )
     except Exception as e:
         console.print(f"[bold red]Error:[/bold red] {e}")

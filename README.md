@@ -44,6 +44,7 @@ It is designed around one principle: the chat loop, the slash commands, and the 
 - Mixed multiline input in chat: plain text to the LLM, `!` shell blocks, `>` Python blocks, and `/?` ephemeral contextual questions.
 - Persistent PTY-backed local shell and Python runners, including secure focus mode for interactive prompts such as `sudo` passwords.
 - Append-only long-response streaming with early visibility and no full-height Live panel clipping/flicker on long answers.
+- Full-screen Textual TUI for `k-ai chat`: stable panes, modal tool approvals, runtime inspector, session sidebar, and a multiline composer.
 
 ## Problem-First Docs
 
@@ -104,6 +105,12 @@ uv sync --dev
 uv run pytest -q
 uv run k-ai chat
 ```
+
+Chat UI backends:
+
+- default: Textual full-screen TUI
+- fallback: `k-ai chat --classic-ui`
+- live config knob: `cli.ui.backend = textual|classic`
 
 Skills runtime defaults:
 
@@ -246,6 +253,7 @@ chat: Présentation détaillée de l'assistant k-ai
 ```bash
 k-ai chat
 k-ai chat -C ~/Work/AI/k_ai
+k-ai chat --classic-ui
 k-ai chat --provider mistral
 k-ai chat --provider openai --model gpt-4o
 k-ai chat --config ~/.k-ai/config.yaml
@@ -280,6 +288,28 @@ Rules:
 - `>` lines are executed in the persistent session Python runner
 - normal text is sent to the model
 - `/?` asks a contextual quick question without polluting chat history
+
+### Textual TUI
+
+`k-ai chat` now opens a full-screen Textual application by default.
+
+Main panes:
+
+- left: recent sessions
+- center: transcript + live streaming slot + multiline composer
+- right: runtime inspector and activity log
+
+Core bindings:
+
+- `Ctrl+Enter` send the current composer buffer
+- `Ctrl+J` focus composer
+- `Ctrl+B` focus sessions
+- `Ctrl+R` focus runtime
+- `Ctrl+L` focus activity
+- `Ctrl+Q` quit the TUI
+
+Tool approvals now open as proper modal dialogs instead of being appended into
+the same linear transcript flow.
 - local runner outputs are injected into the next LLM block of the same batch
 
 ### Config CLI

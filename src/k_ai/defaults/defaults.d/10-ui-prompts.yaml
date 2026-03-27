@@ -3,6 +3,12 @@
 # ==============================================================================
 
 cli:
+  ui:
+    # Chat UI backend.
+    #   textual  full-screen Textual application (default)
+    #   classic  legacy prompt-toolkit + Rich flow
+    backend: "textual"
+
   # Show prompt/completion usage after each answer when available.
   show_token_usage: true
 

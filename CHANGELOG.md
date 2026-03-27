@@ -8,6 +8,7 @@ The format is based on Keep a Changelog.
 
 ### Added
 
+- Full-screen Textual chat UI as the new default `k-ai chat` surface, with a session sidebar, runtime/activity inspector, multiline composer, dedicated streaming slot, and modal tool approvals.
 - Fast one-shot ask mode through both `k-ai ask ...` and the root shorthand `k-ai "..."`, with a minimal no-tools prompt profile for low-latency questions.
 - A dedicated interaction runtime config fragment (`70-interaction.yaml`) covering one-shot ask, `cwd`, multiline input syntax, and persistent local runners.
 - Multiline mixed chat documents with four explicit block kinds:
@@ -27,10 +28,12 @@ The format is based on Keep a Changelog.
 - `scripts/purge.sh` now detects installed uv tools more robustly before uninstalling them.
 - Long assistant responses now stream append-only under a static assistant header instead of keeping one giant full-height Rich `Live` panel alive.
 - Default `!` and `>` block rendering is now buffered into clean local-result panels, while explicit `/focus` remains the path for raw interactive PTY control.
+- `k-ai chat` now defaults to the Textual TUI, while `--classic-ui` keeps the previous prompt-toolkit + Rich loop available as a fallback.
 
 ### Fixed
 
 - Shell/Python local runner output now strips PTY control noise, sentinel-command leakage, and login-shell echo artifacts before those results reach the user-facing UI or the LLM batch context.
+- The classic runtime still honors the previous `render_notice` / tool-approval hooks used by the existing test and compatibility surface while sharing the same core session engine as the new TUI.
 
 ## [0.2.0] - 2026-03-27
 

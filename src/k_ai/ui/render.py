@@ -421,9 +421,15 @@ def render_sessions_table(
     sessions: List[SessionMetadata],
     title: str = "Recent Sessions",
 ) -> None:
+    console.print(build_sessions_table_renderable(sessions, title=title))
+
+
+def build_sessions_table_renderable(
+    sessions: List[SessionMetadata],
+    title: str = "Recent Sessions",
+):
     if not sessions:
-        console.print("[dim]No previous sessions found.[/dim]")
-        return
+        return Text.from_markup("[dim]No previous sessions found.[/dim]")
 
     table = Table(
         title=f"[bold cyan]{title}[/bold cyan]",
@@ -446,8 +452,7 @@ def render_sessions_table(
         themes = (themes_source[:40] + "...") if len(themes_source) > 40 else themes_source
         updated = s.updated_at[:10] if s.updated_at else "?"
         table.add_row(str(i), s.id[:8], s.session_type, summary, themes, str(s.message_count), updated)
-
-    console.print(table)
+    return table
 
 
 # ---------------------------------------------------------------------------
@@ -460,6 +465,14 @@ def render_tool_result(
     result: ToolResult,
     content,
 ) -> None:
+    console.print(build_tool_result_renderable(spec, result, content))
+
+
+def build_tool_result_renderable(
+    spec: ToolDisplaySpec,
+    result: ToolResult,
+    content,
+):
     """Display a tool execution result in a full, homogeneous panel."""
     if result.success:
         border = "green"
@@ -470,14 +483,14 @@ def render_tool_result(
         label = "Tool Result"
         subtitle = "[red]Error[/red]"
 
-    console.print(Panel(
+    return Panel(
         content,
         title=f"[bold {border}]{label}[/bold {border}] [dim]{spec.display_name}[/dim]",
         subtitle=f"{subtitle} [dim]{spec.category}[/dim]",
         border_style=border,
         expand=True,
         padding=(0, 1),
-    ))
+    )
 
 
 def render_notice(
@@ -486,14 +499,22 @@ def render_notice(
     level: str = "info",
     title: str | None = None,
 ) -> None:
+    console.print(build_notice_renderable(message, level=level, title=title))
+
+
+def build_notice_renderable(
+    message: str,
+    level: str = "info",
+    title: str | None = None,
+):
     border, default_title = _STATUS_STYLES.get(level, _STATUS_STYLES["info"])
-    console.print(Panel(
+    return Panel(
         render_content(message, "rich"),
         title=f"[bold {border}]{title or default_title}[/bold {border}]",
         border_style=border,
         expand=False,
         padding=(0, 1),
-    ))
+    )
 
 
 def render_local_runner_output(
@@ -504,15 +525,32 @@ def render_local_runner_output(
     cwd: str,
     border_style: str = "cyan",
 ) -> None:
+    console.print(
+        build_local_runner_output_renderable(
+            title=title,
+            content=content,
+            cwd=cwd,
+            border_style=border_style,
+        )
+    )
+
+
+def build_local_runner_output_renderable(
+    *,
+    title: str,
+    content: str,
+    cwd: str,
+    border_style: str = "cyan",
+):
     body = Text(content) if content.strip() else Text("(no output)", style="dim")
-    console.print(Panel(
+    return Panel(
         body,
         title=f"[bold {border_style}]{title}[/bold {border_style}]",
         subtitle=f"[dim]{cwd}[/dim]" if cwd else None,
         border_style=border_style,
         expand=True,
         padding=(0, 1),
-    ))
+    )
 
 
 def render_key_value_panel(
@@ -521,12 +559,20 @@ def render_key_value_panel(
     rows: Sequence[Tuple[str, str]],
     border_style: str = "cyan",
 ) -> None:
+    console.print(build_key_value_panel_renderable(title, rows, border_style=border_style))
+
+
+def build_key_value_panel_renderable(
+    title: str,
+    rows: Sequence[Tuple[str, str]],
+    border_style: str = "cyan",
+):
     table = Table(show_header=False, box=None, padding=(0, 1))
     table.add_column("key", style="dim", no_wrap=True)
     table.add_column("value")
     for key, value in rows:
         table.add_row(key, value)
-    console.print(Panel(table, title=f"[bold {border_style}]{title}[/bold {border_style}]", border_style=border_style))
+    return Panel(table, title=f"[bold {border_style}]{title}[/bold {border_style}]", border_style=border_style)
 
 
 def render_tool_proposal(
@@ -537,6 +583,24 @@ def render_tool_proposal(
     show_rationale: bool = True,
     requires_approval: bool = True,
 ) -> None:
+    console.print(
+        build_tool_proposal_renderable(
+            spec,
+            sections,
+            rationale=rationale,
+            show_rationale=show_rationale,
+            requires_approval=requires_approval,
+        )
+    )
+
+
+def build_tool_proposal_renderable(
+    spec: ToolDisplaySpec,
+    sections: Sequence[Tuple[str, object]],
+    rationale: str = "",
+    show_rationale: bool = True,
+    requires_approval: bool = True,
+):
     """Display a proposed tool call with rationale and exact JSON arguments."""
     from rich.console import Group
 
@@ -580,11 +644,11 @@ def render_tool_proposal(
         ),
         Rule(style=danger_color),
     )
-    console.print(Panel(
+    return Panel(
         Group(header, *parts),
         title=f"[bold {spec.accent_color}]Tool Proposal[/bold {spec.accent_color}]",
         subtitle=validation,
         border_style=spec.accent_color,
         expand=True,
         padding=(0, 1),
-    ))
+    )

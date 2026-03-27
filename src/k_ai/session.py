@@ -57,7 +57,6 @@ from .tools import create_registry, ToolRegistry
 from .tools.base import ToolContext
 from .tools.mcp import build_mcp_tools
 from .ui import (
-    StreamingRenderer,
     render_assistant_panel,
     render_local_runner_output,
     render_notice,
@@ -67,6 +66,7 @@ from .ui import (
     render_tool_result,
     render_user_panel,
 )
+from .ui.presenter import ClassicSessionUI, SessionUI
 from .commands import CommandHandler, SLASH_COMMANDS
 from .exceptions import LLMError, ProviderAuthenticationError, ContextLengthExceededError
 from .tool_capabilities import capability_enabled, capability_for_tool, list_capabilities, normalize_capability_name
@@ -92,9 +92,12 @@ class ChatSession:
         provider: Optional[str] = None,
         model: Optional[str] = None,
         workspace_root: Optional[str] = None,
+        ui: SessionUI | None = None,
     ):
         self.cm = config_manager
-        self.console = Console()
+        self._terminal_console = Console()
+        self.ui: SessionUI = ui or ClassicSessionUI(self._terminal_console)
+        self.console = self.ui.console
         self.workspace_root = normalize_workdir(
             workspace_root,
             base=Path.cwd() if bool(self.cm.get_nested("interaction", "cwd", "inherit_process_cwd", default=True)) else Path.cwd(),
@@ -193,6 +196,11 @@ class ChatSession:
         self.tool_registry: ToolRegistry = create_registry(self._tool_ctx)
         self._apply_tool_catalog()
         self.command_handler = CommandHandler(self)
+
+    def attach_ui(self, ui: SessionUI) -> None:
+        self.ui = ui
+        self.console = ui.console
+        self._tool_ctx.console = self.console
 
     # ------------------------------------------------------------------
     # Tool definitions (filter disabled tools)
@@ -998,7 +1006,55 @@ class ChatSession:
             return
         mode = self.cm.get_nested("cli", "runtime_stats_mode", default="compact")
         theme_name = self.cm.get_nested("cli", "theme", default="default")
-        self.console.print(render_runtime_panel(self.get_runtime_snapshot(), title=title, mode=mode, theme_name=theme_name))
+        if isinstance(self.ui, ClassicSessionUI):
+            self.ui.console = self.console
+            self.console.print(render_runtime_panel(self.get_runtime_snapshot(), title=title, mode=mode, theme_name=theme_name))
+            return
+        self.ui.show_runtime(self.get_runtime_snapshot(), title=title, mode=mode, theme_name=theme_name)
+
+    def _show_notice(self, message: str, *, level: str = "info", title: str | None = None) -> None:
+        if isinstance(self.ui, ClassicSessionUI):
+            self.ui.console = self.console
+            render_notice(self.console, message, level=level, title=title)
+            return
+        self.ui.show_notice(message, level=level, title=title)
+
+    def _show_user_message(self, content: str) -> None:
+        theme_name = self.cm.get_nested("cli", "theme", default="default")
+        if isinstance(self.ui, ClassicSessionUI):
+            self.ui.console = self.console
+            self.console.print(render_user_panel(content.rstrip(), theme_name=theme_name))
+            return
+        self.ui.show_user(content.rstrip(), theme_name=theme_name)
+
+    def _show_assistant_message(
+        self,
+        content: str,
+        *,
+        render_mode: str | None = None,
+        usage: TokenUsage | None = None,
+    ) -> None:
+        theme_name = self.cm.get_nested("cli", "theme", default="default")
+        effective_render_mode = render_mode or self.cm.get_nested("cli", "render_mode", default="rich")
+        if isinstance(self.ui, ClassicSessionUI):
+            self.ui.console = self.console
+            self.console.print(
+                render_assistant_panel(
+                    content,
+                    self.llm.model_name,
+                    render_mode=effective_render_mode,
+                    usage=usage,
+                    theme_name=theme_name,
+                )
+            )
+            return
+        self.ui.show_assistant(
+            content,
+            model_name=self.llm.model_name,
+            render_mode=effective_render_mode,
+            usage=usage,
+            theme_name=theme_name,
+        )
 
     @contextmanager
     def _interrupt_scope(self, allow_escape: bool = True):
@@ -1060,8 +1116,7 @@ class ChatSession:
         self._prompt_interrupt_count += 1
         if self._prompt_interrupt_count >= 2:
             return True
-        render_notice(
-            self.console,
+        self._show_notice(
             self._notice_value(
                 "prompt_interrupt_message",
                 "Prompt input was interrupted. Press Ctrl+C a second time to exit, or keep typing.",
@@ -1327,8 +1382,7 @@ class ChatSession:
 
     def _render_hook_warnings(self, warnings: Sequence[str]) -> None:
         for warning in warnings:
-            render_notice(
-                self.console,
+            self._show_notice(
                 self.hook_manager.config_text(
                     "hooks",
                     "runtime",
@@ -1378,8 +1432,7 @@ class ChatSession:
         )
         self._render_hook_warnings(result.warnings)
         if result.blocked:
-            render_notice(
-                self.console,
+            self._show_notice(
                 self.hook_manager.config_text(
                     "hooks",
                     "runtime",
@@ -1404,8 +1457,7 @@ class ChatSession:
         )
         self._render_hook_warnings(result.warnings)
         if result.blocked:
-            render_notice(
-                self.console,
+            self._show_notice(
                 self.hook_manager.config_text(
                     "hooks",
                     "runtime",
@@ -1539,8 +1591,7 @@ class ChatSession:
         message = self.skill_manager.format_activation_notice(self._turn_skill_result.activated)
         if not message:
             return
-        render_notice(
-            self.console,
+        self._show_notice(
             message,
             level=self.skill_manager.config_text(
                 "skills",
@@ -1725,26 +1776,8 @@ class ChatSession:
 
     async def start(self) -> None:
         """Start the interactive REPL with consciousness."""
-        if not await self._ensure_session_start_hooks(source="startup"):
-            self.console.print(f"\n[bold green]{self._notice_value('goodbye_message', 'Goodbye!')}[/bold green]")
+        if not await self.bootstrap():
             return
-        if self.cm.get_nested("cli", "show_welcome_panel", default=True):
-            self._print_welcome_panel()
-
-        max_recent = self.cm.get_nested("sessions", "max_recent", default=10)
-        recent = self.session_store.list_sessions(limit=max_recent)
-        if recent:
-            render_sessions_table(self.console, recent)
-
-        if self._should_offer_init():
-            self.request_init()
-
-        if self._init_requested:
-            self._init_requested = False
-            await self._run_init_intro(trigger="first_launch")
-        else:
-            # Boot greeting (ephemeral)
-            await self._boot_greeting(recent)
 
         # Build prompt session with styled prompt, slash autocompletion, and multiline support
         slash_completer = FuzzyCompleter(
@@ -1786,8 +1819,93 @@ class ChatSession:
         while True:
             if self._exit_requested:
                 break
+            try:
+                user_input = await prompt_session.prompt_async(
+                    [
+                        (
+                            "class:prompt",
+                            str(self.cm.get_nested("interaction", "input", "prompt_label", default="You: ") or "You: "),
+                        )
+                    ],
+                    prompt_continuation=lambda _w, _n, _r: [
+                        (
+                            "class:prompt",
+                            str(self.cm.get_nested("interaction", "input", "continuation_label", default="... ") or "... "),
+                        )
+                    ],
+                )
+                self._reset_prompt_interrupts()
+                await self.submit_document(user_input)
+            except EOFError:
+                break
+            except KeyboardInterrupt:
+                if self._handle_prompt_interrupt():
+                    break
+                continue
 
+        await self.shutdown()
+
+    async def bootstrap(self) -> bool:
+        """Run startup hooks, welcome flow, recent sessions, and boot greeting."""
+        if not await self._ensure_session_start_hooks(source="startup"):
+            self.console.print(f"\n[bold green]{self._notice_value('goodbye_message', 'Goodbye!')}[/bold green]")
+            return False
+        if self.cm.get_nested("cli", "show_welcome_panel", default=True):
+            self._print_welcome_panel()
+
+        max_recent = self.cm.get_nested("sessions", "max_recent", default=10)
+        recent = self.session_store.list_sessions(limit=max_recent)
+        if recent:
+            if isinstance(self.ui, ClassicSessionUI):
+                self.ui.console = self.console
+                render_sessions_table(self.console, recent)
+            else:
+                self.ui.show_sessions(recent)
+
+        if self._should_offer_init():
+            self.request_init()
+
+        if self._init_requested:
+            self._init_requested = False
+            await self._run_init_intro(trigger="first_launch")
+        else:
+            # Boot greeting (ephemeral)
+            await self._boot_greeting(recent)
+        return True
+    async def submit_document(self, user_input: str) -> bool:
+        """Submit one user document into the active session runtime."""
+        if not user_input.strip():
+            return True
+        if self._exit_requested:
+            return False
+        if await self._drain_runtime_requests():
+            if self._exit_requested:
+                return False
+        if user_input.strip().startswith("/") and not user_input.lstrip().startswith(
+            str(self.cm.get_nested("interaction", "input", "ephemeral_prefix", default="/?") or "/?")
+        ):
+            result = await self.command_handler.handle(user_input)
+            return bool(result is not False)
+
+        first_message = not self._session_id
+        if first_message:
+            self._do_new_session()
+
+        self._show_user_message(user_input)
+        await self._process_submitted_document(user_input)
+
+        if first_message and self._session_id and len(self.history) >= 2:
+            await self._auto_generate_session_summary()
+
+        await self._maybe_compact()
+        return not self._exit_requested
+
+    async def _drain_runtime_requests(self) -> bool:
+        """Process queued session/runtime actions before the next user submission."""
+        handled = False
+        while True:
             if self._new_session_requested:
+                handled = True
                 self._new_session_requested = False
                 seed = self._queued_new_session_seed
                 carry_message = self._queued_new_session_message
@@ -1795,8 +1913,7 @@ class ChatSession:
                 self._queued_new_session_message = None
                 self._do_new_session(seed=seed)
                 if carry_message:
-                    render_notice(
-                        self.console,
+                    self._show_notice(
                         self._notice_value(
                             "session_switched_message",
                             "A fresh session is now active. Continue the carried request in this cleaner thread.",
@@ -1816,11 +1933,13 @@ class ChatSession:
                 continue
 
             if self._init_requested:
+                handled = True
                 self._init_requested = False
                 await self._run_init_intro(trigger="manual")
                 continue
 
             if self._load_session_id:
+                handled = True
                 sid = self._load_session_id
                 last_n = self._load_session_last_n
                 self._load_session_id = None
@@ -1829,64 +1948,20 @@ class ChatSession:
                 continue
 
             if self._compact_requested:
+                handled = True
                 self._compact_requested = False
                 await self._do_compact()
                 continue
+            break
+        return handled
 
-            try:
-                user_input = await prompt_session.prompt_async(
-                    [
-                        (
-                            "class:prompt",
-                            str(self.cm.get_nested("interaction", "input", "prompt_label", default="You: ") or "You: "),
-                        )
-                    ],
-                    prompt_continuation=lambda _w, _n, _r: [
-                        (
-                            "class:prompt",
-                            str(self.cm.get_nested("interaction", "input", "continuation_label", default="... ") or "... "),
-                        )
-                    ],
-                )
-                self._reset_prompt_interrupts()
-                if not user_input.strip():
-                    continue
-
-                if user_input.strip().startswith("/") and not user_input.lstrip().startswith(
-                    str(self.cm.get_nested("interaction", "input", "ephemeral_prefix", default="/?") or "/?")
-                ):
-                    result = await self.command_handler.handle(user_input)
-                    if result is False:
-                        break
-                    continue
-
-                first_message = not self._session_id
-                if first_message:
-                    self._do_new_session()
-
-                theme_name = self.cm.get_nested("cli", "theme", default="default")
-                self.console.print(render_user_panel(user_input.rstrip(), theme_name=theme_name))
-                await self._process_submitted_document(user_input)
-
-                if first_message and self._session_id and len(self.history) >= 2:
-                    await self._auto_generate_session_summary()
-
-                await self._maybe_compact()
-
-            except EOFError:
-                break
-            except KeyboardInterrupt:
-                if self._handle_prompt_interrupt():
-                    break
-                continue
-
+    async def shutdown(self) -> None:
         if self._session_id:
             try:
                 await self._auto_rename_on_exit()
                 await self._auto_commit_runtime_store_on_exit()
             except KeyboardInterrupt:
-                render_notice(
-                    self.console,
+                self._show_notice(
                     self._notice_value(
                         "finalization_interrupted_message",
                         "Exit finalization was interrupted. The current session was kept as-is.",
@@ -1936,9 +2011,8 @@ class ChatSession:
             tail_chars = int(self.cm.get_nested("cli", "streaming", "tail_chars", default=120) or 120)
             interrupt_hint = str(self.cm.get_nested("cli", "streaming", "interrupt_hint", default="Ctrl+C to interrupt") or "")
             with self._interrupt_scope(allow_escape=True):
-                with StreamingRenderer(
-                    self.console,
-                    self.llm.model_name,
+                with self.ui.stream_assistant(
+                    model_name=self.llm.model_name,
                     render_mode=render_mode,
                     spinner_name=spinner_name,
                     theme_name=theme_name,
@@ -1958,8 +2032,7 @@ class ChatSession:
                     await self._execute_internal_tool(tc)
 
         except KeyboardInterrupt:
-            render_notice(
-                self.console,
+            self._show_notice(
                 self._notice_value(
                     "boot_interrupted_message",
                     "Boot generation was interrupted. Control has been returned to the prompt.",
@@ -1999,9 +2072,8 @@ class ChatSession:
             tail_chars = int(self.cm.get_nested("cli", "streaming", "tail_chars", default=120) or 120)
             interrupt_hint = str(self.cm.get_nested("cli", "streaming", "interrupt_hint", default="Ctrl+C to interrupt") or "")
             with self._interrupt_scope(allow_escape=True):
-                with StreamingRenderer(
-                    self.console,
-                    self.llm.model_name,
+                with self.ui.stream_assistant(
+                    model_name=self.llm.model_name,
                     render_mode=render_mode,
                     spinner_name=spinner_name,
                     theme_name=theme_name,
@@ -2014,8 +2086,7 @@ class ChatSession:
                             raise KeyboardInterrupt
                         renderer.update(chunk)
         except KeyboardInterrupt:
-            render_notice(
-                self.console,
+            self._show_notice(
                 self._notice_value(
                     "init_interrupted_message",
                     "Initialization was interrupted. Control has been returned to the prompt.",
@@ -2034,8 +2105,7 @@ class ChatSession:
         try:
             blocks = self._mixed_input_parser.parse(document)
         except MixedInputParserError as exc:
-            render_notice(
-                self.console,
+            self._show_notice(
                 str(exc),
                 level="warning",
                 title="Input Error",
@@ -2106,12 +2176,20 @@ class ChatSession:
         if result.cwd is not None:
             self._current_cwd = result.cwd
         if not display_output:
-            render_local_runner_output(
-                self.console,
-                title=title,
-                content=result.stdout,
-                cwd=str(result.cwd or self._current_cwd),
-            )
+            if isinstance(self.ui, ClassicSessionUI):
+                self.ui.console = self.console
+                render_local_runner_output(
+                    self.console,
+                    title=title,
+                    content=result.stdout,
+                    cwd=str(result.cwd or self._current_cwd),
+                )
+            else:
+                self.ui.show_runner_output(
+                    title=title,
+                    content=result.stdout,
+                    cwd=str(result.cwd or self._current_cwd),
+                )
         return result
 
     async def _run_python_block(self, block: DocumentBlock) -> RunnerExecutionResult:
@@ -2127,12 +2205,20 @@ class ChatSession:
         if result.cwd is not None:
             self._current_cwd = result.cwd
         if not display_output:
-            render_local_runner_output(
-                self.console,
-                title=title,
-                content=result.stdout,
-                cwd=str(result.cwd or self._current_cwd),
-            )
+            if isinstance(self.ui, ClassicSessionUI):
+                self.ui.console = self.console
+                render_local_runner_output(
+                    self.console,
+                    title=title,
+                    content=result.stdout,
+                    cwd=str(result.cwd or self._current_cwd),
+                )
+            else:
+                self.ui.show_runner_output(
+                    title=title,
+                    content=result.stdout,
+                    cwd=str(result.cwd or self._current_cwd),
+                )
         return result
 
     async def _answer_ephemeral(self, message: str) -> str:
@@ -2141,8 +2227,7 @@ class ChatSession:
             mode="ephemeral",
             include_history=True,
         )
-        theme_name = self.cm.get_nested("cli", "theme", default="default")
-        self.console.print(render_assistant_panel(response, self.llm.model_name, theme_name=theme_name))
+        self._show_assistant_message(response)
         return response
 
     # ------------------------------------------------------------------
@@ -2202,9 +2287,8 @@ class ChatSession:
                 tail_chars = int(self.cm.get_nested("cli", "streaming", "tail_chars", default=120) or 120)
                 interrupt_hint = str(self.cm.get_nested("cli", "streaming", "interrupt_hint", default="Ctrl+C to interrupt") or "")
                 with self._interrupt_scope(allow_escape=True):
-                    with StreamingRenderer(
-                        self.console,
-                        self.llm.model_name,
+                    with self.ui.stream_assistant(
+                        model_name=self.llm.model_name,
                         render_mode=render_mode,
                         spinner_name=spinner_name,
                         theme_name=theme_name,
@@ -2243,8 +2327,7 @@ class ChatSession:
                             tc for tc in pending_tool_calls
                             if tc.function_name not in {"switch_session", "new_session"}
                         ]
-                        render_notice(
-                            self.console,
+                        self._show_notice(
                             self._notice_value(
                                 "switch_already_done_message",
                                 "The session change has already been completed for this carried request. Any further session-split proposal for the same carried turn is ignored.",
@@ -2256,8 +2339,7 @@ class ChatSession:
                 if not full_content.strip() and not pending_tool_calls:
                     empty_rounds += 1
                     if empty_rounds < _MAX_EMPTY_ASSISTANT_ROUNDS:
-                        render_notice(
-                            self.console,
+                        self._show_notice(
                             self._notice_value(
                                 "empty_response_message",
                                 "The model returned neither text nor tool calls. Retrying automatically.",
@@ -2267,8 +2349,7 @@ class ChatSession:
                         )
                         continue
                     self._rollback_turn(turn_start)
-                    render_notice(
-                        self.console,
+                    self._show_notice(
                         self._notice_value(
                             "canceled_turn_message",
                             "The model produced no usable response or action, so nothing was recorded for this turn.",
@@ -2310,8 +2391,7 @@ class ChatSession:
                             self.history.append(tool_msg)
                             self._persist_message(tool_msg)
                             any_executed = True
-                            render_notice(
-                                self.console,
+                            self._show_notice(
                                 f"Appel identique à {tc.function_name} déjà exécuté dans ce tour: résultat réutilisé.",
                                 level="info",
                                 title="Tool Call Dupliqué",
@@ -2334,8 +2414,7 @@ class ChatSession:
                                         )
                                 except Exception:
                                     pass
-                            render_notice(
-                                self.console,
+                            self._show_notice(
                                 self._notice_value(
                                     "session_split_message",
                                     "The session change was approved. The carried request will continue inside a fresh session.",
@@ -2346,8 +2425,7 @@ class ChatSession:
                             return
                         if result.data and isinstance(result.data, dict) and result.data.get("interrupted"):
                             self._rollback_turn(turn_start)
-                            render_notice(
-                                self.console,
+                            self._show_notice(
                                 self._notice_value(
                                     "action_interrupted_message",
                                     "The requested action was interrupted. Control has been returned to the prompt.",
@@ -2385,8 +2463,7 @@ class ChatSession:
                 partial_content=full_content,
                 pending_tool_calls=pending_tool_calls,
             )
-            render_notice(
-                self.console,
+            self._show_notice(
                 self._notice_value(
                     "generation_interrupted_message",
                     "Generation was interrupted by the user. Partial output, if any, was kept and control has been returned.",
@@ -2459,15 +2536,6 @@ class ChatSession:
         if show_rationale and not display_rationale:
             display_rationale = tool.proposal_rationale(tc.arguments or {})
 
-        render_tool_proposal(
-            self.console,
-            tool.display_spec(),
-            proposal_sections,
-            rationale=display_rationale,
-            show_rationale=show_rationale,
-            requires_approval=needs_confirmation,
-        )
-
         if needs_confirmation:
             permission_request = await self._dispatch_hook_event(
                 event="PermissionRequest",
@@ -2484,7 +2552,25 @@ class ChatSession:
                 return ToolResult(success=False, message=permission_request.message or f"{tc.function_name} blocked by PermissionRequest hook.")
             try:
                 with self._interrupt_scope(allow_escape=False):
-                    approved = Confirm.ask("Approve tool execution?", console=self.console, default=True)
+                    if isinstance(self.ui, ClassicSessionUI):
+                        self.ui.console = self.console
+                        render_tool_proposal(
+                            self.console,
+                            tool.display_spec(),
+                            proposal_sections,
+                            rationale=display_rationale,
+                            show_rationale=show_rationale,
+                            requires_approval=True,
+                        )
+                        approved = Confirm.ask("Approve tool execution?", console=self.console, default=True)
+                    else:
+                        approved = await self.ui.confirm_tool_execution(
+                            tool.display_spec(),
+                            proposal_sections,
+                            rationale=display_rationale,
+                            show_rationale=show_rationale,
+                            requires_approval=True,
+                        )
             except (KeyboardInterrupt, EOFError):
                 return ToolResult(success=False, message="Interrupted by user.", data={"interrupted": True})
             if self._interrupt_requested:
@@ -2492,6 +2578,25 @@ class ChatSession:
             if not approved:
                 self.console.print("  [dim]Skipped.[/dim]")
                 return ToolResult(success=False, message="User rejected.")
+        else:
+            if isinstance(self.ui, ClassicSessionUI):
+                self.ui.console = self.console
+                render_tool_proposal(
+                    self.console,
+                    tool.display_spec(),
+                    proposal_sections,
+                    rationale=display_rationale,
+                    show_rationale=show_rationale,
+                    requires_approval=False,
+                )
+            else:
+                await self.ui.confirm_tool_execution(
+                    tool.display_spec(),
+                    proposal_sections,
+                    rationale=display_rationale,
+                    show_rationale=show_rationale,
+                    requires_approval=False,
+                )
 
         try:
             with self._interrupt_scope(allow_escape=True):
@@ -2523,12 +2628,20 @@ class ChatSession:
             if extra:
                 result.message = f"{result.message}\n\n{prefix}\n{extra}".strip()
         max_len = int(self.cm.get_nested("cli", "tool_result_max_display", default=500))
-        render_tool_result(
-            self.console,
-            tool.display_spec(),
-            result,
-            tool.result_renderable(result, max_display_length=max_len, ctx=self._tool_ctx),
-        )
+        if isinstance(self.ui, ClassicSessionUI):
+            self.ui.console = self.console
+            render_tool_result(
+                self.console,
+                tool.display_spec(),
+                result,
+                tool.result_renderable(result, max_display_length=max_len, ctx=self._tool_ctx),
+            )
+        else:
+            self.ui.show_tool_result(
+                tool.display_spec(),
+                result,
+                tool.result_renderable(result, max_display_length=max_len, ctx=self._tool_ctx),
+            )
         if result.success and tool.category == "config":
             self._print_runtime_snapshot(title="Runtime Updated")
         return result
@@ -2657,8 +2770,7 @@ class ChatSession:
     def _do_load_session(self, session_id: str, last_n: Optional[int] = None) -> None:
         meta = self.session_store.get_session(session_id)
         if not meta:
-            render_notice(
-                self.console,
+            self._show_notice(
                 self._notice_value(
                     "session_not_found_message",
                     "Session {session_id} was not found.",
@@ -2678,9 +2790,7 @@ class ChatSession:
         self._session_start_hooks_ran = False
         self._session_skill_names = ()
         self._turn_skill_result = SkillActivationResult(activated=(), available=(), issues=())
-        theme_name = self.cm.get_nested("cli", "theme", default="default")
-        render_notice(
-            self.console,
+        self._show_notice(
             self._notice_value(
                 "session_resumed_message",
                 "Session [bold]{session_title}[/bold] ([dim]{session_type}[/dim]) was resumed with {message_count} loaded messages.",
@@ -2696,19 +2806,20 @@ class ChatSession:
         keep_n = int(self.cm.get_nested("sessions", "preview_last_n", default=10))
         recent = messages[-keep_n:] if len(messages) > keep_n else messages
         if recent:
-            render_mode = self.cm.get_nested("cli", "render_mode", default="rich")
-            from .ui.markdown import render_content
             skipped = len(messages) - len(recent)
             if skipped > 0:
                 self.console.print(f"[dim]  ({skipped} older messages not shown)[/dim]")
-            for m in recent:
-                if m.role == MessageRole.SYSTEM:
-                    continue
-                elif m.role == MessageRole.USER:
-                    self.console.print(render_user_panel(m.content, theme_name=theme_name))
-                elif m.role == MessageRole.ASSISTANT:
-                    content_renderable = render_content(m.content, render_mode) if m.content else Text("[dim](empty)[/dim]")
-                    if m.content:
+            if isinstance(self.ui, ClassicSessionUI):
+                theme_name = self.cm.get_nested("cli", "theme", default="default")
+                render_mode = self.cm.get_nested("cli", "render_mode", default="rich")
+                self.ui.console = self.console
+                for m in recent:
+                    if m.role == MessageRole.SYSTEM:
+                        continue
+                    if m.role == MessageRole.USER:
+                        self.console.print(render_user_panel(m.content, theme_name=theme_name))
+                        continue
+                    if m.role == MessageRole.ASSISTANT:
                         self.console.print(
                             render_assistant_panel(
                                 m.content,
@@ -2717,22 +2828,21 @@ class ChatSession:
                                 theme_name=theme_name,
                             )
                         )
-                    else:
-                        self.console.print(RichPanel(
-                            content_renderable,
-                            title=f"[bold green]Assistant[/bold green] [dim]{self.llm.model_name}[/dim]",
-                            border_style="green",
-                        ))
-                elif m.role == MessageRole.TOOL:
-                    name = m.name or "tool"
-                    border = "green"
+                        continue
                     self.console.print(RichPanel(
                         m.content[:300] + ("..." if len(m.content) > 300 else ""),
-                        title=f"[bold {border}]Agent[/bold {border}] [dim]{name}[/dim]",
-                        border_style=border,
+                        title=f"[bold green]Agent[/bold green] [dim]{m.name or 'tool'}[/dim]",
+                        border_style="green",
                         expand=False,
                         padding=(0, 1),
                     ))
+            else:
+                self.ui.show_loaded_messages(
+                    recent,
+                    model_name=self.llm.model_name,
+                    render_mode=self.cm.get_nested("cli", "render_mode", default="rich"),
+                    theme_name=self.cm.get_nested("cli", "theme", default="default"),
+                )
 
     def _persist_message(self, message: Message) -> None:
         if self._session_id:
@@ -3045,12 +3155,24 @@ class ChatSession:
         target = str(runner_name or "").strip().lower()
         if target == "shell":
             runner = await self._get_shell_runner()
-            runner.focus(notice)
+            previous_console = runner.console
+            runner.console = self._terminal_console
+            try:
+                with self.ui.suspend():
+                    runner.focus(notice)
+            finally:
+                runner.console = previous_console
             self._current_cwd = runner.refresh_cwd()
             return
         if target == "python":
             runner = await self._get_python_runner()
-            runner.focus(notice)
+            previous_console = runner.console
+            runner.console = self._terminal_console
+            try:
+                with self.ui.suspend():
+                    runner.focus(notice)
+            finally:
+                runner.console = previous_console
             self._current_cwd = runner.refresh_cwd()
             return
         raise ValueError("runner_name must be shell or python")
@@ -3143,12 +3265,10 @@ class ChatSession:
     def _print_welcome_panel(self) -> None:
         theme_name = self.cm.get_nested("cli", "theme", default="default")
         assistant_name = str(self.cm.get_nested("prompts", "assistant_name", default="k-ai") or "k-ai")
-        self.console.print(
-            render_runtime_panel(
-                self.get_runtime_snapshot(),
-                title=f"{assistant_name}  |  Unified LLM Chat",
-                mode="welcome",
-                theme_name=theme_name,
-            )
+        self.ui.show_runtime(
+            self.get_runtime_snapshot(),
+            title=f"{assistant_name}  |  Unified LLM Chat",
+            mode="welcome",
+            theme_name=theme_name,
         )
         self.console.print("[dim]Type /help for commands, or just chat.[/dim]")
