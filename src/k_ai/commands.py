@@ -39,6 +39,10 @@ SLASH_COMMANDS = [
     "/config show", "/config save", "/config get", "/config sections", "/config edit",
     "/save", "/tokens",
     "/memory list", "/memory add", "/memory remove",
+    "/skills", "/skills list", "/skills show", "/skills reload", "/skills active",
+    "/hooks", "/hooks list", "/hooks reload",
+    "/mcp", "/mcp list", "/mcp tools", "/mcp resources", "/mcp templates", "/mcp prompts", "/mcp reload",
+    "/mcp probe", "/mcp install", "/mcp add-stdio", "/mcp add-http", "/mcp enable", "/mcp disable", "/mcp remove",
     "/doctor", "/doctor reset",
     "/qmd query", "/qmd search", "/qmd vsearch",
     "/qmd get", "/qmd ls", "/qmd collections",
@@ -101,7 +105,7 @@ _HELP: dict[str, tuple[str, str, str]] = {
     "/settings [prefix]": ("List current active config keys, optionally filtered by prefix.", "optional prefix", "/settings cli"),
     "/status": ("Show full runtime transparency: provider, tokens, context, limits, approvals, paths.", "-", "/status"),
     "/tools": (
-        "Inspect tool approval policies or live-enable/disable capability groups such as exa, python, shell, and qmd. Protected admin rules stay YAML-only.",
+        "Inspect tool approval policies or live-enable/disable capability groups such as exa, python, shell, qmd, and mcp. Protected admin rules stay YAML-only.",
         "show|capabilities|enable|disable|ask|auto|reset ...",
         "/tools capabilities",
     ),
@@ -117,16 +121,31 @@ _HELP: dict[str, tuple[str, str, str]] = {
         "/config get prompts.yaml ui",
     ),
     "/config sections": ("List all built-in config sections and what each one contains.", "-", "/config sections"),
-    "/config edit [all|models|ui|sessions|governance]": (
+    "/config edit [all|models|ui|sessions|governance|skills|hooks|mcp]": (
         "Open the active config file or one built-in fragment in the configured editor.",
         "optional target section",
-        "/config edit governance",
+        "/config edit mcp",
     ),
     "/save [filename]": ("Export the current chat history to a JSON file.", "optional filename", "/save debug_chat.json"),
     "/tokens": ("Show cumulative token accounting for the current session.", "-", "/tokens"),
     "/memory list": ("List persistent memory entries.", "-", "/memory list"),
     "/memory add <text>": ("Add one persistent memory entry.", "free text", "/memory add User prefers French."),
     "/memory remove <id>": ("Remove one persistent memory entry by ID.", "memory id", "/memory remove 3"),
+    "/skills [list|show|reload|active]": (
+        "Inspect discovered skills, view one full SKILL.md body, refresh the skill catalog, or show the session skill context.",
+        "optional subcommand",
+        "/skills show kpihx-workspace",
+    ),
+    "/hooks [list|reload]": (
+        "Inspect discovered hook matchers or refresh hook configs from disk.",
+        "optional subcommand",
+        "/hooks list",
+    ),
+    "/mcp [list|tools|resources|templates|prompts|reload|probe|install|add-stdio|add-http|enable|disable|remove]": (
+        "Inspect or administer MCP servers, imported tools, resources, prompts, installation, and enablement from chat.",
+        "optional subcommand",
+        "/mcp tools",
+    ),
     "/doctor": (
         "Run the same environment diagnostic as [cyan]k-ai doctor[/cyan], including config coherence, tool/catalog alignment, and recovery paths.",
         "optional: reset <config|memory|sessions|all>",
@@ -207,6 +226,9 @@ class CommandHandler:
             "save": self._save,
             "tokens": self._tokens,
             "memory": self._memory,
+            "skills": self._skills,
+            "hooks": self._hooks,
+            "mcp": self._mcp,
             "doctor": self._doctor,
             "qmd": self._qmd,
             "sandbox": self._sandbox,
@@ -414,6 +436,132 @@ class CommandHandler:
         return True
 
     # ------------------------------------------------------------------
+    # Skills
+    # ------------------------------------------------------------------
+
+    async def _skills(self, args: List[str]) -> bool:
+        from rich.table import Table
+
+        sub = args[0].lower() if args else "list"
+        if sub in {"reload", "refresh"}:
+            self.session.skill_manager.refresh()
+            self.console.print(
+                f"[green]{self.session.skill_manager.config_text('skills', 'runtime', 'ui', 'reload_message', default='Skill catalog refreshed.')}[/green]"
+            )
+            return True
+
+        if sub == "active":
+            active = list(self.session._session_skill_names)
+            if not active:
+                self.console.print(
+                    f"[dim]{self.session.skill_manager.config_text('skills', 'runtime', 'ui', 'active_none_message', default='No session skill context is currently retained.')}[/dim]"
+                )
+                return True
+            for name in active:
+                self.console.print(
+                    self.session.skill_manager.config_text(
+                        "skills",
+                        "runtime",
+                        "ui",
+                        "active_item_template",
+                        default="  [magenta]{skill_name}[/magenta]",
+                        skill_name=name,
+                    )
+                )
+            return True
+
+        if sub == "show":
+            if len(args) < 2:
+                self.console.print(
+                    self.session.skill_manager.config_text(
+                        "skills",
+                        "runtime",
+                        "ui",
+                        "show_usage_message",
+                        default="[yellow]Usage:[/yellow] /skills show <skill_name>",
+                    )
+                )
+                return True
+            document = self.session.skill_manager.load_named_skill(args[1].strip().lower())
+            if document is None:
+                self.console.print(
+                    self.session.skill_manager.config_text(
+                        "skills",
+                        "runtime",
+                        "ui",
+                        "unknown_message",
+                        default="[red]Unknown skill:[/red] {skill_name}",
+                        skill_name=args[1],
+                    )
+                )
+                return True
+            syntax_theme = resolve_syntax_theme(self.session.cm.get_nested("cli", "theme", default="default"))
+            body = f"---\nname: {document.summary.name}\ndescription: {document.summary.description}\n---\n\n{document.body}"
+            self.console.print(
+                Panel(
+                    Syntax(body, "markdown", theme=syntax_theme, word_wrap=True),
+                    title=self.session.skill_manager.config_text(
+                        "skills",
+                        "runtime",
+                        "ui",
+                        "panel_title",
+                        default="[bold magenta]Skill[/bold magenta] [dim]{skill_name}[/dim]",
+                        skill_name=document.summary.name,
+                    ),
+                    border_style="magenta",
+                )
+            )
+            return True
+
+        skills = self.session.skill_manager.catalog(force_refresh=False)
+        issues = self.session.skill_manager.issues()
+        if not skills:
+            self.console.print(
+                f"[dim]{self.session.skill_manager.config_text('skills', 'runtime', 'ui', 'list_none_message', default='No skills discovered.')}[/dim]"
+            )
+            return True
+
+        table = Table(
+            title=self.session.skill_manager.config_text(
+                "skills",
+                "runtime",
+                "ui",
+                "table_title",
+                default="[bold magenta]Skills[/bold magenta]",
+            ),
+            show_header=True,
+            header_style="bold",
+        )
+        table.add_column(
+            self.session.skill_manager.config_text("skills", "runtime", "ui", "columns", "name", default="Name"),
+            style="magenta",
+            no_wrap=True,
+        )
+        table.add_column(
+            self.session.skill_manager.config_text("skills", "runtime", "ui", "columns", "scope", default="Scope"),
+            style="cyan",
+            no_wrap=True,
+        )
+        table.add_column(
+            self.session.skill_manager.config_text("skills", "runtime", "ui", "columns", "description", default="Description")
+        )
+        for skill in skills:
+            table.add_row(skill.name, skill.scope, skill.description)
+        self.console.print(table)
+        if issues:
+            self.console.print(
+                self.session.skill_manager.config_text(
+                    "skills",
+                    "runtime",
+                    "ui",
+                    "issues_message",
+                    default="[dim]{issue_count} discovery issue(s) detected. Use /skills reload after fixes.[/dim]",
+                    issue_count=str(len(issues)),
+                )
+            )
+        return True
+
+    # ------------------------------------------------------------------
     # Doctor
     # ------------------------------------------------------------------
 
@@ -562,7 +710,7 @@ class CommandHandler:
         sub = args[0].lower()
         if sub in {"enable", "disable"}:
             if len(args) < 2:
-                self.console.print("[yellow]Usage:[/yellow] /tools enable|disable <exa|python|shell|qmd>")
+                self.console.print("[yellow]Usage:[/yellow] /tools enable|disable <exa|python|shell|qmd|mcp>")
                 return True
             payload = {
                 "capability": args[1],
@@ -596,8 +744,8 @@ class CommandHandler:
         self.console.print(
             "[yellow]Usage:[/yellow]\n"
             "  /tools capabilities\n"
-            "  /tools enable <exa|python|shell|qmd>\n"
-            "  /tools disable <exa|python|shell|qmd>\n"
+            "  /tools enable <exa|python|shell|qmd|mcp>\n"
+            "  /tools disable <exa|python|shell|qmd|mcp>\n"
             "  /tools show [ask|auto|default|session|global|protected]\n"
             "  /tools ask <target> [session|global] [tool|category|risk]\n"
             "  /tools auto <target> [session|global] [tool|category|risk]\n"
@@ -677,7 +825,7 @@ class CommandHandler:
             return True
         elif sub == "edit":
             if len(args) > 2:
-                self.console.print("[yellow]Usage:[/yellow] /config edit [all|models|ui|sessions|governance]")
+                self.console.print("[yellow]Usage:[/yellow] /config edit [all|models|ui|sessions|governance|skills|hooks|mcp]")
                 return True
             target_name = args[1] if len(args) > 1 else "all"
             try:
@@ -721,8 +869,194 @@ class CommandHandler:
             self.console.print(
                 "[yellow]Usage:[/yellow] /config show [key] | /config show section:<name> [section:<name> ...] | "
                 "/config save [path] | /config get [path] [section ...] | /config sections | "
-                "/config edit [all|models|ui|sessions|governance]"
+                "/config edit [all|models|ui|sessions|governance|skills|hooks|mcp]"
             )
+        return True
+
+    async def _hooks(self, args: List[str]) -> bool:
+        sub = args[0].lower() if args else "list"
+        if sub in {"reload", "refresh"}:
+            self.session.hook_manager.refresh()
+            self.console.print(
+                f"[green]{self.session.hook_manager.config_text('hooks', 'runtime', 'reload_message', default='Hook catalog refreshed.')}[/green]"
+            )
+            return True
+
+        catalog = self.session.hook_manager.catalog(force_refresh=False)
+        if not catalog.matchers:
+            self.console.print(
+                self.session.hook_manager.config_text("hooks", "runtime", "discovery_none", default="No hooks discovered.")
+            )
+            return True
+        table = Table(title=self.session.hook_manager.config_text("hooks", "runtime", "table_title", default="[bold cyan]Hooks[/bold cyan]"))
+        table.add_column(self.session.hook_manager.config_text("hooks", "runtime", "columns", "event", default="Event"), style="cyan")
+        table.add_column(self.session.hook_manager.config_text("hooks", "runtime", "columns", "matcher", default="Matcher"), style="magenta")
+        table.add_column(self.session.hook_manager.config_text("hooks", "runtime", "columns", "scope", default="Scope"), style="green")
+        table.add_column(self.session.hook_manager.config_text("hooks", "runtime", "columns", "source", default="Source"), style="dim")
+        table.add_column(self.session.hook_manager.config_text("hooks", "runtime", "columns", "command", default="Command"))
+        for matcher in catalog.matchers:
+            for command in matcher.commands:
+                text = command.command if len(command.command) <= 72 else command.command[:69] + "..."
+                table.add_row(matcher.event, matcher.matcher, matcher.scope, str(matcher.source_file), text)
+        self.console.print(table)
+        return True
+
+    async def _mcp(self, args: List[str]) -> bool:
+        sub = args[0].lower() if args else "list"
+        if sub in {"reload", "refresh"}:
+            return await self._run_internal_tool("mcp_catalog_reload", {})
+
+        if sub == "probe":
+            if len(args) < 2:
+                self.console.print("[yellow]Usage:[/yellow] /mcp probe <server_name> [command_or_package]")
+                return True
+            payload: Dict[str, object] = {"server_name": args[1]}
+            if len(args) > 2:
+                payload["command"] = args[2]
+            return await self._run_internal_tool("mcp_server_probe", payload)
+
+        if sub == "install":
+            if len(args) < 2:
+                self.console.print("[yellow]Usage:[/yellow] /mcp install <server_name> [package_name] [binary_name]")
+                return True
+            payload = {"server_name": args[1]}
+            if len(args) > 2:
+                payload["package_name"] = args[2]
+            if len(args) > 3:
+                payload["binary_name"] = args[3]
+            return await self._run_internal_tool("mcp_server_install", payload)
+
+        if sub == "add-stdio":
+            if len(args) < 3:
+                self.console.print("[yellow]Usage:[/yellow] /mcp add-stdio <server_name> <command> [cwd]")
+                return True
+            payload = {
+                "server_name": args[1],
+                "transport": "stdio",
+                "command": args[2],
+            }
+            if len(args) > 3:
+                payload["cwd"] = args[3]
+            return await self._run_internal_tool("mcp_server_upsert", payload)
+
+        if sub == "add-http":
+            if len(args) < 3:
+                self.console.print("[yellow]Usage:[/yellow] /mcp add-http <server_name> <url> [streamable_http|sse]")
+                return True
+            payload = {
+                "server_name": args[1],
+                "transport": args[3] if len(args) > 3 else "streamable_http",
+                "url": args[2],
+            }
+            return await self._run_internal_tool("mcp_server_upsert", payload)
+
+        if sub in {"enable", "disable"}:
+            if len(args) < 2:
+                self.console.print("[yellow]Usage:[/yellow] /mcp enable|disable <server_name>")
+                return True
+            return await self._run_internal_tool(
+                "mcp_server_set_enabled",
+                {"server_name": args[1], "enabled": sub == "enable"},
+            )
+
+        if sub == "remove":
+            if len(args) < 2:
+                self.console.print("[yellow]Usage:[/yellow] /mcp remove <server_name>")
+                return True
+            return await self._run_internal_tool("mcp_server_remove", {"server_name": args[1]})
+
+        await self.session._ensure_mcp_catalog_loaded()
+        catalog = self.session.mcp_manager.current_catalog()
+
+        if sub == "tools":
+            if not catalog.tools:
+                self.console.print(self.session.mcp_manager.config_text("mcp", "runtime", "discovery_none", default="No MCP servers discovered."))
+                return True
+            table = Table(title=self.session.mcp_manager.config_text("mcp", "runtime", "tools_table_title", default="[bold cyan]MCP Tools[/bold cyan]"))
+            table.add_column(self.session.mcp_manager.config_text("mcp", "runtime", "columns", "server", default="Server"), style="cyan")
+            table.add_column(self.session.mcp_manager.config_text("mcp", "runtime", "columns", "tool_name", default="Tool"), style="magenta")
+            table.add_column(self.session.mcp_manager.config_text("mcp", "runtime", "columns", "qualified_name", default="Qualified Name"), style="green")
+            table.add_column(self.session.mcp_manager.config_text("mcp", "runtime", "columns", "risk", default="Risk"), style="yellow")
+            table.add_column(self.session.mcp_manager.config_text("mcp", "runtime", "columns", "approval", default="Approval"), style="white")
+            for tool in catalog.tools:
+                wrapped = self.session.tool_registry.get(tool.qualified_name)
+                table.add_row(
+                    tool.server_title,
+                    tool.name,
+                    tool.qualified_name,
+                    getattr(wrapped, "danger_level", "medium"),
+                    "ask" if getattr(wrapped, "requires_approval", True) else "auto",
+                )
+            self.console.print(table)
+            return True
+
+        if sub == "resources":
+            payload: Dict[str, object] = {}
+            if len(args) > 1:
+                payload["server_name"] = args[1]
+            return await self._run_internal_tool("mcp_resource_list", payload)
+
+        if sub == "templates":
+            payload: Dict[str, object] = {}
+            if len(args) > 1:
+                payload["server_name"] = args[1]
+            return await self._run_internal_tool("mcp_resource_template_list", payload)
+
+        if sub == "prompts":
+            payload: Dict[str, object] = {}
+            if len(args) > 1:
+                payload["server_name"] = args[1]
+            return await self._run_internal_tool("mcp_prompt_list", payload)
+
+        if not catalog.servers and not catalog.issues:
+            self.console.print(self.session.mcp_manager.config_text("mcp", "runtime", "discovery_none", default="No MCP servers discovered."))
+            return True
+
+        table = Table(title=self.session.mcp_manager.config_text("mcp", "runtime", "table_title", default="[bold cyan]MCP Servers[/bold cyan]"))
+        table.add_column(self.session.mcp_manager.config_text("mcp", "runtime", "columns", "server", default="Server"), style="cyan")
+        table.add_column(self.session.mcp_manager.config_text("mcp", "runtime", "columns", "status", default="Status"), style="magenta")
+        table.add_column(self.session.mcp_manager.config_text("mcp", "runtime", "columns", "transport", default="Transport"), style="green")
+        table.add_column(self.session.mcp_manager.config_text("mcp", "runtime", "columns", "tools", default="Tools"), style="white")
+        table.add_column(self.session.mcp_manager.config_text("mcp", "runtime", "columns", "resources", default="Resources"), style="white")
+        table.add_column(self.session.mcp_manager.config_text("mcp", "runtime", "columns", "prompts", default="Prompts"), style="white")
+        table.add_column(self.session.mcp_manager.config_text("mcp", "runtime", "columns", "source", default="Source"), style="dim")
+        seen_servers = set()
+        for server in catalog.servers:
+            seen_servers.add(server.spec.name)
+            table.add_row(
+                server.server_title,
+                self.session.mcp_manager.config_text("mcp", "runtime", "statuses", "ready", default="ready"),
+                server.spec.transport,
+                str(len(server.tools)),
+                str(len(server.resources)),
+                str(len(server.prompts)),
+                server.spec.command,
+            )
+        for issue in catalog.issues:
+            seen_servers.add(issue.server_name)
+            table.add_row(
+                issue.server_name,
+                self.session.mcp_manager.config_text("mcp", "runtime", "statuses", "error", default="error"),
+                "-",
+                "0",
+                "0",
+                "0",
+                issue.message,
+            )
+        configured = dict(self.session.cm.get_nested("mcp", "servers", default={}) or {})
+        for name, payload in configured.items():
+            if name in seen_servers or not isinstance(payload, dict):
+                continue
+            table.add_row(
+                str(name),
+                self.session.mcp_manager.config_text("mcp", "runtime", "statuses", "disabled", default="disabled"),
+                str(payload.get("transport", "stdio")),
+                "0",
+                "0",
+                "0",
+                str(payload.get("command", payload.get("url", "")) or "-"),
+            )
+        self.console.print(table)
         return True
 
     async def _save(self, args: List[str]) -> bool:

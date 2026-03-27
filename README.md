@@ -38,6 +38,7 @@ It is designed around one principle: the chat loop, the slash commands, and the 
 - QMD-backed history/document retrieval restricted to the `k-ai` session collection when appropriate.
 - Robust interruption handling for prompt input, generation, and tool execution.
 - Split default config fragments with cached loading for better maintainability and lower parse overhead.
+- Native `SKILL.md` runtime with project/global discovery, prompt injection, and an internal `activate_skill` tool.
 
 ## Problem-First Docs
 
@@ -98,6 +99,44 @@ uv sync --dev
 uv run pytest -q
 uv run k-ai chat
 ```
+
+Skills runtime defaults:
+
+- project overlays: `.k-ai/skills`, `.agents/skills`
+- global skills: `~/.agents/skills`
+- inspection commands: `/skills`, `/skills show <name>`, `/skills reload`, `/skills active`
+
+Hooks runtime defaults:
+
+- project overlays: `.k-ai/hooks`, `.agents/hooks`
+- global hooks: `~/.agents/hooks`
+- discovered config files per root: `hooks.yaml`, `hooks.yml`, `hooks.json`
+- supported events: `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PermissionRequest`, `PostToolUse`, `PostToolUseFailure`, `Stop`
+- inspection commands: `/hooks`, `/hooks reload`
+
+MCP runtime defaults:
+
+- config fragment: `src/k_ai/defaults/defaults.d/60-mcp.yaml`
+- first bundled server: `filesystem` via `mcp-server-filesystem`
+- transport foundation: official Python `mcp` SDK over `stdio`, `streamable_http`, and `sse`
+- roots: workspace root exposed by default to MCP servers that request them
+- protocol surfaces exposed: tools, resources, resource templates, prompts, roots
+- inspection/admin commands:
+  - `/mcp`
+  - `/mcp tools`
+  - `/mcp resources [server]`
+  - `/mcp templates [server]`
+  - `/mcp prompts [server]`
+  - `/mcp probe <name> [command_or_package]`
+  - `/mcp install <name> [package] [binary]`
+  - `/mcp add-stdio <name> <command> [cwd]`
+  - `/mcp add-http <name> <url> [streamable_http|sse]`
+  - `/mcp enable|disable <name>`
+  - `/mcp remove <name>`
+  - `/mcp reload`
+
+The staged architecture roadmap for `skills`, `hooks`, filesystem editing, and
+MCP is tracked in [`VISION.md`](VISION.md).
 
 Published package identity:
 
@@ -277,16 +316,18 @@ Runtime/config:
 - `/model [name]`
 - `/provider [name] [model]`
 - `/tools capabilities`
-- `/tools enable|disable <exa|python|shell|qmd>`
+- `/tools enable|disable <exa|python|shell|qmd|mcp>`
+- `/mcp [list|tools|resources|templates|prompts|reload|probe|install|add-stdio|add-http|enable|disable|remove]`
 - `/config show [key]`
 - `/config show section:<name> [section:<name> ...]`
 - `/config get [path] [section ...]`
 - `/config save [path]`
 - `/config sections`
+- `/config edit [all|models|ui|sessions|governance|skills|hooks|mcp]`
 
 Tools and memory:
 
-- live capability switching only applies to mutable families (`exa`, `python`, `shell`, `qmd`)
+- live capability switching only applies to mutable families (`exa`, `python`, `shell`, `qmd`, `mcp`)
 - protected admin approval rules remain YAML-only by design
 - `/tools show [ask|auto|default|session|global|protected]`
 - `/tools ask|auto <target> [session|global] [tool|category|risk]`

@@ -66,6 +66,8 @@ def test_install_script_configures_custom_runtime_root(tmp_path):
     assert data["memory"]["internal_file"] == str(runtime_root / "MEMORY.json")
     assert data["sessions"]["directory"] == str(runtime_root / "sessions")
     assert data["tools"]["qmd"]["session_collection"] == "audit-kai"
+    assert data["tools"]["mcp"]["enabled"] is True
+    assert data["mcp"]["servers"]["filesystem"]["command"] == "mcp-server-filesystem"
     assert data["runtime_git"]["enabled"] is True
     assert (runtime_root / ".git").exists()
     log = subprocess.run(

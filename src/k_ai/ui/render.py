@@ -117,6 +117,26 @@ def render_runtime_panel(snapshot: dict, title: str = "Runtime Transparency", mo
         f"{int(snapshot.get('history_messages', 0) or 0)} msgs",
     )
     body.add_row("Stream", str(snapshot.get("stream")), "", "")
+    skills_summary = str(snapshot.get("skills_summary", "") or "").strip()
+    skills_catalog_count = int(snapshot.get("skills_catalog_count", 0) or 0)
+    hooks_summary = str(snapshot.get("hooks_summary", "") or "").strip()
+    hooks_count = int(snapshot.get("hooks_count", 0) or 0)
+    mcp_summary = str(snapshot.get("mcp_summary", "") or "").strip()
+    mcp_server_count = int(snapshot.get("mcp_server_count", 0) or 0)
+    mcp_tool_count = int(snapshot.get("mcp_tool_count", 0) or 0)
+    mcp_resource_count = int(snapshot.get("mcp_resource_count", 0) or 0)
+    mcp_prompt_count = int(snapshot.get("mcp_prompt_count", 0) or 0)
+    if skills_summary:
+        body.add_row("Skills", skills_summary, "Catalog", f"{skills_catalog_count} discovered")
+    if hooks_summary:
+        body.add_row("Hooks", hooks_summary, "Hook cfg", f"{hooks_count} matcher(s)")
+    if mcp_summary:
+        body.add_row(
+            "MCP",
+            mcp_summary,
+            "Catalog",
+            f"{mcp_server_count} server(s) / {mcp_tool_count} tool(s) / {mcp_resource_count} resource(s) / {mcp_prompt_count} prompt(s)",
+        )
 
     if mode in {"full", "welcome"}:
         approval_counts = snapshot.get("approval_counts", {}) or {}
@@ -145,6 +165,13 @@ def render_runtime_panel(snapshot: dict, title: str = "Runtime Transparency", mo
             "Overrides",
             f"session {approval_counts.get('session_overrides', 0)} / global {approval_counts.get('global_overrides', 0)}",
         )
+        if skills_summary:
+            body.add_row(
+                "Skill mode",
+                str(snapshot.get("skills_visibility_mode", "announce")),
+                "",
+                "",
+            )
 
     parts = [header, Rule(style="dim"), body]
     if snapshot.get("session_summary"):

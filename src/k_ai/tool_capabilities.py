@@ -51,6 +51,12 @@ TOOL_CAPABILITIES: dict[str, dict[str, Any]] = {
         "mutable": True,
         "description": "QMD-backed search, retrieval, collection, and maintenance tools.",
     },
+    "mcp": {
+        "label": "MCP server tools",
+        "tools": [],
+        "mutable": True,
+        "description": "Dynamic tools imported from configured MCP servers.",
+    },
 }
 
 TOOL_TO_CAPABILITY: dict[str, str] = {
@@ -84,6 +90,8 @@ def normalize_capability_name(name: str) -> str:
 
 
 def capability_for_tool(tool_name: str) -> str | None:
+    if str(tool_name or "").startswith("mcp__"):
+        return "mcp"
     return TOOL_TO_CAPABILITY.get(tool_name)
 
 

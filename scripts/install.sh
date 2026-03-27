@@ -202,6 +202,7 @@ editor = data.get("editor", {}) or {}
 python_sandbox = data.get("python_sandbox", {}) or {}
 qmd = data.get("qmd", {}) or {}
 verification = data.get("verification", {}) or {}
+mcp = data.get("mcp", {}) or {}
 
 default_packages = []
 for item in python_sandbox.get("default_packages", []) or []:
@@ -228,6 +229,7 @@ print(f"CAP_EXA={q(str(bool(capabilities.get('exa', True))).lower())}")
 print(f"CAP_PYTHON={q(str(bool(capabilities.get('python', True))).lower())}")
 print(f"CAP_SHELL={q(str(bool(capabilities.get('shell', True))).lower())}")
 print(f"CAP_QMD={q(str(bool(capabilities.get('qmd', True))).lower())}")
+print(f"CAP_MCP={q(str(bool(capabilities.get('mcp', True))).lower())}")
 print(f"EDITOR_PREFERRED={q(editor.get('preferred', ''))}")
 print(f"EDITOR_OFFER_MICRO={q(str(bool(editor.get('offer_micro_install', True))).lower())}")
 print(f"EDITOR_FALLBACK={q(editor.get('fallback', 'nano'))}")
@@ -238,6 +240,10 @@ print(f"QMD_INSTALL_IF_MISSING={q(str(bool(qmd.get('install_if_missing', True)))
 print(f"QMD_COLLECTION_NAME={q(qmd.get('collection_name', 'k-ai'))}")
 print(f"QMD_COLLECTION_MASK={q(qmd.get('collection_mask', '**/*.{jsonl,json}'))}")
 print(f"QMD_CONTEXT_SUMMARY={q(qmd.get('context_summary', 'k-ai session history.'))}")
+print(f"MCP_INSTALL_FILESYSTEM_SERVER={q(str(bool(mcp.get('install_filesystem_server', True))).lower())}")
+print(f"MCP_FILESYSTEM_PACKAGE={q(mcp.get('filesystem_package', '@modelcontextprotocol/server-filesystem'))}")
+print(f"MCP_FILESYSTEM_BINARY={q(mcp.get('filesystem_binary', 'mcp-server-filesystem'))}")
+print(f"MCP_FILESYSTEM_INSTALLER={q(mcp.get('filesystem_installer', 'auto'))}")
 print(f"VERIFY_PREFER_MAKE={q(str(bool(verification.get('prefer_make_check', True))).lower())}")
 print(f"VERIFY_ENABLED={q(str(bool(verification.get('enabled', True))).lower())}")
 print(f"VERIFY_RUN_DOCTOR={q(str(bool(verification.get('run_doctor', True))).lower())}")
@@ -399,6 +405,7 @@ if [[ "${INSTALL_INTERACTIVE}" == "true" ]]; then
   info "  - python: sandboxed Python execution plus sandbox package management"
   info "  - shell: sandboxed shell command execution"
   info "  - qmd: indexed history and knowledge retrieval tools"
+  info "  - mcp: dynamic tools imported from configured MCP servers"
   info "Protected approval-admin tools are not changed here; they remain YAML-only if you want to alter them manually."
 
   if ask_yes_no "Enable Exa web search capability?" "$([[ "${CAP_EXA}" == "true" ]] && echo y || echo n)"; then
@@ -421,6 +428,11 @@ if [[ "${INSTALL_INTERACTIVE}" == "true" ]]; then
   else
     CAP_QMD="false"
   fi
+  if ask_yes_no "Enable MCP capability?" "$([[ "${CAP_MCP}" == "true" ]] && echo y || echo n)"; then
+    CAP_MCP="true"
+  else
+    CAP_MCP="false"
+  fi
 fi
 
 CONFIG_FILE="${CONFIG_FILE}" \
@@ -436,6 +448,7 @@ CAP_EXA="${CAP_EXA}" \
 CAP_PYTHON="${CAP_PYTHON}" \
 CAP_SHELL="${CAP_SHELL}" \
 CAP_QMD="${CAP_QMD}" \
+CAP_MCP="${CAP_MCP}" \
 QMD_COLLECTION_NAME="${QMD_COLLECTION_NAME}" \
 run_managed_python - <<'PY' >/dev/null
 import os
@@ -461,6 +474,8 @@ cm.set("tools.python.sandbox_dir", os.environ["SANDBOX_DIR"])
 cm.set("tools.shell.enabled", as_bool("CAP_SHELL"))
 cm.set("tools.qmd.enabled", as_bool("CAP_QMD"))
 cm.set("tools.qmd.session_collection", os.environ["QMD_COLLECTION_NAME"])
+cm.set("tools.mcp.enabled", as_bool("CAP_MCP"))
+cm.set("mcp.servers.filesystem.enabled", as_bool("CAP_MCP"))
 cm.save_active_yaml(os.environ["CONFIG_FILE"])
 PY
 ok "Configured config.editor=${EDITOR_CHOICE}"
@@ -592,6 +607,30 @@ else
   warn "QMD unavailable. History search tools will remain limited until QMD is installed."
 fi
 
+step "Setting up MCP filesystem server"
+
+if [[ "${CAP_MCP}" != "true" ]]; then
+  warn "MCP capability disabled by install choices"
+elif [[ "${MCP_INSTALL_FILESYSTEM_SERVER}" != "true" ]]; then
+  warn "Filesystem MCP server installation disabled by install profile"
+elif command -v "${MCP_FILESYSTEM_BINARY}" >/dev/null 2>&1; then
+  ok "Filesystem MCP server available (${MCP_FILESYSTEM_BINARY})"
+else
+  if [[ "${MCP_FILESYSTEM_INSTALLER}" == "bun" ]] || [[ "${MCP_FILESYSTEM_INSTALLER}" == "auto" && "$(command -v bun >/dev/null 2>&1; echo $?)" -eq 0 ]]; then
+    bun add --global "${MCP_FILESYSTEM_PACKAGE}" >/dev/null && ok "Installed ${MCP_FILESYSTEM_PACKAGE} with bun" || warn "Failed to install ${MCP_FILESYSTEM_PACKAGE} with bun"
+  elif [[ "${MCP_FILESYSTEM_INSTALLER}" == "npm" ]] || [[ "${MCP_FILESYSTEM_INSTALLER}" == "auto" && "$(command -v npm >/dev/null 2>&1; echo $?)" -eq 0 ]]; then
+    npm install -g "${MCP_FILESYSTEM_PACKAGE}" >/dev/null && ok "Installed ${MCP_FILESYSTEM_PACKAGE} with npm" || warn "Failed to install ${MCP_FILESYSTEM_PACKAGE} with npm"
+  else
+    warn "Neither bun nor npm is available; skipping filesystem MCP installation."
+  fi
+fi
+
+if [[ "${CAP_MCP}" == "true" && -x "$(command -v "${MCP_FILESYSTEM_BINARY}" 2>/dev/null || true)" ]]; then
+  ok "Filesystem MCP server command ready: ${MCP_FILESYSTEM_BINARY}"
+else
+  warn "Filesystem MCP server command not found. k-ai will keep the MCP config, but the filesystem server will stay unavailable until '${MCP_FILESYSTEM_BINARY}' is installed."
+fi
+
 step "Installing runtime git hook"
 
 if [[ "${RUNTIME_GIT_ENABLED}" == "true" ]]; then
@@ -615,7 +654,7 @@ if [[ "${VERIFY_ENABLED}" == "true" ]]; then
   if [[ "${VERIFY_PREFER_MAKE}" == "true" && "${INSTALL_BACKEND}" == "uv" ]] && [[ -f "${PROJECT_DIR}/Makefile" ]] && command -v make >/dev/null 2>&1; then
     make check
   else
-    python3 -m py_compile src/k_ai/*.py src/k_ai/tools/*.py src/k_ai/ui/*.py test/*.py
+    python3 -m py_compile $(find src test -name '*.py' -print)
     run_managed_pytest
   fi
 

@@ -186,7 +186,7 @@ tool_approval:
         risk: high
         default_policy: ask
         protected: false
-        description: Enable or disable one mutable tool capability group such as exa, python, shell, or qmd.
+        description: Enable or disable one mutable tool capability group such as exa, python, shell, qmd, or mcp.
 
     memory:
       memory_add:
@@ -207,6 +207,88 @@ tool_approval:
         default_policy: ask
         protected: false
         description: Remove a memory entry by id.
+
+    skills:
+      activate_skill:
+        category: skills
+        risk: low
+        default_policy: auto
+        protected: false
+        description: Load one available skill into the current turn context before answering.
+
+    mcp:
+      mcp_server_list:
+        category: mcp-admin
+        risk: low
+        default_policy: auto
+        protected: false
+        description: List configured MCP servers and current discovered MCP runtime state.
+      mcp_server_probe:
+        category: mcp-admin
+        risk: low
+        default_policy: auto
+        protected: false
+        description: Probe likely local commands and package metadata for an MCP server.
+      mcp_server_upsert:
+        category: mcp-admin
+        risk: high
+        default_policy: ask
+        protected: false
+        description: Create or update one MCP server definition in runtime config.
+      mcp_server_remove:
+        category: mcp-admin
+        risk: high
+        default_policy: ask
+        protected: false
+        description: Remove one MCP server definition from runtime config.
+      mcp_server_set_enabled:
+        category: mcp-admin
+        risk: medium
+        default_policy: ask
+        protected: false
+        description: Enable or disable one configured MCP server.
+      mcp_server_install:
+        category: mcp-admin
+        risk: high
+        default_policy: ask
+        protected: false
+        description: Install one stdio MCP server package and register it in runtime config.
+      mcp_resource_list:
+        category: mcp-admin
+        risk: low
+        default_policy: auto
+        protected: false
+        description: List MCP resources exposed by configured servers.
+      mcp_resource_read:
+        category: mcp-admin
+        risk: low
+        default_policy: auto
+        protected: false
+        description: Read one MCP resource by server and URI.
+      mcp_resource_template_list:
+        category: mcp-admin
+        risk: low
+        default_policy: auto
+        protected: false
+        description: List MCP resource templates exposed by configured servers.
+      mcp_prompt_list:
+        category: mcp-admin
+        risk: low
+        default_policy: auto
+        protected: false
+        description: List MCP prompts exposed by configured servers.
+      mcp_prompt_get:
+        category: mcp-admin
+        risk: low
+        default_policy: auto
+        protected: false
+        description: Load one MCP prompt by server and prompt name.
+      mcp_catalog_reload:
+        category: mcp-admin
+        risk: low
+        default_policy: auto
+        protected: false
+        description: Refresh MCP discovery and rebuild imported MCP tools.
 
     web:
       exa_search:
@@ -405,3 +487,8 @@ tools:
     vector_timeout: 30
     # Restrict session/history retrieval to the dedicated k-ai collection.
     session_collection: "k-ai"
+
+  # High-level capability switch for dynamic tools imported from configured MCP servers.
+  # Controls all runtime tools whose names are prefixed with mcp__.
+  mcp:
+    enabled: true

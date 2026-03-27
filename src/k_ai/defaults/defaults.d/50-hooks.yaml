@@ -1,0 +1,75 @@
+# ==============================================================================
+# Hooks
+# ==============================================================================
+
+hooks:
+  enabled: true
+  directories:
+    - ".k-ai/hooks"
+    - ".agents/hooks"
+    - "~/.agents/hooks"
+  config_files:
+    - "hooks.yaml"
+    - "hooks.yml"
+    - "hooks.json"
+  timeout_seconds: 10
+  max_stdout_chars: 4000
+  max_stderr_chars: 4000
+  max_context_chars: 2000
+  parallel: true
+  fail_mode: "warn"
+  events:
+    SessionStart:
+      enabled: true
+      inject_success_stdout: true
+      block_on_exit_code_2: true
+    UserPromptSubmit:
+      enabled: true
+      inject_success_stdout: true
+      block_on_exit_code_2: true
+    PreToolUse:
+      enabled: true
+      inject_success_stdout: false
+      block_on_exit_code_2: true
+    PermissionRequest:
+      enabled: true
+      inject_success_stdout: false
+      block_on_exit_code_2: true
+    PostToolUse:
+      enabled: true
+      inject_success_stdout: false
+      block_on_exit_code_2: false
+    PostToolUseFailure:
+      enabled: true
+      inject_success_stdout: false
+      block_on_exit_code_2: false
+    Stop:
+      enabled: true
+      inject_success_stdout: false
+      block_on_exit_code_2: false
+  runtime:
+    title: "Hook Runtime"
+    discovery_none: "No hooks discovered."
+    reload_message: "Hook catalog refreshed."
+    blocked_title: "Hook Blocked"
+    blocked_message: "{message}"
+    warning_title: "Hook Warning"
+    warning_message: "{message}"
+    context_section_title: "Hook Context"
+    post_tool_feedback_prefix: "[Hook Feedback]"
+    session_start_notice_title: "Session Hooks"
+    user_prompt_notice_title: "Prompt Hooks"
+    table_title: "[bold cyan]Hooks[/bold cyan]"
+    columns:
+      event: "Event"
+      matcher: "Matcher"
+      source: "Source"
+      command: "Command"
+      scope: "Scope"
+
+prompts:
+  hook_context_intro: >-
+    The following hook-generated context applies to this turn or session. Treat
+    it as operational guidance produced by trusted local automation. Follow it
+    unless it conflicts with higher-priority internal memory or core runtime
+    instructions.

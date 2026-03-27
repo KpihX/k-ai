@@ -18,7 +18,7 @@ import sys
 import termios
 import threading
 import tty
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence
 
 from rich.console import Console
 from rich.panel import Panel as RichPanel
@@ -33,13 +33,18 @@ from prompt_toolkit.styles import Style as PTStyle
 from .config import ConfigManager
 from .llm_core import get_provider, LLMProvider
 from .models import (
-    Message, MessageRole, ToolCall, TokenUsage, SessionMetadata, ToolResult,
+    Message, MessageRole, ToolCall, TokenUsage, SessionMetadata, ToolResult, LLMConfig,
 )
 from .memory import MemoryStore, load_external_memory
 from .runtime_git import commit_runtime_state
 from .session_store import SessionStore
+from .hooks import HookManager
+from .mcp import MCPManager
+from .skills import SkillManager
+from .skills.models import ActivatedSkill, SkillActivationResult
 from .tools import create_registry, ToolRegistry
 from .tools.base import ToolContext
+from .tools.mcp import build_mcp_tools
 from .ui import (
     StreamingRenderer,
     render_assistant_panel,
@@ -94,6 +99,9 @@ class ChatSession:
 
         ext_path = self.cm.get_nested("memory", "external_file", default="")
         self.external_memory = load_external_memory(ext_path)
+        self.hook_manager = HookManager(self.cm)
+        self.skill_manager = SkillManager(self.cm)
+        self.mcp_manager = MCPManager(self.cm)
 
         self._session_id: Optional[str] = None
         self._exit_requested: bool = False
@@ -109,6 +117,12 @@ class ChatSession:
         self._queued_new_session_message: Optional[str] = None
         self._continuation_after_switch: Optional[Dict[str, str]] = None
         self._turn_session_guidance: Optional[str] = None
+        self._session_hook_context: tuple[str, ...] = ()
+        self._turn_hook_context: tuple[str, ...] = ()
+        self._session_start_hooks_ran: bool = False
+        self._mcp_catalog_loaded: bool = False
+        self._turn_skill_result = SkillActivationResult(activated=(), available=(), issues=())
+        self._session_skill_names: tuple[str, ...] = ()
         self._session_tool_policy_overrides: Dict[str, Dict[str, str]] = {
             "tools": {},
             "categories": {},
@@ -140,6 +154,13 @@ class ChatSession:
             reset_tool_policy=self.reset_tool_policy,
             get_tool_capability_overview=self.get_tool_capability_overview,
             update_tool_capability=self.update_tool_capability,
+            list_skills=lambda force_refresh=False: self.skill_manager.catalog(force_refresh=force_refresh),
+            activate_skill=self._activate_skill_for_turn,
+            get_active_skills=lambda: list(self._active_skill_names()),
+            refresh_mcp_catalog=self.refresh_mcp_catalog,
+            get_mcp_catalog=lambda force_refresh=False: self.mcp_manager.catalog(force_refresh=force_refresh),
+            mcp_read_resource=self.read_mcp_resource,
+            mcp_get_prompt=self.get_mcp_prompt,
             is_interrupt_requested=lambda: self._interrupt_requested,
         )
         self.tool_registry: ToolRegistry = create_registry(self._tool_ctx)
@@ -294,6 +315,19 @@ class ChatSession:
             "provider_completion_tokens": self.total_usage.completion_tokens,
             "provider_total_tokens": self.total_usage.total_tokens,
             "persist_path": persist_path,
+            "hooks_summary": self.hook_manager.runtime_summary() if self.hook_manager.enabled() else "",
+            "hooks_count": len(self.hook_manager.catalog().matchers) if self.hook_manager.enabled() else 0,
+            "mcp_summary": self.mcp_manager.runtime_summary_cached() if self.mcp_manager.enabled() else "",
+            "mcp_server_count": len(self.mcp_manager.current_catalog().servers) if self.mcp_manager.enabled() else 0,
+            "mcp_tool_count": len(self.mcp_manager.current_catalog().tools) if self.mcp_manager.enabled() else 0,
+            "mcp_resource_count": len(self.mcp_manager.current_catalog().resources) if self.mcp_manager.enabled() else 0,
+            "mcp_prompt_count": len(self.mcp_manager.current_catalog().prompts) if self.mcp_manager.enabled() else 0,
+            "skills_summary": self.skill_manager.runtime_status_summary(
+                active_names=self._active_skill_names(),
+                retained_names=self._session_skill_names,
+            ) if self.skill_manager.enabled() else "",
+            "skills_catalog_count": len(self.skill_manager.catalog()) if self.skill_manager.enabled() else 0,
+            "skills_visibility_mode": self.skill_manager.activation_visibility_mode() if self.skill_manager.enabled() else "silent",
         }
 
     def apply_config_change(self, key: str, value: Any, persist: bool = False) -> Dict[str, Any]:
@@ -309,6 +343,8 @@ class ChatSession:
                 provider_name = self.cm.get("provider")
                 model_name = self.cm.get("model") or None
                 self.reload_provider(provider=provider_name, model=model_name)
+            if key == "mcp" or key.startswith("mcp.") or key == "tools.mcp" or key.startswith("tools.mcp."):
+                self._mcp_catalog_loaded = False
             if persist:
                 saved_to = str(self.cm.save_active_yaml())
         except Exception:
@@ -325,13 +361,19 @@ class ChatSession:
         rows: list[dict[str, Any]] = []
         for item in list_capabilities():
             enabled = capability_enabled(self.cm, item["name"])
+            tools = list(item["tools"])
+            if item["name"] == "mcp":
+                tools = sorted(
+                    tool.name for tool in self.tool_registry.list_tools()
+                    if capability_for_tool(tool.name) == "mcp"
+                )
             rows.append(
                 {
                     "capability": item["name"],
                     "label": item["label"],
                     "enabled": enabled,
                     "mutable": bool(item["mutable"]),
-                    "tools": list(item["tools"]),
+                    "tools": tools,
                     "description": item["description"],
                 }
             )
@@ -370,6 +412,17 @@ class ChatSession:
 
     def save_active_config(self, path: Optional[str] = None) -> str:
         return str(self.cm.save_active_yaml(path))
+
+    async def refresh_mcp_catalog(self) -> None:
+        await self._ensure_mcp_catalog_loaded(force_refresh=True)
+
+    async def read_mcp_resource(self, server_name: str, uri: str):
+        await self._ensure_mcp_catalog_loaded()
+        return await self.mcp_manager.read_resource(server_name, uri)
+
+    async def get_mcp_prompt(self, server_name: str, prompt_name: str, arguments: Optional[Dict[str, str]] = None):
+        await self._ensure_mcp_catalog_loaded()
+        return await self.mcp_manager.load_prompt(server_name, prompt_name, arguments=arguments or {})
 
     @staticmethod
     def _normalize_session_type(value: Optional[str]) -> str:
@@ -413,13 +466,35 @@ class ChatSession:
                     "protected": protected,
                     "description": description,
                 }
+        for tool in self.tool_registry.list_tools():
+            if tool.name in catalog:
+                continue
+            if getattr(tool, "requires_catalog_entry", True):
+                continue
+            entry = tool.approval_spec()
+            category = str(entry.get("category", tool.category) or tool.category).strip()
+            risk = str(entry.get("risk", tool.danger_level) or tool.danger_level).strip().lower()
+            default_policy = str(entry.get("default_policy", "ask" if tool.requires_approval else "auto") or "ask").strip().lower()
+            protected = bool(entry.get("protected", False))
+            description = str(entry.get("description", tool.description) or tool.description).strip()
+            catalog[tool.name] = {
+                "group": "dynamic",
+                "category": category,
+                "risk": risk,
+                "default_policy": default_policy,
+                "protected": protected,
+                "description": description,
+            }
         return catalog
 
     def _apply_tool_catalog(self) -> None:
         catalog = self._tool_catalog_entries()
         registry_names = set(self.tool_registry.get_names())
         catalog_names = set(catalog.keys())
-        missing = sorted(registry_names - catalog_names)
+        missing = sorted(
+            name for name in (registry_names - catalog_names)
+            if getattr(self.tool_registry.get(name), "requires_catalog_entry", True)
+        )
         extra = sorted(catalog_names - registry_names)
         if missing or extra:
             details = []
@@ -435,6 +510,21 @@ class ChatSession:
                 continue
             tool.category = entry["category"]
             tool.danger_level = entry["risk"]
+
+    async def _ensure_mcp_catalog_loaded(self, force_refresh: bool = False) -> None:
+        if not self.mcp_manager.enabled():
+            if self._mcp_catalog_loaded:
+                self.tool_registry = create_registry(self._tool_ctx)
+                self._apply_tool_catalog()
+                self._mcp_catalog_loaded = False
+            return
+        if self._mcp_catalog_loaded and not force_refresh:
+            return
+        specs = await self.mcp_manager.tools(force_refresh=force_refresh)
+        dynamic_tools = build_mcp_tools(self.mcp_manager, specs, self._tool_ctx)
+        self.tool_registry = create_registry(self._tool_ctx, dynamic_tools=dynamic_tools)
+        self._apply_tool_catalog()
+        self._mcp_catalog_loaded = True
 
     def _tool_approval_protected_names(self) -> set[str]:
         return {name for name, entry in self._tool_catalog_entries().items() if entry.get("protected")}
@@ -880,9 +970,6 @@ class ChatSession:
         )))
         parts.append(identity)
 
-        if self.external_memory:
-            parts.append(f"## User Context\n{self.external_memory}")
-
         if self._session_id:
             active = self.session_store.get_session(self._session_id)
             if active:
@@ -969,6 +1056,80 @@ class ChatSession:
         if self._turn_session_guidance:
             parts.append(f"## Current Turn Guidance\n{self._turn_session_guidance}")
 
+        skill_hint = self._render_prompt_template(
+            self.cm.get_nested(
+                "prompts",
+                "skill_selector_hint",
+                default=(
+                    "Skill activation is resolved before generation using explicit mentions, structural continuation reuse, "
+                    "and model-driven semantic routing from the visible skill catalog. "
+                    "If a skill is active, follow it. If no skill is active, answer normally without inventing unseen skill instructions."
+                ),
+            )
+        ).strip()
+        if skill_hint:
+            parts.append(f"## {self.skill_manager.section_title('runtime', 'Skill Runtime')}\n{skill_hint}")
+        mcp_hint = self._render_prompt_template(
+            self.cm.get_nested(
+                "mcp",
+                "prompts",
+                "routing_hint",
+                default=(
+                    "Use visible MCP tools when they directly match the user's request. "
+                    "Load MCP resources and prompts through dedicated MCP runtime tools when needed."
+                ),
+            )
+        ).strip()
+        if mcp_hint:
+            parts.append(
+                f"## {self.mcp_manager.config_text('mcp', 'runtime', 'section_title', default='MCP Runtime')}\n{mcp_hint}"
+            )
+        skill_provenance_hint = self._render_prompt_template(
+            self.cm.get_nested(
+                "prompts",
+                "skill_provenance_hint",
+                default=(
+                    "When the user asks what a skill says or implies, distinguish clearly between the active skill body, "
+                    "remembered facts, and your own general reasoning."
+                ),
+            )
+        ).strip()
+        if skill_provenance_hint:
+            parts.append(f"## {self.skill_manager.section_title('provenance', 'Skill Provenance')}\n{skill_provenance_hint}")
+
+        skill_catalog = self.skill_manager.render_catalog_section()
+        if skill_catalog:
+            parts.append(f"## {self.skill_manager.section_title('catalog', 'Skill Catalog')}\n{skill_catalog}")
+
+        mcp_catalog = self.mcp_manager.render_catalog_section_cached() if self.mcp_manager.enabled() else ""
+        if mcp_catalog:
+            parts.append(
+                f"## {self.mcp_manager.config_text('mcp', 'runtime', 'catalog_title', default='MCP Catalog')}\n{mcp_catalog}"
+            )
+
+        active_skills = self.skill_manager.render_active_section(self._turn_skill_result.activated)
+        if active_skills:
+            parts.append(f"## {self.skill_manager.section_title('active', 'Active Skills')}\n{active_skills}")
+
+        hook_context = "\n\n".join(line.strip() for line in [*self._session_hook_context, *self._turn_hook_context] if str(line).strip())
+        if hook_context:
+            hook_intro = self._render_prompt_template(
+                self.cm.get_nested(
+                    "prompts",
+                    "hook_context_intro",
+                    default="The following hook-generated context applies to this turn.",
+                )
+            ).strip()
+            body = f"{hook_intro}\n\n{hook_context}" if hook_intro else hook_context
+            body = body.strip()
+            if body:
+                parts.append(
+                    f"## {self.hook_manager.config_text('hooks', 'runtime', 'context_section_title', default='Hook Context')}\n{body}"
+                )
+
+        if self.external_memory:
+            parts.append(f"## User Context\n{self.external_memory}")
+
         return "\n\n".join(parts)
 
     def _messages_with_system(self, include_sessions: bool = False) -> List[Message]:
@@ -1010,6 +1171,36 @@ class ChatSession:
         text = self.cm.get_nested("prompts", "notices", key, default=default)
         return self._render_prompt_template(text, **extra).strip()
 
+    def _hook_notice_title(self, key: str, default: str) -> str:
+        return self.hook_manager.config_text("hooks", "runtime", key, default=default).strip()
+
+    async def _dispatch_hook_event(
+        self,
+        *,
+        event: str,
+        payload: Dict[str, Any],
+        matcher_value: str = "*",
+    ):
+        payload = dict(payload or {})
+        if self._session_id and "session_id" not in payload:
+            payload["session_id"] = self._session_id
+        return await self.hook_manager.dispatch(event=event, payload=payload, matcher_value=matcher_value)
+
+    def _render_hook_warnings(self, warnings: Sequence[str]) -> None:
+        for warning in warnings:
+            render_notice(
+                self.console,
+                self.hook_manager.config_text(
+                    "hooks",
+                    "runtime",
+                    "warning_message",
+                    default="{message}",
+                    message=str(warning),
+                ),
+                level="warning",
+                title=self._hook_notice_title("warning_title", "Hook Warning"),
+            )
+
     def _remembered_user_name(self) -> str:
         pattern = re.compile(r"^Preferred user name:\s*(.+?)\.?$", re.IGNORECASE)
         for entry in self.memory.list_entries():
@@ -1024,6 +1215,295 @@ class ChatSession:
             for tool in self._get_active_tools()
             if tool.get("function", {}).get("name")
         )
+
+    def _active_skill_names(self) -> List[str]:
+        return [item.document.summary.name for item in self._turn_skill_result.activated]
+
+    def _resolve_turn_skills(self, user_input: str, force_refresh: bool = False) -> None:
+        self._turn_skill_result = self.skill_manager.resolve_for_turn(
+            user_input=user_input,
+            previous_names=self._session_skill_names,
+            force_refresh=force_refresh,
+        )
+
+    async def _prepare_turn_skills(self, user_input: str, force_refresh: bool = False) -> None:
+        self._resolve_turn_skills(user_input, force_refresh=force_refresh)
+        await self._maybe_route_skills_semantically(user_input)
+
+    async def _ensure_session_start_hooks(self, source: str) -> bool:
+        if self._session_start_hooks_ran:
+            return True
+        result = await self._dispatch_hook_event(
+            event="SessionStart",
+            payload={"source": source},
+        )
+        self._render_hook_warnings(result.warnings)
+        if result.blocked:
+            render_notice(
+                self.console,
+                self.hook_manager.config_text(
+                    "hooks",
+                    "runtime",
+                    "blocked_message",
+                    default="{message}",
+                    message=result.message,
+                ),
+                level="error",
+                title=self._hook_notice_title("blocked_title", "Hook Blocked"),
+            )
+            return False
+        if result.context_lines:
+            self._session_hook_context = tuple(result.context_lines)
+        self._session_start_hooks_ran = True
+        return True
+
+    async def _prepare_turn_hooks(self, user_input: str) -> bool:
+        self._turn_hook_context = ()
+        result = await self._dispatch_hook_event(
+            event="UserPromptSubmit",
+            payload={"user_input": user_input},
+        )
+        self._render_hook_warnings(result.warnings)
+        if result.blocked:
+            render_notice(
+                self.console,
+                self.hook_manager.config_text(
+                    "hooks",
+                    "runtime",
+                    "blocked_message",
+                    default="{message}",
+                    message=result.message,
+                ),
+                level="error",
+                title=self._hook_notice_title("blocked_title", "Hook Blocked"),
+            )
+            return False
+        if result.context_lines:
+            self._turn_hook_context = tuple(result.context_lines)
+        return True
+
+    async def _maybe_route_skills_semantically(self, user_input: str) -> None:
+        if self._turn_skill_result.activated:
+            return
+        if not self.skill_manager.enabled():
+            return
+        if not bool(self.cm.get_nested("skills", "semantic_router", "enabled", default=True)):
+            return
+        available = self._turn_skill_result.available or self.skill_manager.catalog()
+        if not available:
+            return
+
+        limit = int(self.cm.get_nested("skills", "semantic_router", "catalog_limit", default=24) or 24)
+        max_selected = int(self.cm.get_nested("skills", "semantic_router", "max_selected", default=3) or 3)
+        router_prompt = self._render_prompt_template(
+            self.cm.get_nested(
+                "prompts",
+                "skill_router_prompt",
+                default=(
+                    "Return strict JSON with keys skill_names and reason. "
+                    "Only select clearly relevant skills from the catalog."
+                ),
+            )
+        )
+        catalog_lines = [
+            self.skill_manager.config_text(
+                "skills",
+                "runtime",
+                "catalog",
+                "line_template",
+                default="- {skill_name}: {skill_description} [scope={skill_scope}]",
+                skill_name=skill.name,
+                skill_description=skill.description,
+                skill_scope=skill.scope,
+            )
+            for skill in available[:limit]
+        ]
+        raw = ""
+        msgs = [
+            Message(role=MessageRole.SYSTEM, content=router_prompt),
+            Message(
+                role=MessageRole.USER,
+                content=(
+                    f"User request:\n{user_input.strip()}\n\n"
+                    f"Available skill catalog:\n" + "\n".join(catalog_lines)
+                ),
+            ),
+        ]
+        try:
+            async for chunk in self.llm.chat_stream(
+                msgs,
+                config=LLMConfig(
+                    temperature=float(self.cm.get_nested("skills", "semantic_router", "temperature", default=0.0) or 0.0),
+                    max_tokens=int(self.cm.get_nested("skills", "semantic_router", "max_tokens", default=256) or 256),
+                    stream=False,
+                ),
+            ):
+                raw += chunk.delta_content
+        except Exception:
+            return
+
+        selected_names: List[str] = []
+        try:
+            start = raw.find("{")
+            end = raw.rfind("}")
+            payload = json.loads(raw[start:end + 1] if start != -1 and end != -1 else raw)
+            raw_names = payload.get("skill_names", [])
+            if isinstance(raw_names, list):
+                selected_names = [
+                    str(name).strip().lower()
+                    for name in raw_names
+                    if str(name).strip()
+                ][:max_selected]
+        except Exception:
+            return
+
+        if not selected_names:
+            return
+        self._activate_semantic_skills(selected_names)
+
+    def _activate_semantic_skills(self, skill_names: List[str]) -> None:
+        activated = list(self._turn_skill_result.activated)
+        active_names = {item.document.summary.name for item in activated}
+        for normalized in skill_names:
+            if normalized in active_names:
+                continue
+            document = self.skill_manager.load_named_skill(normalized)
+            if document is None:
+                continue
+            activated.append(
+                ActivatedSkill(
+                    document=document,
+                    reason=self.skill_manager.config_text(
+                        "skills",
+                        "runtime",
+                        "activation",
+                        "semantic_reason",
+                        default="Activated by semantic skill routing before the main response for '{skill_name}'.",
+                        skill_name=normalized,
+                    ),
+                    activation_source="semantic",
+                )
+            )
+            active_names.add(normalized)
+        self._turn_skill_result = SkillActivationResult(
+            activated=tuple(activated),
+            available=self._turn_skill_result.available or self.skill_manager.catalog(),
+            issues=self._turn_skill_result.issues,
+            retained_names=tuple(item.document.summary.name for item in activated),
+        )
+
+    def _announce_turn_skill_activation(self) -> None:
+        if not self._turn_skill_result.activated:
+            return
+        if self.skill_manager.activation_visibility_mode() != "announce":
+            return
+        message = self.skill_manager.format_activation_notice(self._turn_skill_result.activated)
+        if not message:
+            return
+        render_notice(
+            self.console,
+            message,
+            level=self.skill_manager.config_text(
+                "skills",
+                "runtime",
+                "auto_activation",
+                "notice_level",
+                default="info",
+            ).strip().lower() or "info",
+            title=self.skill_manager.config_text(
+                "skills",
+                "runtime",
+                "auto_activation",
+                "notice_title",
+                default="Skills Activated",
+            ).strip() or "Skills Activated",
+        )
+
+    def _activate_skill_for_turn(self, skill_name: str) -> Dict[str, Any]:
+        normalized = str(skill_name or "").strip().lower()
+        if not normalized:
+            return {
+                "success": False,
+                "message": self.skill_manager.config_text(
+                    "skills",
+                    "runtime",
+                    "activation",
+                    "missing_name_message",
+                    default="Skill name is required.",
+                ),
+            }
+        already_active = {
+            item.document.summary.name for item in self._turn_skill_result.activated
+        }
+        if normalized in already_active:
+            return {
+                "success": True,
+                "message": self.skill_manager.config_text(
+                    "skills",
+                    "runtime",
+                    "activation",
+                    "already_active_message",
+                    default="Skill '{skill_name}' is already active for this turn.",
+                    skill_name=normalized,
+                ),
+                "already_active": True,
+            }
+        document = self.skill_manager.load_named_skill(normalized)
+        if document is None:
+            available = ", ".join(skill.name for skill in self.skill_manager.catalog()[:12])
+            message = self.skill_manager.config_text(
+                "skills",
+                "runtime",
+                "activation",
+                "unknown_message",
+                default="Unknown skill '{skill_name}'.",
+                skill_name=normalized,
+            )
+            if available:
+                message += self.skill_manager.config_text(
+                    "skills",
+                    "runtime",
+                    "activation",
+                    "available_suffix",
+                    default=" Available skills include: {available_skills}",
+                    available_skills=available,
+                )
+            return {"success": False, "message": message}
+
+        activated = list(self._turn_skill_result.activated)
+        activated.append(
+            ActivatedSkill(
+                document=document,
+                reason=self.skill_manager.config_text(
+                    "skills",
+                    "runtime",
+                    "activation",
+                    "tool_reason",
+                    default="Activated explicitly through the activate_skill tool for '{skill_name}'.",
+                    skill_name=normalized,
+                ),
+                activation_source="tool",
+                explicit=True,
+            )
+        )
+        self._turn_skill_result = SkillActivationResult(
+            activated=tuple(activated),
+            available=self._turn_skill_result.available or self.skill_manager.catalog(),
+            issues=self._turn_skill_result.issues,
+            retained_names=tuple(item.document.summary.name for item in activated),
+        )
+        return {
+            "success": True,
+            "message": self.skill_manager.config_text(
+                "skills",
+                "runtime",
+                "activation",
+                "activated_message",
+                default="Skill '{skill_name}' activated for the current turn.",
+                skill_name=normalized,
+            ),
+            "skill_name": normalized,
+        }
 
     def _should_offer_init(self) -> bool:
         if self.history:
@@ -1106,6 +1586,9 @@ class ChatSession:
 
     async def start(self) -> None:
         """Start the interactive REPL with consciousness."""
+        if not await self._ensure_session_start_hooks(source="startup"):
+            self.console.print(f"\n[bold green]{self._notice_value('goodbye_message', 'Goodbye!')}[/bold green]")
+            return
         if self.cm.get_nested("cli", "show_welcome_panel", default=True):
             self._print_welcome_panel()
 
@@ -1249,6 +1732,11 @@ class ChatSession:
                 )
             except Exception as e:
                 self.console.print(f"[dim]Exit finalization skipped: {e}[/dim]")
+        stop_result = await self._dispatch_hook_event(
+            event="Stop",
+            payload={"reason": "exit", "history_messages": len(self.history)},
+        )
+        self._render_hook_warnings(stop_result.warnings)
         self.console.print(f"\n[bold green]{self._notice_value('goodbye_message', 'Goodbye!')}[/bold green]")
 
     # ------------------------------------------------------------------
@@ -1376,6 +1864,11 @@ class ChatSession:
           3. If tool_calls: execute each, append results, goto 2
           4. If no tool_calls: display final response, done
         """
+        if not await self._ensure_session_start_hooks(source="interactive"):
+            return
+        if not await self._prepare_turn_hooks(user_input):
+            return
+        await self._ensure_mcp_catalog_loaded()
         turn_start = len(self.history)
         self.history.append(Message(role=MessageRole.USER, content=user_input))
         self._persist_message(self.history[-1])
@@ -1390,6 +1883,8 @@ class ChatSession:
         pending_tool_calls: List[ToolCall] = []
         full_content = ""
         self._turn_session_guidance = ""
+        await self._prepare_turn_skills(user_input)
+        self._announce_turn_skill_activation()
         if not suppress_switch:
             self._turn_session_guidance = self._session_shift_guidance_for_turn(user_input)
 
@@ -1608,6 +2103,12 @@ class ChatSession:
             self.console.print(f"[bold red]Unexpected error:[/bold red] {e}")
         finally:
             self._turn_session_guidance = None
+            self._turn_hook_context = ()
+            if self._turn_skill_result.activated:
+                self._session_skill_names = tuple(self._active_skill_names())
+            elif not self.skill_manager.should_keep_previous(user_input):
+                self._session_skill_names = ()
+            self._turn_skill_result = SkillActivationResult(activated=(), available=(), issues=())
 
     # ------------------------------------------------------------------
     # Internal tool execution with inline confirmation
@@ -1630,6 +2131,19 @@ class ChatSession:
         legacy_confirm_all = bool(self.cm.get_nested("cli", "confirm_all_tools", default=False))
         approval = self._resolve_tool_policy(tool)
         needs_confirmation = legacy_confirm_all or approval["policy"] == "ask"
+        pre_tool = await self._dispatch_hook_event(
+            event="PreToolUse",
+            payload={
+                "tool_name": tc.function_name,
+                "tool_input": tc.arguments or {},
+                "approval": approval,
+                "requires_confirmation": needs_confirmation,
+            },
+            matcher_value=tc.function_name,
+        )
+        self._render_hook_warnings(pre_tool.warnings)
+        if pre_tool.blocked:
+            return ToolResult(success=False, message=pre_tool.message or f"{tc.function_name} blocked by PreToolUse hook.")
         approval_rows = [
             ("Effective", f"{approval['policy']} ({approval['source']})"),
             ("Default", approval["default_policy"]),
@@ -1653,6 +2167,19 @@ class ChatSession:
         )
 
         if needs_confirmation:
+            permission_request = await self._dispatch_hook_event(
+                event="PermissionRequest",
+                payload={
+                    "tool_name": tc.function_name,
+                    "tool_input": tc.arguments or {},
+                    "approval": approval,
+                    "requires_confirmation": True,
+                },
+                matcher_value=tc.function_name,
+            )
+            self._render_hook_warnings(permission_request.warnings)
+            if permission_request.blocked:
+                return ToolResult(success=False, message=permission_request.message or f"{tc.function_name} blocked by PermissionRequest hook.")
             try:
                 with self._interrupt_scope(allow_escape=False):
                     approved = Confirm.ask("Approve tool execution?", console=self.console, default=True)
@@ -1671,6 +2198,28 @@ class ChatSession:
                     raise KeyboardInterrupt
         except KeyboardInterrupt:
             return ToolResult(success=False, message="Interrupted by user.", data={"interrupted": True})
+        post_event = "PostToolUse" if result.success else "PostToolUseFailure"
+        post_dispatch = await self._dispatch_hook_event(
+            event=post_event,
+            payload={
+                "tool_name": tc.function_name,
+                "tool_input": tc.arguments or {},
+                "tool_result": result.message,
+                "tool_success": result.success,
+            },
+            matcher_value=tc.function_name,
+        )
+        self._render_hook_warnings(post_dispatch.warnings)
+        if post_dispatch.context_lines:
+            prefix = self.hook_manager.config_text(
+                "hooks",
+                "runtime",
+                "post_tool_feedback_prefix",
+                default="[Hook Feedback]",
+            ).strip()
+            extra = "\n".join(line for line in post_dispatch.context_lines if line)
+            if extra:
+                result.message = f"{result.message}\n\n{prefix}\n{extra}".strip()
         max_len = int(self.cm.get_nested("cli", "tool_result_max_display", default=500))
         render_tool_result(
             self.console,
@@ -1747,7 +2296,7 @@ class ChatSession:
         except Exception:
             pass
 
-    async def _prepare_programmatic_turn(self) -> None:
+    async def _prepare_programmatic_turn(self) -> bool:
         if self._load_session_id:
             load_id = self._load_session_id
             load_last_n = self._load_session_last_n
@@ -1762,6 +2311,9 @@ class ChatSession:
             self._queued_new_session_message = None
             self._new_session_requested = False
             self._do_new_session(seed=seed)
+        elif not self._session_id:
+            self._do_new_session()
+        return await self._ensure_session_start_hooks(source="programmatic")
 
         if not self._session_id:
             self._do_new_session()
@@ -1793,6 +2345,11 @@ class ChatSession:
         )
         self._session_id = meta.id
         self.history = []
+        self._session_hook_context = ()
+        self._turn_hook_context = ()
+        self._session_start_hooks_ran = False
+        self._session_skill_names = ()
+        self._turn_skill_result = SkillActivationResult(activated=(), available=(), issues=())
         self._session_tool_policy_overrides = {"tools": {}, "categories": {}, "risks": {}}
 
     def _do_load_session(self, session_id: str, last_n: Optional[int] = None) -> None:
@@ -1814,6 +2371,11 @@ class ChatSession:
         messages = self.session_store.load_messages(meta.id, last_n=effective_last_n)
         self.history = messages
         self._session_id = meta.id
+        self._session_hook_context = ()
+        self._turn_hook_context = ()
+        self._session_start_hooks_ran = False
+        self._session_skill_names = ()
+        self._turn_skill_result = SkillActivationResult(activated=(), available=(), issues=())
         theme_name = self.cm.get_nested("cli", "theme", default="default")
         render_notice(
             self.console,
@@ -1881,6 +2443,8 @@ class ChatSession:
     def reset_history(self) -> None:
         """Clear the active in-memory history and persist the cleared state."""
         self.history = []
+        self._session_skill_names = ()
+        self._turn_skill_result = SkillActivationResult(activated=(), available=(), issues=())
         if self._session_id:
             self.session_store.rewrite_messages(self._session_id, [])
 
@@ -2101,9 +2665,14 @@ class ChatSession:
     # ------------------------------------------------------------------
 
     async def send(self, message: str) -> str:
-        await self._prepare_programmatic_turn()
+        if not await self._prepare_programmatic_turn():
+            return ""
+        if not await self._prepare_turn_hooks(message):
+            return ""
+        await self._ensure_mcp_catalog_loaded()
         turn_start = len(self.history)
         try:
+            await self._prepare_turn_skills(message)
             user_msg = Message(role=MessageRole.USER, content=message)
             self.history.append(user_msg)
             self._persist_message(user_msg)
@@ -2120,6 +2689,13 @@ class ChatSession:
         except Exception:
             self._rollback_turn(turn_start)
             raise
+        finally:
+            self._turn_hook_context = ()
+            if self._turn_skill_result.activated:
+                self._session_skill_names = tuple(self._active_skill_names())
+            elif not self.skill_manager.should_keep_previous(message):
+                self._session_skill_names = ()
+            self._turn_skill_result = SkillActivationResult(activated=(), available=(), issues=())
 
     async def send_with_tools(
         self,
@@ -2128,9 +2704,14 @@ class ChatSession:
         tool_executor: Callable[[ToolCall], Awaitable[str]],
         max_tool_rounds: int = 10,
     ) -> str:
-        await self._prepare_programmatic_turn()
+        if not await self._prepare_programmatic_turn():
+            return ""
+        if not await self._prepare_turn_hooks(message):
+            return ""
+        await self._ensure_mcp_catalog_loaded()
         turn_start = len(self.history)
         try:
+            await self._prepare_turn_skills(message)
             user_msg = Message(role=MessageRole.USER, content=message)
             self.history.append(user_msg)
             self._persist_message(user_msg)
@@ -2172,6 +2753,13 @@ class ChatSession:
         except Exception:
             self._rollback_turn(turn_start)
             raise
+        finally:
+            self._turn_hook_context = ()
+            if self._turn_skill_result.activated:
+                self._session_skill_names = tuple(self._active_skill_names())
+            elif not self.skill_manager.should_keep_previous(message):
+                self._session_skill_names = ()
+            self._turn_skill_result = SkillActivationResult(activated=(), available=(), issues=())
 
     # ------------------------------------------------------------------
     # Helpers

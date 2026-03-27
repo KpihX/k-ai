@@ -58,7 +58,10 @@ def isolated_test_secrets(monkeypatch):
 @pytest.fixture
 def cm():
     """Default ConfigManager loaded from built-in defaults."""
-    return ConfigManager()
+    manager = ConfigManager()
+    manager.set("hooks.enabled", False)
+    manager.set("mcp.enabled", False)
+    return manager
 
 
 @pytest.fixture

@@ -106,8 +106,8 @@ runtime_git:
 # These are the live-switchable families that the user can later manage via the
 # chat/runtime layer:
 #   /tools capabilities
-#   /tools enable <exa|python|shell|qmd>
-#   /tools disable <exa|python|shell|qmd>
+#   /tools enable <exa|python|shell|qmd|mcp>
+#   /tools disable <exa|python|shell|qmd|mcp>
 capabilities:
   # Public web search through the Exa API.
   exa: true
@@ -120,6 +120,9 @@ capabilities:
 
   # QMD-backed knowledge and history retrieval tools.
   qmd: true
+
+  # Dynamic tools imported from configured MCP servers.
+  mcp: true
 
 
 # Editor behavior for `k-ai config edit` and `/config edit`.
@@ -171,6 +174,21 @@ qmd:
   context_summary: >-
     k-ai session history — JSONL message logs (user/assistant/tool exchanges)
     and session metadata. Search past conversations, decisions, code, context.
+
+
+# Optional MCP bootstrap.
+mcp:
+  # If true, the installer will try to make the official filesystem MCP server
+  # available as the first configured MCP for k-ai.
+  install_filesystem_server: true
+
+  # Package and binary used for the official filesystem server.
+  filesystem_package: "@modelcontextprotocol/server-filesystem"
+  filesystem_binary: "mcp-server-filesystem"
+
+  # Preferred JS package manager for the filesystem server install path.
+  # Allowed values today: auto, bun, npm.
+  filesystem_installer: "auto"
 
 
 # Final verification behavior.

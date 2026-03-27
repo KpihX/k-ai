@@ -47,6 +47,71 @@ class TestCommandHandler:
         assert tool_call.arguments["text"] == "retenir ceci"
 
     @pytest.mark.asyncio
+    async def test_skills_show_prints_skill_document(self, session_for_commands, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        skill_dir = tmp_path / ".k-ai" / "skills" / "workspace"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\n"
+            "name: kpihx-workspace\n"
+            "description: Workspace conventions and engineering standards.\n"
+            "---\n\n"
+            "# Workspace\n\nKeep things clean.\n",
+            encoding="utf-8",
+        )
+        session_for_commands.skill_manager = session_for_commands.skill_manager.__class__(
+            session_for_commands.cm,
+            workspace_root=tmp_path,
+        )
+        handler = CommandHandler(session_for_commands)
+
+        await handler.handle("/skills show kpihx-workspace")
+
+        assert session_for_commands.console.print.called
+
+    @pytest.mark.asyncio
+    async def test_skills_reload_refreshes_catalog(self, session_for_commands):
+        handler = CommandHandler(session_for_commands)
+        session_for_commands.skill_manager.refresh = MagicMock()
+
+        await handler.handle("/skills reload")
+
+        session_for_commands.skill_manager.refresh.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_hooks_reload_refreshes_catalog(self, session_for_commands):
+        handler = CommandHandler(session_for_commands)
+        session_for_commands.hook_manager.refresh = MagicMock()
+
+        await handler.handle("/hooks reload")
+
+        session_for_commands.hook_manager.refresh.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_mcp_add_http_routes_through_internal_tool_executor(self, session_for_commands):
+        handler = CommandHandler(session_for_commands)
+        session_for_commands._execute_internal_tool = AsyncMock(return_value=ToolResult(success=True, message="ok"))
+
+        await handler.handle("/mcp add-http files https://example.com/mcp streamable_http")
+
+        tool_call = session_for_commands._execute_internal_tool.await_args.args[0]
+        assert tool_call.function_name == "mcp_server_upsert"
+        assert tool_call.arguments["server_name"] == "files"
+        assert tool_call.arguments["transport"] == "streamable_http"
+        assert tool_call.arguments["url"] == "https://example.com/mcp"
+
+    @pytest.mark.asyncio
+    async def test_mcp_install_routes_through_internal_tool_executor(self, session_for_commands):
+        handler = CommandHandler(session_for_commands)
+        session_for_commands._execute_internal_tool = AsyncMock(return_value=ToolResult(success=True, message="ok"))
+
+        await handler.handle("/mcp install filesystem @modelcontextprotocol/server-filesystem mcp-server-filesystem")
+
+        tool_call = session_for_commands._execute_internal_tool.await_args.args[0]
+        assert tool_call.function_name == "mcp_server_install"
+        assert tool_call.arguments["server_name"] == "filesystem"
+
+    @pytest.mark.asyncio
     async def test_config_get_uses_confirm_prompt(self, session_for_commands, tmp_path):
         handler = CommandHandler(session_for_commands)
         target = tmp_path / "config.yaml"
@@ -126,6 +191,24 @@ class TestCommandHandler:
         args = run_mock.call_args.args[0]
         assert args[0] == "/usr/bin/nano"
         assert args[1].endswith("30-runtime-governance.yaml")
+
+    @pytest.mark.asyncio
+    async def test_config_edit_accepts_skills_hooks_and_mcp_sections(self, session_for_commands):
+        handler = CommandHandler(session_for_commands)
+        session_for_commands.cm.set("config.editor", "nano")
+
+        with (
+            patch.object(session_for_commands.cm, "resolve_editor_command", return_value=["/usr/bin/nano"]),
+            patch("k_ai.commands.subprocess.run") as run_mock,
+        ):
+            await handler.handle("/config edit skills")
+            await handler.handle("/config edit hooks")
+            await handler.handle("/config edit mcp")
+
+        called_paths = [call.args[0][1] for call in run_mock.call_args_list]
+        assert any(path.endswith("40-skills.yaml") for path in called_paths)
+        assert any(path.endswith("50-hooks.yaml") for path in called_paths)
+        assert any(path.endswith("60-mcp.yaml") for path in called_paths)
 
     @pytest.mark.asyncio
     async def test_digest_routes_through_internal_tool_executor(self, session_for_commands):

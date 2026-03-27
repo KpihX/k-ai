@@ -262,9 +262,19 @@ class TestGetAllDump:
         assert "prompts:" in text
         assert "provider:" not in text
 
+    def test_get_default_yaml_can_export_skills_section(self):
+        text = ConfigManager.get_default_yaml(sections=["skills"])
+        assert "skills:" in text
+        assert "max_active_per_turn:" in text
+
+    def test_get_default_yaml_can_export_mcp_section(self):
+        text = ConfigManager.get_default_yaml(sections=["mcp"])
+        assert "mcp:" in text
+        assert "servers:" in text
+
     def test_list_default_sections_returns_named_fragments(self):
         sections = ConfigManager.list_default_sections()
-        assert [section["name"] for section in sections] == ["models", "ui", "sessions", "governance"]
+        assert [section["name"] for section in sections] == ["models", "ui", "sessions", "governance", "skills", "hooks", "mcp"]
 
     def test_flatten_returns_dot_notation(self, cm):
         flat = cm.flatten("cli")

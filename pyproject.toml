@@ -11,6 +11,7 @@ dependencies = [
     "rich",
     "typer",
     "litellm",
+    "mcp",
     "pydantic",
     "pyyaml",
     "prompt-toolkit",

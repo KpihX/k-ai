@@ -255,6 +255,85 @@ class TestSystemPrompt:
         assert "do not propose another session-switch tool" in prompt
         assert "Présentation de l'assistant" in prompt
 
+    def test_build_system_prompt_includes_skill_catalog(self, session, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        skill_dir = tmp_path / ".k-ai" / "skills" / "review"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\n"
+            "name: python-review\n"
+            "description: Review Python code and find bugs.\n"
+            "---\n\n"
+            "# Review\n\nLook for bugs.\n",
+            encoding="utf-8",
+        )
+        session.skill_manager = session.skill_manager.__class__(session.cm, workspace_root=tmp_path)
+        prompt = session._build_system_prompt()
+        assert "## Skill Catalog" in prompt
+        assert "python-review" in prompt
+
+    def test_build_system_prompt_includes_skill_provenance_guidance(self, session):
+        prompt = session._build_system_prompt()
+        assert "## Skill Provenance" in prompt
+        assert "separate sources explicitly" in prompt
+
+    @pytest.mark.asyncio
+    async def test_send_includes_user_prompt_hook_context_in_system_prompt(self, session, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        hooks_dir = tmp_path / ".k-ai" / "hooks"
+        hooks_dir.mkdir(parents=True, exist_ok=True)
+        (hooks_dir / "hooks.json").write_text(
+            '{\n'
+            '  "hooks": {\n'
+            '    "UserPromptSubmit": [\n'
+            '      {\n'
+            '        "matcher": "*",\n'
+            '        "hooks": [\n'
+            '          {\n'
+            '            "type": "command",\n'
+            '            "command": "python3 -c \\"import json,sys; data=json.load(sys.stdin); print(\'Hook context for: \' + data[\'user_input\'])\\""\n'
+            '          }\n'
+            '        ]\n'
+            '      }\n'
+            '    ]\n'
+            '  }\n'
+            '}\n',
+            encoding="utf-8",
+        )
+        session.cm.set("hooks.enabled", True)
+        session.cm.set("skills.semantic_router.enabled", False)
+        session.hook_manager = session.hook_manager.__class__(session.cm, workspace_root=tmp_path)
+        seen = []
+
+        async def tracking_stream(messages, config=None, tools=None):
+            seen.append(messages)
+            yield CompletionChunk(delta_content="ok", finish_reason="stop")
+
+        session.llm.chat_stream = tracking_stream
+        await session.send("bonjour")
+
+        assert any("Hook context for: bonjour" in call[0].content for call in seen)
+
+    def test_build_system_prompt_includes_active_skills_before_user_context(self, session, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        skill_dir = tmp_path / ".k-ai" / "skills" / "review"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\n"
+            "name: python-review\n"
+            "description: Review Python code and find bugs.\n"
+            "---\n\n"
+            "# Review\n\nLook for bugs first.\n",
+            encoding="utf-8",
+        )
+        session.external_memory = "External context"
+        session.skill_manager = session.skill_manager.__class__(session.cm, workspace_root=tmp_path)
+        session._resolve_turn_skills("use $python-review to review this python code for bugs", force_refresh=True)
+        prompt = session._build_system_prompt()
+        assert "## Active Skills" in prompt
+        assert "Look for bugs first." in prompt
+        assert prompt.index("## Active Skills") < prompt.index("## User Context")
+
 
 class TestRuntimeConfig:
     def test_runtime_snapshot_contains_context_stats(self, session):
@@ -286,6 +365,217 @@ class TestRuntimeConfig:
     def test_should_not_offer_init_when_memory_exists(self, session):
         session.memory.add("Preferred user name: Ivann.")
         assert session._should_offer_init() is False
+
+    def test_runtime_snapshot_includes_active_skill_summary(self, session, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        skill_dir = tmp_path / ".k-ai" / "skills" / "review"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\n"
+            "name: python-review\n"
+            "description: Review Python code and find bugs.\n"
+            "---\n\n"
+            "# Review\n\nLook for bugs first.\n",
+            encoding="utf-8",
+        )
+        session.skill_manager = session.skill_manager.__class__(session.cm, workspace_root=tmp_path)
+        session._resolve_turn_skills("use $python-review to review this python code for bugs", force_refresh=True)
+        snapshot = session.get_runtime_snapshot()
+        assert snapshot["skills_summary"] == "python-review"
+        assert snapshot["skills_catalog_count"] == 1
+        assert snapshot["skills_visibility_mode"] == "announce"
+
+
+class TestSkillActivationLoop:
+    @pytest.mark.asyncio
+    async def test_process_message_semantic_router_can_activate_skill_before_answer(self, session, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        skill_dir = tmp_path / ".k-ai" / "skills" / "git"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\n"
+            "name: kpihx-git\n"
+            "description: Git workflow, remotes, SSH, and repo setup for the ecosystem.\n"
+            "---\n\n"
+            "# Git\n\nUse SSH remotes and make push.\n",
+            encoding="utf-8",
+        )
+        session.skill_manager = session.skill_manager.__class__(session.cm, workspace_root=tmp_path)
+
+        calls = []
+
+        async def chat_stream(messages, config=None, tools=None):
+            calls.append(messages)
+            if len(calls) == 1:
+                yield CompletionChunk(
+                    delta_content='{"skill_names":["kpihx-git"],"reason":"Git repo setup in the local ecosystem."}',
+                    finish_reason="stop",
+                )
+                return
+            assert "Use SSH remotes and make push." in messages[0].content
+            yield CompletionChunk(delta_content="Réponse Git contextualisée.", finish_reason="stop")
+
+        session.llm.chat_stream = chat_stream
+
+        await session._process_message("comment config un projet github dans mon ecosysteme", suppress_switch=True)
+
+        assert session.history[-1].content == "Réponse Git contextualisée."
+
+    @pytest.mark.asyncio
+    async def test_process_message_semantic_router_ignores_invalid_json(self, session, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        skill_dir = tmp_path / ".k-ai" / "skills" / "git"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\n"
+            "name: kpihx-git\n"
+            "description: Git workflow, remotes, SSH, and repo setup for the ecosystem.\n"
+            "---\n\n"
+            "# Git\n\nUse SSH remotes and make push.\n",
+            encoding="utf-8",
+        )
+        session.skill_manager = session.skill_manager.__class__(session.cm, workspace_root=tmp_path)
+
+        calls = []
+
+        async def chat_stream(messages, config=None, tools=None):
+            calls.append(messages)
+            if len(calls) == 1:
+                yield CompletionChunk(delta_content="not json", finish_reason="stop")
+                return
+            assert "Use SSH remotes and make push." not in messages[0].content
+            yield CompletionChunk(delta_content="Réponse générale.", finish_reason="stop")
+
+        session.llm.chat_stream = chat_stream
+
+        await session._process_message("comment config un projet github dans mon ecosysteme", suppress_switch=True)
+
+        assert session.history[-1].content == "Réponse générale."
+
+
+class TestHooksIntegration:
+    @pytest.mark.asyncio
+    async def test_execute_internal_tool_can_be_blocked_by_pre_tool_hook(self, session, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        hooks_dir = tmp_path / ".k-ai" / "hooks"
+        hooks_dir.mkdir(parents=True, exist_ok=True)
+        (hooks_dir / "hooks.json").write_text(
+            '{\n'
+            '  "hooks": {\n'
+            '    "PreToolUse": [\n'
+            '      {\n'
+            '        "matcher": "clear_screen",\n'
+            '        "hooks": [\n'
+            '          {\n'
+            '            "type": "command",\n'
+            '            "command": "python3 -c \\"import sys; sys.stderr.write(\'blocked by hook\'); raise SystemExit(2)\\""\n'
+            '          }\n'
+            '        ]\n'
+            '      }\n'
+            '    ]\n'
+            '  }\n'
+            '}\n',
+            encoding="utf-8",
+        )
+        session.cm.set("hooks.enabled", True)
+        session.hook_manager = session.hook_manager.__class__(session.cm, workspace_root=tmp_path)
+
+        result = await session._execute_internal_tool(
+            ToolCall(id="abc123xyz", function_name="clear_screen", arguments={}),
+            rationale="test",
+        )
+
+        assert result.success is False
+        assert "blocked by hook" in result.message
+
+    @pytest.mark.asyncio
+    async def test_process_message_announces_auto_activated_skills(self, session, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        skill_dir = tmp_path / ".k-ai" / "skills" / "review"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\n"
+            "name: python-review\n"
+            "description: Review Python code and find bugs.\n"
+            "---\n\n"
+            "# Review\n\nPrioritize bugs.\n",
+            encoding="utf-8",
+        )
+        session.skill_manager = session.skill_manager.__class__(session.cm, workspace_root=tmp_path)
+        session.llm = mock_llm([CompletionChunk(delta_content="Analyse terminée.", finish_reason="stop")])
+
+        with patch("k_ai.session.render_notice") as mock_notice:
+            await session._process_message("use $python-review for this review", suppress_switch=True)
+
+        messages = [call.args[1] for call in mock_notice.call_args_list if len(call.args) >= 2]
+        assert any("python-review" in message for message in messages)
+
+    @pytest.mark.asyncio
+    async def test_process_message_skips_auto_skill_notice_when_silent(self, session, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        skill_dir = tmp_path / ".k-ai" / "skills" / "review"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\n"
+            "name: python-review\n"
+            "description: Review Python code and find bugs.\n"
+            "---\n\n"
+            "# Review\n\nPrioritize bugs.\n",
+            encoding="utf-8",
+        )
+        session.cm.set("skills.runtime.auto_activation.visibility", "silent")
+        session.skill_manager = session.skill_manager.__class__(session.cm, workspace_root=tmp_path)
+        session.llm = mock_llm([CompletionChunk(delta_content="Analyse terminée.", finish_reason="stop")])
+
+        with patch("k_ai.session.render_notice") as mock_notice:
+            await session._process_message("use $python-review for this review", suppress_switch=True)
+
+        messages = [call.args[1] for call in mock_notice.call_args_list if len(call.args) >= 2]
+        assert not any("python-review" in message for message in messages)
+
+    @pytest.mark.asyncio
+    async def test_process_message_can_activate_skill_and_continue(self, session, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        skill_dir = tmp_path / ".k-ai" / "skills" / "review"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\n"
+            "name: python-review\n"
+            "description: Review Python code and find bugs.\n"
+            "---\n\n"
+            "# Review\n\nPrioritize bugs and missing tests.\n",
+            encoding="utf-8",
+        )
+        session.skill_manager = session.skill_manager.__class__(session.cm, workspace_root=tmp_path)
+
+        calls = []
+
+        async def chat_stream(messages, config=None, tools=None):
+            calls.append(messages)
+            if len(calls) == 1:
+                yield CompletionChunk(delta_content='{"skill_names":[],"reason":"No pre-activation."}', finish_reason="stop")
+                return
+            if len(calls) == 2:
+                yield CompletionChunk(
+                    tool_calls=[
+                        ToolCall(
+                            id="abc123xyz",
+                            function_name="activate_skill",
+                            arguments={"skill_name": "python-review"},
+                        )
+                    ],
+                    finish_reason="tool_calls",
+                )
+                return
+            assert "Prioritize bugs and missing tests." in messages[0].content
+            yield CompletionChunk(delta_content="Analyse terminée.", finish_reason="stop")
+
+        session.llm.chat_stream = chat_stream
+
+        await session._process_message("review this python code", suppress_switch=True)
+
+        assert session.history[-1].content == "Analyse terminée."
+        assert any(msg.role == MessageRole.TOOL and msg.name == "activate_skill" for msg in session.history)
 
 
 class TestToolPolicies:

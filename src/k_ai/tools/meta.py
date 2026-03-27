@@ -1120,13 +1120,13 @@ class ToolCapabilitySetTool(InternalTool):
     danger_level = "high"
     accent_color = "yellow"
     description = (
-        "Enable or disable one high-level tool capability group such as exa, python, shell, or qmd. "
+        "Enable or disable one high-level tool capability group such as exa, python, shell, qmd, or mcp. "
         "Protected admin approval rules are not changed by this tool."
     )
     parameters_schema = {
         "type": "object",
         "properties": {
-            "capability": {"type": "string", "description": "Capability group name: exa, python, shell, or qmd."},
+            "capability": {"type": "string", "description": "Capability group name: exa, python, shell, qmd, or mcp."},
             "enabled": {"type": "boolean", "description": "Desired state."},
             "persist": {"type": "boolean", "description": "Persist the capability change to the active config file."},
         },

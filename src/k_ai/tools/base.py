@@ -67,6 +67,13 @@ class ToolContext:
     reset_tool_policy: Optional[Callable[..., Dict[str, Any]]] = None
     get_tool_capability_overview: Optional[Callable[..., Dict[str, Any]]] = None
     update_tool_capability: Optional[Callable[..., Dict[str, Any]]] = None
+    list_skills: Optional[Callable[..., Any]] = None
+    activate_skill: Optional[Callable[..., Dict[str, Any]]] = None
+    get_active_skills: Optional[Callable[[], List[str]]] = None
+    refresh_mcp_catalog: Optional[Callable[..., Awaitable[None]]] = None
+    get_mcp_catalog: Optional[Callable[..., Awaitable[Any]]] = None
+    mcp_read_resource: Optional[Callable[..., Awaitable[Any]]] = None
+    mcp_get_prompt: Optional[Callable[..., Awaitable[Any]]] = None
     is_interrupt_requested: Optional[Callable[[], bool]] = None
 
 
@@ -81,6 +88,7 @@ class InternalTool(ABC):
     category: str = "general"
     danger_level: str = "low"
     accent_color: str = "cyan"
+    requires_catalog_entry: bool = True
 
     @abstractmethod
     async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
@@ -149,6 +157,16 @@ class InternalTool(ABC):
                 "description": self.description,
                 "parameters": self.parameters_schema,
             },
+        }
+
+    def approval_spec(self) -> Dict[str, Any]:
+        """Fallback approval metadata for dynamic tools not declared in YAML."""
+        return {
+            "category": self.category,
+            "risk": self.danger_level,
+            "default_policy": "ask" if self.requires_approval else "auto",
+            "protected": False,
+            "description": self.description,
         }
 
 

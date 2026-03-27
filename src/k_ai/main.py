@@ -143,7 +143,8 @@ def chat(
         "  • [cyan]k-ai config get -o config.yaml[/cyan]\n"
         "  • [cyan]k-ai config get -o prompts.yaml -s ui[/cyan]\n"
         "  • [cyan]k-ai config edit all[/cyan]\n"
-        "  • [cyan]k-ai config edit models[/cyan]"
+        "  • [cyan]k-ai config edit models[/cyan]\n"
+        "  • [cyan]k-ai config edit mcp[/cyan]"
     ),
 )
 def config_cmd(
@@ -165,7 +166,10 @@ def config_cmd(
             "  • models     -> 00-models.yaml\n"
             "  • ui         -> 10-ui-prompts.yaml\n"
             "  • sessions   -> 20-sessions-memory.yaml\n"
-            "  • governance -> 30-runtime-governance.yaml"
+            "  • governance -> 30-runtime-governance.yaml\n"
+            "  • skills     -> 40-skills.yaml\n"
+            "  • hooks      -> 50-hooks.yaml\n"
+            "  • mcp        -> 60-mcp.yaml"
         ),
     ),
     output: Optional[str] = typer.Option(

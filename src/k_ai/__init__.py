@@ -82,6 +82,8 @@ from .models import (
 from .session import ChatSession
 from .memory import MemoryStore
 from .session_store import SessionStore
+from .mcp import MCPManager
+from .skills import SkillManager
 
 __version__ = "0.2.0"
 
@@ -95,6 +97,8 @@ __all__ = [
     # Persistence
     "SessionStore",
     "MemoryStore",
+    "MCPManager",
+    "SkillManager",
     # LLM core
     "get_provider",
     "LLMProvider",

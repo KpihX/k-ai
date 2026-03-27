@@ -8,13 +8,19 @@ The format is based on Keep a Changelog.
 
 ### Added
 
+- Native MCP runtime foundation using the official Python `mcp` SDK, with `stdio` / `streamable_http` / `sse`, roots support, dynamic MCP tool import, MCP resources/prompts access, admin tools and `/mcp` commands, and the official `filesystem` server configured as the first bundled MCP.
+- Native hooks runtime with Claude-style event names, directory discovery (`.k-ai/hooks`, `.agents/hooks`, `~/.agents/hooks`), strict config parsing, command execution with stdin JSON payloads, blocking pre-hooks, post-tool feedback, and `/hooks` inspection commands.
+- Native `SKILL.md` runtime with `~/.agents/skills` default discovery, project overlays (`.k-ai/skills`, `.agents/skills`), lazy metadata/body loading, slash-command inspection, and the internal `activate_skill` tool.
 - Managed runtime-store git tracking for `~/.k-ai/`, including a committed `.gitignore` template that keeps only `config.yaml`, `MEMORY.json`, and `sessions/*`.
 - Automatic runtime-store commit support on interactive chat exit, with commit subjects derived from the session digest.
 - Installation profile support for runtime git defaults (`runtime_git.*`) and installer-side initialization of the runtime git repo.
 - Integration tests for `scripts/install.sh` and `scripts/purge.sh`, including custom runtime roots and purge edge cases.
+- `VISION.md` at the project root to keep the staged `skills -> hooks -> filesystem -> MCP` roadmap explicit.
 
 ### Changed
 
+- `scripts/install.sh` now offers installation of the official `@modelcontextprotocol/server-filesystem` package and persists MCP capability/runtime defaults into `config.yaml`.
+- The system prompt now exposes a compact skill catalog and injects activated skill bodies into the current turn below internal prompts but above external memory.
 - The installer now copies `install/.gitignore.runtime` into `~/.k-ai/.gitignore` instead of generating an overly broad ignore file inline.
 - The installer now persists runtime-root paths and the QMD session collection coherently into runtime config, and can skip the verification phase entirely via `verification.enabled`.
 - `scripts/purge.sh` now supports `--yes` and `--runtime-dir`, and resolves the uv package name dynamically from `pyproject.toml`.
@@ -23,6 +29,8 @@ The format is based on Keep a Changelog.
 
 ### Fixed
 
+- MCP roots handshake now follows the official SDK callback contract, and MCP catalog discovery now tolerates optional protocol surfaces that a real server may not implement, which restores live compatibility with the official `filesystem` server.
+- Tool catalog drift now covers the new `activate_skill` runtime tool, with test coverage for prompt injection and tool-loop continuation after skill activation.
 - Runtime coherence checks now warn when `config.persist_path`, `memory.internal_file`, and `sessions.directory` do not share the same parent, which would make runtime git tracking ambiguous.
 - Boolean config persistence bugs in `scripts/install.sh` that broke real installs.
 - Missing local git identity in runtime-store repos, which could block the initial commit and later auto-commits on machines without global git identity.

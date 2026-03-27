@@ -1,0 +1,142 @@
+# ==============================================================================
+# Skills
+# ==============================================================================
+
+skills:
+  enabled: true
+
+  # Ordered by precedence, highest first. Later roots lose on duplicate skill
+  # names. Relative paths are resolved from the current working directory.
+  directories:
+    - ".k-ai/skills"
+    - ".agents/skills"
+    - "~/.agents/skills"
+
+  # Maximum number of skills to inject into a single turn automatically.
+  max_active_per_turn: 3
+
+  # Metadata scan limits and cache behaviour.
+  max_discovered: 500
+  # Activation policy.
+  auto_activate_from_user_input: true
+  auto_activate_on_continuation: true
+  semantic_router:
+    enabled: true
+    catalog_limit: 24
+    max_selected: 3
+    temperature: 0.0
+    max_tokens: 256
+
+  # Expose a compact skill catalog in the system prompt to help the model
+  # reason about what is available before the activated skills are injected.
+  include_catalog_in_system_prompt: true
+  catalog_limit: 32
+
+  # Pattern used when the user explicitly names a skill in chat.
+  explicit_prefixes:
+    - "$"
+
+  selection:
+    reasons:
+      explicit_mention: "Explicit user mention of skill '{skill_name}'."
+      reused_continuation: "Reused from previous active skills for a low-signal continuation turn."
+
+  runtime:
+    tool:
+      display_name: "Activate Skill"
+      description: "Load one available SKILL.md into the current turn context before answering. Use this when the skill catalog indicates a relevant specialized workflow."
+      argument_description: "Exact skill name from the visible skill catalog."
+      proposal_rationale: "Load the skill '{skill_name}' into the current turn context before answering."
+    section_titles:
+      runtime: "Skill Runtime"
+      catalog: "Skill Catalog"
+      active: "Active Skills"
+      provenance: "Skill Provenance"
+    auto_activation:
+      visibility: "announce"
+      notice_level: "info"
+      notice_title: "Skills Activated"
+      notice_message: "Loaded for this turn: {skill_list}"
+      item_template: "{skill_name}"
+      explicit_item_template: "{skill_name} (explicit)"
+      reused_item_template: "{skill_name} (continued)"
+      semantic_item_template: "{skill_name} (semantic routing)"
+      runtime_active_template: "{skill_list}"
+      runtime_retained_template: "retained: {skill_list}"
+      runtime_combined_template: "active: {active_skills} | retained: {retained_skills}"
+      runtime_none_message: "none"
+    activation:
+      unavailable_message: "Skill runtime is unavailable."
+      failed_message: "Skill activation failed."
+      missing_name_message: "Skill name is required."
+      already_active_message: "Skill '{skill_name}' is already active for this turn."
+      unknown_message: "Unknown skill '{skill_name}'."
+      available_suffix: " Available skills include: {available_skills}"
+      activated_message: "Skill '{skill_name}' activated for the current turn."
+      tool_reason: "Activated explicitly through the activate_skill tool for '{skill_name}'."
+      semantic_reason: "Activated by semantic skill routing before the main response for '{skill_name}'."
+    catalog:
+      line_template: "- {skill_name}: {skill_description} [scope={skill_scope}]"
+      overflow_template: "- ... and {remaining_count} more skill(s)"
+      usage_line: "Use activate_skill with the exact skill name when you need to load one."
+    active:
+      block_template: |-
+        ### Skill: {skill_name}
+        - source: {skill_source}
+        - scope: {skill_scope}
+        - reason: {skill_reason}
+
+        {skill_body}
+    ui:
+      reload_message: "Skill catalog refreshed."
+      active_none_message: "No session skill context is currently retained."
+      active_item_template: "  [magenta]{skill_name}[/magenta]"
+      show_usage_message: "[yellow]Usage:[/yellow] /skills show <skill_name>"
+      unknown_message: "[red]Unknown skill:[/red] {skill_name}"
+      panel_title: "[bold magenta]Skill[/bold magenta] [dim]{skill_name}[/dim]"
+      list_none_message: "No skills discovered."
+      table_title: "[bold magenta]Skills[/bold magenta]"
+      issues_message: "[dim]{issue_count} discovery issue(s) detected. Use /skills reload after fixes.[/dim]"
+      columns:
+        name: "Name"
+        scope: "Scope"
+        description: "Description"
+
+prompts:
+  skill_catalog_intro: >-
+    The following skills are available in this runtime. Their metadata is shown
+    for routing only. If one is already activated below, follow its full
+    instructions. If not activated, do not pretend you have loaded its body.
+
+  active_skills_intro: >-
+    The following skills were activated for the current turn. Treat them as
+    lower priority than internal memory and built-in prompts, but higher
+    priority than external user context.
+
+  skill_selector_hint: >-
+    Local skill pre-activation only happens for explicit user mentions or for
+    structurally low-signal continuation turns that reuse already active skills.
+    Otherwise,
+    use the visible skill catalog as routing metadata and call activate_skill
+    with the exact skill name before answering when one skill clearly fits.
+    If a skill is active, follow it. If no skill is active, answer normally
+    without inventing unseen skill instructions.
+
+  skill_provenance_hint: >-
+    When the user asks what a skill says, contains, requires, or implies,
+    separate sources explicitly. Treat the active skill body as one source,
+    remembered facts as another source, and your general reasoning as a third
+    source. Do not present remembered facts or general knowledge as if they
+    were written inside a skill unless the active skill body actually contains
+    them.
+
+  skill_router_prompt: >-
+    You are selecting which skills should be loaded before answering the user.
+    You only have metadata, not the skill bodies. Use the descriptions as
+    "when to use" guidance. Return strict JSON with keys "skill_names" and
+    "reason". "skill_names" must be a short list of exact skill names from the
+    catalog, or an empty list if no skill is clearly justified. Only select a
+    skill when its description materially matches the user's request. Prefer no
+    selection over a weak match. Do not select broad runtime/configuration
+    skills unless the user's request is specifically about that runtime or its
+    configuration.

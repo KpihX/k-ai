@@ -23,6 +23,9 @@ DEFAULT_CONFIG_SECTIONS: Tuple[Tuple[str, str, str], ...] = (
     ("ui", "10-ui-prompts.yaml", "CLI rendering, runtime transparency, and prompt templates."),
     ("sessions", "20-sessions-memory.yaml", "Session persistence, compaction, and memory defaults."),
     ("governance", "30-runtime-governance.yaml", "Config persistence, tool approval catalog, and tool runtime settings."),
+    ("skills", "40-skills.yaml", "Skill discovery, activation, prompt injection, and related prompts."),
+    ("hooks", "50-hooks.yaml", "Hook discovery, event dispatch, runtime policies, and hook prompts."),
+    ("mcp", "60-mcp.yaml", "MCP client runtime, dynamic tool import, roots, and server configuration."),
 )
 
 # Sentinel used by get_nested() to distinguish "key absent" from "key present

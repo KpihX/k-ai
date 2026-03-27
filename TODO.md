@@ -24,10 +24,15 @@
 - [x] Remove or wire every previously orphaned config option.
 - [x] Implement Google OAuth token loading/refresh for declared OAuth config.
 - [x] Align programmatic API rollback/finalization with interactive session semantics.
+- [x] Add a native `SKILL.md` runtime with project/global discovery, activation, inspection commands, prompt injection, and end-to-end tests.
+- [x] Add the MCP foundation with dynamic stdio-backed tool import, roots support, `/mcp` inspection, and the official filesystem server as the first configured MCP.
+- [x] Capture the staged roadmap in `VISION.md`.
 
 ## Next candidates
 
 - [ ] Refactor long-response streaming away from a single full-height Rich `Live` panel to avoid bottom ellipsis/clipping, blinking redraws, and delayed visibility when content exceeds terminal height.
+- [x] Implement the hooks layer after skills stabilization: structured lifecycle hooks with timeout policies, discovery roots, auditability, and Claude-style event naming.
+- [ ] Deepen MCP runtime sophistication beyond the current foundation: persistent sessions where useful, richer roots refresh semantics, broader transport tuning, and higher-level server templates.
 - [ ] Add a dedicated visual hint in the streaming UI for `Ctrl+C` / `Esc` interruption.
 - [ ] Improve per-provider token estimation quality beyond character-based heuristics.
 - [ ] Add snapshot/export command for runtime transparency as JSON/YAML.

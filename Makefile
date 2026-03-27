@@ -28,7 +28,7 @@ test:
 	@uv run pytest -q
 
 check:
-	@python3 -m py_compile src/k_ai/*.py src/k_ai/tools/*.py src/k_ai/ui/*.py test/*.py
+	@python3 -m py_compile $$(find src test -name '*.py' -print)
 	@uv run pytest -q
 
 build:

@@ -1,0 +1,108 @@
+# ==============================================================================
+# MCP
+# ==============================================================================
+
+mcp:
+  enabled: true
+  protocol_version: "2025-06-18"
+  read_timeout_seconds: 30
+  max_tools_per_server: 64
+  max_resources_per_server: 128
+  max_prompts_per_server: 128
+  include_in_system_prompt: true
+
+  client:
+    name: "k-ai"
+    version: "0.1.1"
+
+  roots:
+    enabled: true
+    include_workspace_root: true
+    additional_paths: []
+
+  tool_naming:
+    prefix_template: "mcp__{server_name}__"
+    display_name_template: "{server_title} / {tool_name}"
+
+  approval:
+    category: "mcp"
+    read_only_risk: "low"
+    default_risk: "medium"
+    destructive_risk: "high"
+    read_only_requires_approval: false
+    default_requires_approval: true
+    destructive_requires_approval: true
+
+  runtime:
+    section_title: "MCP Runtime"
+    catalog_title: "MCP Catalog"
+    discovery_none: "No MCP servers discovered."
+    runtime_none_message: "none"
+    summary_template: "{server_count} server(s) | {tool_count} tool(s) | {resource_count} resource(s) | {prompt_count} prompt(s)"
+    server_line_template: "- {server_name}: transport={transport} tools={tool_count}"
+    tool_line_template: "  - {tool_name}: {tool_description}"
+    issues_template: "- issue: {issue_message}"
+    reload_message: "MCP catalog refreshed."
+    table_title: "[bold cyan]MCP Servers[/bold cyan]"
+    tools_table_title: "[bold cyan]MCP Tools[/bold cyan]"
+    resources_table_title: "[bold cyan]MCP Resources[/bold cyan]"
+    prompts_table_title: "[bold cyan]MCP Prompts[/bold cyan]"
+    columns:
+      server: "Server"
+      status: "Status"
+      transport: "Transport"
+      tools: "Tools"
+      resources: "Resources"
+      prompts: "Prompts"
+      source: "Source"
+      tool_name: "Tool"
+      qualified_name: "Qualified Name"
+      uri: "URI"
+      prompt_name: "Prompt"
+      risk: "Risk"
+      approval: "Approval"
+    statuses:
+      ready: "ready"
+      error: "error"
+      disabled: "disabled"
+
+  prompts:
+    catalog_intro: >-
+      The following MCP servers and tools are available through the runtime.
+      MCP tools are external protocol-backed tools. Use them when they clearly
+      match the user's request.
+    routing_hint: >-
+      MCP tools are protocol-backed runtime tools. Prefer them over shell
+      workarounds when they provide the needed capability directly. MCP
+      resources and prompts are not injected automatically; load them through
+      the dedicated MCP runtime tools when needed.
+
+  admin:
+    install:
+      preferred_transport_order:
+        - "streamable_http"
+        - "sse"
+        - "stdio"
+      default_stdio_package_prefixes:
+        - "@modelcontextprotocol/server-"
+      default_bun_package_manager: "bun"
+      fallback_package_manager: "npm"
+      filesystem_server_name: "filesystem"
+      filesystem_package: "@modelcontextprotocol/server-filesystem"
+      filesystem_binary: "mcp-server-filesystem"
+
+  servers:
+    filesystem:
+      enabled: true
+      transport: "stdio"
+      command: "mcp-server-filesystem"
+      args: []
+      cwd: "{workspace_root}"
+      env: {}
+      roots:
+        enabled: true
+        include_workspace_root: true
+        additional_paths: []
+      tools:
+        include: []
+        exclude: []
