@@ -6,6 +6,8 @@ The format is based on Keep a Changelog.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-03-27
+
 ### Added
 
 - Native MCP runtime foundation using the official Python `mcp` SDK, with `stdio` / `streamable_http` / `sse`, roots support, dynamic MCP tool import, MCP resources/prompts access, admin tools and `/mcp` commands, and the official `filesystem` server configured as the first bundled MCP.

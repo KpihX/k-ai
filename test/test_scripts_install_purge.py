@@ -119,7 +119,7 @@ def test_purge_script_uses_custom_runtime_dir_and_dynamic_uv_package_name(tmp_pa
 set -euo pipefail
 printf '%s\\n' "$*" >> "{calls_file}"
 if [[ "$1 $2" == "tool list" ]]; then
-  printf 'kpihx-ai v0.1.1\\n- k-ai\\n'
+  printf 'kpihx-ai v0.2.0\\n- k-ai\\n'
 elif [[ "$1 $2" == "tool uninstall" ]]; then
   exit 0
 else

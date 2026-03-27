@@ -31,7 +31,7 @@ class MCPManager:
         self._client = MCPClient(
             protocol_version=str(self._config.get_nested("mcp", "protocol_version", default="2025-06-18") or "2025-06-18"),
             client_name=str(self._config.get_nested("mcp", "client", "name", default="k-ai") or "k-ai"),
-            client_version=str(self._config.get_nested("mcp", "client", "version", default="0.1.1") or "0.1.1"),
+            client_version=str(self._config.get_nested("mcp", "client", "version", default="0.2.0") or "0.2.0"),
             tool_prefix_template=str(self._config.get_nested("mcp", "tool_naming", "prefix_template", default="mcp__{server_name}__") or "mcp__{server_name}__"),
             read_timeout_seconds=int(self._config.get_nested("mcp", "read_timeout_seconds", default=30) or 30),
         )
