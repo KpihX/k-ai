@@ -6,6 +6,25 @@ The format is based on Keep a Changelog.
 
 ## [Unreleased]
 
+### Added
+
+- Fast one-shot ask mode through both `k-ai ask ...` and the root shorthand `k-ai "..."`, with a minimal no-tools prompt profile for low-latency questions.
+- A dedicated interaction runtime config fragment (`70-interaction.yaml`) covering one-shot ask, `cwd`, multiline input syntax, and persistent local runners.
+- Multiline mixed chat documents with four explicit block kinds:
+  - plain LLM text
+  - `!` persistent shell blocks
+  - `>` persistent Python blocks
+  - `/?` contextual but non-persistent tool-less questions
+- Persistent PTY-backed user shell and Python runners, plus `/focus shell`, `/focus python`, and `/cwd` slash commands.
+- CLI/root `-C/--cwd` support so chat, ask, shell blocks, Python blocks, and runtime tools all share the same explicit working directory.
+- New tests for parser semantics, ask mode, cwd propagation, persistent runners, CLI root fallback, and local-output injection into mixed batches.
+
+### Changed
+
+- `shell_exec` and `python_exec` now honor the session working directory instead of implicitly running in the process cwd.
+- The interactive prompt is now multiline and routes submitted documents through a dedicated interaction parser instead of a single raw user string.
+- `scripts/purge.sh` now detects installed uv tools more robustly before uninstalling them.
+
 ## [0.2.0] - 2026-03-27
 
 ### Added

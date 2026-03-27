@@ -7,17 +7,33 @@ import os
 import subprocess
 from typing import List, Optional
 
+import click
 import typer
 from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
+from typer.core import TyperGroup
 
 from .config import ConfigManager
+from .interaction import normalize_workdir
 from .session import ChatSession
 from .ui_theme import resolve_syntax_theme
 
 console = Console()
+
+
+class AskFallbackGroup(TyperGroup):
+    """Treat unknown root commands as one-shot prompts instead of hard failures."""
+
+    def resolve_command(self, ctx: click.Context, args: list[str]):
+        try:
+            return super().resolve_command(ctx, args)
+        except click.UsageError:
+            cmd = self.get_command(ctx, "ask")
+            if cmd is None:
+                raise
+            return "ask", cmd, args
 
 app = typer.Typer(
     name="k-ai",
@@ -31,9 +47,83 @@ app = typer.Typer(
         "  The CLI shows the available knobs instead of making you remember them.\n"
         "  Use [cyan]--help[/cyan] at any subcommand level for the exact values and workflow."
     ),
-    no_args_is_help=True,
+    no_args_is_help=False,
     rich_markup_mode="rich",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": False},
+    cls=AskFallbackGroup,
 )
+
+
+def _resolve_cwd_option(cwd: Optional[str]) -> str | None:
+    if cwd is None:
+        return None
+    return str(normalize_workdir(cwd))
+
+
+def _build_config_manager(config_path: Optional[str], *, temperature: Optional[float], max_tokens: Optional[int]) -> ConfigManager:
+    kwargs: dict = {}
+    if temperature is not None:
+        kwargs["temperature"] = temperature
+    if max_tokens is not None:
+        kwargs["max_tokens"] = max_tokens
+    return ConfigManager(override_path=config_path, **kwargs)
+
+
+def _run_chat(
+    *,
+    provider: Optional[str],
+    model: Optional[str],
+    config_path: Optional[str],
+    temperature: Optional[float],
+    max_tokens: Optional[int],
+    system: Optional[str],
+    cwd: Optional[str],
+) -> None:
+    cm = _build_config_manager(config_path, temperature=temperature, max_tokens=max_tokens)
+    session = ChatSession(cm, provider=provider, model=model, workspace_root=_resolve_cwd_option(cwd))
+    if system:
+        session.system_prompt = system
+    asyncio.run(session.start())
+
+
+def _run_ask(
+    *,
+    prompt: str,
+    provider: Optional[str],
+    model: Optional[str],
+    config_path: Optional[str],
+    temperature: Optional[float],
+    max_tokens: Optional[int],
+    system: Optional[str],
+    cwd: Optional[str],
+) -> None:
+    cm = _build_config_manager(config_path, temperature=temperature, max_tokens=max_tokens)
+    session = ChatSession(cm, provider=provider, model=model, workspace_root=_resolve_cwd_option(cwd))
+    if system:
+        session.system_prompt = system
+    answer = asyncio.run(session.ask(prompt))
+    console.print(answer)
+
+
+@app.callback(invoke_without_command=True)
+def root(
+    ctx: typer.Context,
+    cwd: Optional[str] = typer.Option(
+        None,
+        "--cwd",
+        "-C",
+        help=(
+            "Working directory for chat, ask, user shell blocks, and runtime tools. "
+            "Supports relative paths, ~, and environment variables like $HOME."
+        ),
+    ),
+):
+    if ctx.invoked_subcommand is not None:
+        if cwd is not None:
+            ctx.obj = {"cwd": _resolve_cwd_option(cwd)}
+        return
+    console.print(ctx.get_help())
+    raise typer.Exit()
 
 
 # ---------------------------------------------------------------------------
@@ -54,6 +144,7 @@ app = typer.Typer(
     )
 )
 def chat(
+    ctx: typer.Context,
     provider: Optional[str] = typer.Option(
         None,
         "--provider",
@@ -102,20 +193,27 @@ def chat(
             "default config permanently."
         ),
     ),
+    cwd: Optional[str] = typer.Option(
+        None,
+        "--cwd",
+        "-C",
+        help=(
+            "Working directory for the whole chat session. It controls local shell "
+            "blocks, user Python blocks, and runtime tools such as shell_exec."
+        ),
+    ),
 ):
     """Start an interactive chat session."""
-    kwargs: dict = {}
-    if temperature is not None:
-        kwargs["temperature"] = temperature
-    if max_tokens is not None:
-        kwargs["max_tokens"] = max_tokens
-
     try:
-        cm = ConfigManager(override_path=config_path, **kwargs)
-        session = ChatSession(cm, provider=provider, model=model)
-        if system:
-            session.system_prompt = system
-        asyncio.run(session.start())
+        _run_chat(
+            provider=provider,
+            model=model,
+            config_path=config_path,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            system=system,
+            cwd=cwd or (ctx.obj or {}).get("cwd"),
+        )
     except Exception as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
         raise typer.Exit(1)
@@ -169,7 +267,8 @@ def config_cmd(
             "  • governance -> 30-runtime-governance.yaml\n"
             "  • skills     -> 40-skills.yaml\n"
             "  • hooks      -> 50-hooks.yaml\n"
-            "  • mcp        -> 60-mcp.yaml"
+            "  • mcp        -> 60-mcp.yaml\n"
+            "  • interaction -> 70-interaction.yaml"
         ),
     ),
     output: Optional[str] = typer.Option(
@@ -242,6 +341,57 @@ def config_cmd(
     except typer.Exit:
         raise
     except FileNotFoundError as e:
+            console.print(f"[bold red]Error:[/bold red] {e}")
+            raise typer.Exit(1)
+
+
+@app.command(
+    "ask",
+    help=(
+        "Ask one direct question in fast one-shot mode.\n\n"
+        "This mode skips chat history, slash commands, tool execution, and runtime "
+        "catalog injection. It keeps only the minimal system prompt and remembered "
+        "facts so the answer returns as quickly as possible.\n\n"
+        "Examples:\n"
+        "  • [cyan]k-ai ask \"Explique ce Makefile\"[/cyan]\n"
+        "  • [cyan]k-ai -C ~/Work/AI/k_ai ask \"Quel est le rôle de session.py ?\"[/cyan]\n"
+        "  • [cyan]k-ai \"Que signifie MCP ?\"[/cyan]"
+    ),
+)
+def ask(
+    ctx: typer.Context,
+    prompt: List[str] = typer.Argument(..., help="One-shot question to send to the default model."),
+    provider: Optional[str] = typer.Option(None, "--provider", "-p", help="Provider override for this one-shot call."),
+    model: Optional[str] = typer.Option(None, "--model", "-m", help="Model override for this one-shot call."),
+    config_path: Optional[str] = typer.Option(None, "--config", "-c", help="Override config file for this call."),
+    temperature: Optional[float] = typer.Option(None, "--temperature", "-t", help="Sampling temperature override."),
+    max_tokens: Optional[int] = typer.Option(None, "--max-tokens", "-n", help="Maximum output tokens override."),
+    system: Optional[str] = typer.Option(None, "--system", "-s", help="One-off extra system prompt for this ask call."),
+    cwd: Optional[str] = typer.Option(
+        None,
+        "--cwd",
+        "-C",
+        help=(
+            "Working directory context for this call. It is available to the runtime "
+            "state even though one-shot ask does not execute tools."
+        ),
+    ),
+):
+    try:
+        joined = " ".join(prompt).strip()
+        if not joined:
+            raise ValueError("Prompt cannot be empty.")
+        _run_ask(
+            prompt=joined,
+            provider=provider,
+            model=model,
+            config_path=config_path,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            system=system,
+            cwd=cwd or (ctx.obj or {}).get("cwd"),
+        )
+    except Exception as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
         raise typer.Exit(1)
     except subprocess.CalledProcessError as e:

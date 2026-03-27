@@ -274,7 +274,7 @@ class TestGetAllDump:
 
     def test_list_default_sections_returns_named_fragments(self):
         sections = ConfigManager.list_default_sections()
-        assert [section["name"] for section in sections] == ["models", "ui", "sessions", "governance", "skills", "hooks", "mcp"]
+        assert [section["name"] for section in sections] == ["models", "ui", "sessions", "governance", "skills", "hooks", "mcp", "interaction"]
 
     def test_flatten_returns_dot_notation(self, cm):
         flat = cm.flatten("cli")

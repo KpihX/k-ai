@@ -211,6 +211,47 @@ class TestCommandHandler:
         assert any(path.endswith("60-mcp.yaml") for path in called_paths)
 
     @pytest.mark.asyncio
+    async def test_config_edit_accepts_interaction_section(self, session_for_commands):
+        handler = CommandHandler(session_for_commands)
+        session_for_commands.cm.set("config.editor", "nano")
+
+        with (
+            patch.object(session_for_commands.cm, "resolve_editor_command", return_value=["/usr/bin/nano"]),
+            patch("k_ai.commands.subprocess.run") as run_mock,
+        ):
+            await handler.handle("/config edit interaction")
+
+        args = run_mock.call_args.args[0]
+        assert args[1].endswith("70-interaction.yaml")
+
+    @pytest.mark.asyncio
+    async def test_cwd_without_argument_prints_current_directory(self, session_for_commands):
+        handler = CommandHandler(session_for_commands)
+
+        await handler.handle("/cwd")
+
+        assert session_for_commands.console.print.called
+
+    @pytest.mark.asyncio
+    async def test_cwd_updates_session_directory(self, session_for_commands, tmp_path):
+        handler = CommandHandler(session_for_commands)
+        target = tmp_path / "other"
+        target.mkdir()
+
+        await handler.handle(f"/cwd {target}")
+
+        assert session_for_commands.current_cwd() == target.resolve()
+
+    @pytest.mark.asyncio
+    async def test_focus_routes_to_session_runner(self, session_for_commands):
+        handler = CommandHandler(session_for_commands)
+        session_for_commands.focus_runner = AsyncMock()
+
+        await handler.handle("/focus shell")
+
+        session_for_commands.focus_runner.assert_awaited_once_with("shell")
+
+    @pytest.mark.asyncio
     async def test_digest_routes_through_internal_tool_executor(self, session_for_commands):
         handler = CommandHandler(session_for_commands)
         session_for_commands._execute_internal_tool = AsyncMock(

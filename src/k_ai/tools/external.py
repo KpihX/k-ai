@@ -180,6 +180,15 @@ class PythonExecTool(InternalTool):
             default="~/.k-ai/sandbox",
         ))
 
+    @staticmethod
+    def _cwd(ctx: ToolContext) -> str | None:
+        if ctx.get_cwd:
+            try:
+                return ctx.get_cwd()
+            except Exception:
+                return None
+        return None
+
     @classmethod
     def _default_packages(cls, ctx: ToolContext) -> List[str]:
         raw = ctx.config.get_nested("tools", "python", "default_packages", default=cls._FALLBACK_DEFAULT_PACKAGES)
@@ -286,6 +295,7 @@ class PythonExecTool(InternalTool):
                 python, "-c", prepared_code,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                cwd=self._cwd(ctx),
             )
             stdout, stderr = await self._wait_for_process(proc, timeout=timeout, ctx=ctx)
             output = stdout.decode("utf-8", errors="replace")
@@ -326,6 +336,7 @@ class PythonSandboxPackagesTool(InternalTool):
             pip, *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            cwd=PythonExecTool._cwd(ctx),
         )
         stdout, stderr = await PythonExecTool._wait_for_process(proc, timeout=effective_timeout, ctx=ctx)
         return proc.returncode, stdout.decode("utf-8", errors="replace"), stderr.decode("utf-8", errors="replace")
@@ -476,6 +487,15 @@ class ShellExecTool(InternalTool):
         syntax_theme = resolve_syntax_theme(ctx.config.get_nested("cli", "theme", default="default"))
         return Syntax(msg or "(no output)", "text", theme=syntax_theme, word_wrap=True)
 
+    @staticmethod
+    def _cwd(ctx: ToolContext) -> str | None:
+        if ctx.get_cwd:
+            try:
+                return ctx.get_cwd()
+            except Exception:
+                return None
+        return None
+
     async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
         tool_cfg = ctx.config.get_nested("tools", "shell", default={})
         if not capability_enabled(ctx.config, "shell"):
@@ -491,6 +511,7 @@ class ShellExecTool(InternalTool):
                 command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                cwd=self._cwd(ctx),
             )
             stdout, stderr = await PythonExecTool._wait_for_process(proc, timeout=timeout, ctx=ctx)
             output = stdout.decode("utf-8", errors="replace")

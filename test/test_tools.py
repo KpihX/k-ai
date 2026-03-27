@@ -49,6 +49,7 @@ def ctx(tmp_path, monkeypatch):
         memory=mem,
         session_store=ss,
         console=MagicMock(),
+        get_cwd=MagicMock(return_value=str(tmp_path)),
         get_session_id=MagicMock(return_value="test-session"),
         request_exit=MagicMock(),
         request_new_session=MagicMock(),
@@ -599,6 +600,20 @@ class TestQmdTools:
         result = await tool.execute({"command": "echo ok"}, ctx)
         assert result.success is True
         assert "ok" in result.message
+
+    @pytest.mark.asyncio
+    async def test_shell_exec_uses_session_cwd(self, ctx):
+        tool = ShellExecTool()
+        result = await tool.execute({"command": "pwd"}, ctx)
+        assert result.success is True
+        assert Path(result.data["stdout"].strip()) == Path(ctx.get_cwd())
+
+    @pytest.mark.asyncio
+    async def test_python_exec_uses_session_cwd(self, ctx):
+        tool = PythonExecTool()
+        result = await tool.execute({"code": "import os\nos.getcwd()"}, ctx)
+        assert result.success is True
+        assert Path(result.data["stdout"].strip().strip("'")) == Path(ctx.get_cwd())
 
     @pytest.mark.asyncio
     async def test_shell_exec_empty_command(self, ctx):

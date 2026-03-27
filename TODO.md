@@ -27,6 +27,7 @@
 - [x] Add a native `SKILL.md` runtime with project/global discovery, activation, inspection commands, prompt injection, and end-to-end tests.
 - [x] Add the MCP foundation with dynamic stdio-backed tool import, roots support, `/mcp` inspection, and the official filesystem server as the first configured MCP.
 - [x] Capture the staged roadmap in `VISION.md`.
+- [x] Add a native interaction runtime for one-shot ask, explicit `cwd`, multiline mixed user input, and persistent local shell/Python runners.
 
 ## Next candidates
 
@@ -37,4 +38,5 @@
 - [ ] Improve per-provider token estimation quality beyond character-based heuristics.
 - [ ] Add snapshot/export command for runtime transparency as JSON/YAML.
 - [ ] Add integration tests for interruption behavior in an interactive PTY.
+- [ ] Reduce shell-side visual noise further during focused PTY interaction without weakening login-shell environment fidelity.
 - [ ] Add a doctor sub-check that verifies Git remotes and publish prerequisites before `make release`.

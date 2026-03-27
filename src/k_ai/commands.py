@@ -34,6 +34,7 @@ SLASH_COMMANDS = [
     "/compact", "/clear", "/reset",
     "/digest", "/extract",
     "/history", "/model", "/provider", "/system",
+    "/cwd", "/focus",
     "/set", "/settings", "/status",
     "/tools", "/tools capabilities", "/tools enable", "/tools disable",
     "/config show", "/config save", "/config get", "/config sections", "/config edit",
@@ -101,6 +102,16 @@ _HELP: dict[str, tuple[str, str, str]] = {
         "/provider mistral mistral-medium-latest",
     ),
     "/system [prompt|off]": ("Show, set, or disable the session-specific system prompt.", "free text or off", "/system You are concise."),
+    "/cwd [path]": (
+        "Show the current working directory, or set it for chat, shell blocks, python blocks, and runtime tools.",
+        "optional path",
+        "/cwd ~/Work/AI/k_ai",
+    ),
+    "/focus <shell|python>": (
+        "Focus a persistent local runner. Keystrokes go directly to it and are not persisted; press Ctrl+] to return to chat.",
+        "shell|python",
+        "/focus shell",
+    ),
     "/set <key> <value>": ("Change one runtime config key live using dot-notation.", "dot.key + value", "/set cli.theme mono"),
     "/settings [prefix]": ("List current active config keys, optionally filtered by prefix.", "optional prefix", "/settings cli"),
     "/status": ("Show full runtime transparency: provider, tokens, context, limits, approvals, paths.", "-", "/status"),
@@ -121,7 +132,7 @@ _HELP: dict[str, tuple[str, str, str]] = {
         "/config get prompts.yaml ui",
     ),
     "/config sections": ("List all built-in config sections and what each one contains.", "-", "/config sections"),
-    "/config edit [all|models|ui|sessions|governance|skills|hooks|mcp]": (
+    "/config edit [all|models|ui|sessions|governance|skills|hooks|mcp|interaction]": (
         "Open the active config file or one built-in fragment in the configured editor.",
         "optional target section",
         "/config edit mcp",
@@ -218,6 +229,8 @@ class CommandHandler:
             "model": self._model,
             "provider": self._provider,
             "system": self._system,
+            "cwd": self._cwd,
+            "focus": self._focus,
             "set": self._set,
             "settings": self._settings,
             "status": self._status,
@@ -335,6 +348,29 @@ class CommandHandler:
             "session_digest",
             {"session_id": session_id} if session_id else {},
         )
+
+    async def _cwd(self, args: List[str]) -> bool:
+        if not args:
+            self.console.print(f"[cyan]{self.session.current_cwd()}[/cyan]")
+            return True
+        target = " ".join(args).strip()
+        try:
+            resolved = self.session.set_current_cwd(target)
+        except Exception as exc:
+            self.console.print(f"[red]{exc}[/red]")
+            return True
+        self.console.print(f"[green]Working directory:[/green] {resolved}")
+        return True
+
+    async def _focus(self, args: List[str]) -> bool:
+        if not args or args[0].lower() not in {"shell", "python"}:
+            self.console.print("[yellow]Usage:[/yellow] /focus <shell|python>")
+            return True
+        try:
+            await self.session.focus_runner(args[0].lower())
+        except Exception as exc:
+            self.console.print(f"[red]{exc}[/red]")
+        return True
 
     async def _extract(self, args: List[str]) -> bool:
         if not args:
@@ -825,7 +861,7 @@ class CommandHandler:
             return True
         elif sub == "edit":
             if len(args) > 2:
-                self.console.print("[yellow]Usage:[/yellow] /config edit [all|models|ui|sessions|governance|skills|hooks|mcp]")
+                self.console.print("[yellow]Usage:[/yellow] /config edit [all|models|ui|sessions|governance|skills|hooks|mcp|interaction]")
                 return True
             target_name = args[1] if len(args) > 1 else "all"
             try:
@@ -869,7 +905,7 @@ class CommandHandler:
             self.console.print(
                 "[yellow]Usage:[/yellow] /config show [key] | /config show section:<name> [section:<name> ...] | "
                 "/config save [path] | /config get [path] [section ...] | /config sections | "
-                "/config edit [all|models|ui|sessions|governance|skills|hooks|mcp]"
+                "/config edit [all|models|ui|sessions|governance|skills|hooks|mcp|interaction]"
             )
         return True
 

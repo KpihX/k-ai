@@ -74,6 +74,8 @@ class ToolContext:
     get_mcp_catalog: Optional[Callable[..., Awaitable[Any]]] = None
     mcp_read_resource: Optional[Callable[..., Awaitable[Any]]] = None
     mcp_get_prompt: Optional[Callable[..., Awaitable[Any]]] = None
+    get_cwd: Optional[Callable[[], str]] = None
+    set_cwd: Optional[Callable[[str], str]] = None
     is_interrupt_requested: Optional[Callable[[], bool]] = None
 
 

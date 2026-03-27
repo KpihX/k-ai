@@ -26,6 +26,7 @@ DEFAULT_CONFIG_SECTIONS: Tuple[Tuple[str, str, str], ...] = (
     ("skills", "40-skills.yaml", "Skill discovery, activation, prompt injection, and related prompts."),
     ("hooks", "50-hooks.yaml", "Hook discovery, event dispatch, runtime policies, and hook prompts."),
     ("mcp", "60-mcp.yaml", "MCP client runtime, dynamic tool import, roots, and server configuration."),
+    ("interaction", "70-interaction.yaml", "One-shot ask mode, cwd handling, multiline parsing, and user-side runners."),
 )
 
 # Sentinel used by get_nested() to distinguish "key absent" from "key present

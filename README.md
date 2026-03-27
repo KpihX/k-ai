@@ -39,6 +39,10 @@ It is designed around one principle: the chat loop, the slash commands, and the 
 - Robust interruption handling for prompt input, generation, and tool execution.
 - Split default config fragments with cached loading for better maintainability and lower parse overhead.
 - Native `SKILL.md` runtime with project/global discovery, prompt injection, and an internal `activate_skill` tool.
+- Fast one-shot mode via `k-ai "..."` or `k-ai ask ...`, with no history or tool loop.
+- Session-scoped working directories (`-C/--cwd`) shared by chat, local runners, and runtime tools.
+- Mixed multiline input in chat: plain text to the LLM, `!` shell blocks, `>` Python blocks, and `/?` ephemeral contextual questions.
+- Persistent PTY-backed local shell and Python runners, including secure focus mode for interactive prompts such as `sudo` passwords.
 
 ## Problem-First Docs
 
@@ -138,6 +142,24 @@ MCP runtime defaults:
 The staged architecture roadmap for `skills`, `hooks`, filesystem editing, and
 MCP is tracked in [`VISION.md`](VISION.md).
 
+Interaction runtime defaults:
+
+- config fragment: `src/k_ai/defaults/defaults.d/70-interaction.yaml`
+- one-shot entrypoints:
+  - `k-ai "Explique ce repo"`
+  - `k-ai ask "Quelle est la différence entre hooks et skills ?"`
+- chat working directory override:
+  - `k-ai chat -C ~/Work/AI/k_ai`
+- multiline document syntax in chat:
+  - plain text -> normal LLM turn
+  - `!` -> persistent shell block
+  - `>` -> persistent Python block
+  - `/?` -> contextual but non-persistent, tool-less quick question
+- runner focus/admin commands:
+  - `/cwd [path]`
+  - `/focus shell`
+  - `/focus python`
+
 Published package identity:
 
 - PyPI distribution name: `kpihx-ai`
@@ -219,11 +241,42 @@ chat: Présentation détaillée de l'assistant k-ai
 
 ```bash
 k-ai chat
+k-ai chat -C ~/Work/AI/k_ai
 k-ai chat --provider mistral
 k-ai chat --provider openai --model gpt-4o
 k-ai chat --config ~/.k-ai/config.yaml
 k-ai chat --temperature 0.2 --max-tokens 4096
 ```
+
+### One-shot ask
+
+```bash
+k-ai "Explique ce dépôt"
+k-ai ask "Que signifie MCP ?"
+k-ai -C ~/Work/AI/k_ai "Quel est le rôle de session.py ?"
+```
+
+### Mixed multiline chat input
+
+Inside `k-ai chat`, you can submit multiline documents that mix local execution
+and model questions in one batch:
+
+```text
+!pwd
+!git status --short
+explique ce que tu vois
+>import os
+>os.getcwd()
+/? rappelle-moi brièvement ce que signifie ce statut git
+```
+
+Rules:
+
+- `!` lines are executed in the persistent session shell
+- `>` lines are executed in the persistent session Python runner
+- normal text is sent to the model
+- `/?` asks a contextual quick question without polluting chat history
+- local runner outputs are injected into the next LLM block of the same batch
 
 ### Config CLI
 
@@ -318,12 +371,14 @@ Runtime/config:
 - `/tools capabilities`
 - `/tools enable|disable <exa|python|shell|qmd|mcp>`
 - `/mcp [list|tools|resources|templates|prompts|reload|probe|install|add-stdio|add-http|enable|disable|remove]`
+- `/cwd [path]`
+- `/focus <shell|python>`
 - `/config show [key]`
 - `/config show section:<name> [section:<name> ...]`
 - `/config get [path] [section ...]`
 - `/config save [path]`
 - `/config sections`
-- `/config edit [all|models|ui|sessions|governance|skills|hooks|mcp]`
+- `/config edit [all|models|ui|sessions|governance|skills|hooks|mcp|interaction]`
 
 Tools and memory:
 
@@ -339,14 +394,18 @@ Everything above can also be triggered by the model through internal tools when 
 
 ## Config Layout
 
-Built-in defaults are split into four fragments:
+Built-in defaults are split into named fragments:
 
 ```text
 src/k_ai/defaults/defaults.d/
 ├── 00-models.yaml
 ├── 10-ui-prompts.yaml
 ├── 20-sessions-memory.yaml
-└── 30-runtime-governance.yaml
+├── 30-runtime-governance.yaml
+├── 40-skills.yaml
+├── 50-hooks.yaml
+├── 60-mcp.yaml
+└── 70-interaction.yaml
 ```
 
 Section names exposed in CLI:
@@ -355,6 +414,10 @@ Section names exposed in CLI:
 - `ui`
 - `sessions`
 - `governance`
+- `skills`
+- `hooks`
+- `mcp`
+- `interaction`
 
 Recommended override strategy:
 
@@ -376,6 +439,17 @@ import asyncio
 cm = ConfigManager()
 session = ChatSession(cm)
 asyncio.run(session.send("Bonjour"))
+```
+
+### Fast one-shot ask
+
+```python
+from k_ai import ConfigManager, ChatSession
+import asyncio
+
+cm = ConfigManager()
+session = ChatSession(cm, workspace_root="~/Work/AI/k_ai")
+print(asyncio.run(session.ask("Explique le rôle de session.py")))
 ```
 
 ### Custom override file

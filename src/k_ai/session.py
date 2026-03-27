@@ -28,9 +28,20 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.completion import WordCompleter, FuzzyCompleter, ConditionalCompleter
 from prompt_toolkit.filters import Condition
+from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.styles import Style as PTStyle
 
 from .config import ConfigManager
+from .interaction import (
+    DocumentBlock,
+    DocumentKind,
+    MixedInputParser,
+    MixedInputParserError,
+    PythonRunner,
+    RunnerExecutionResult,
+    ShellRunner,
+    normalize_workdir,
+)
 from .llm_core import get_provider, LLMProvider
 from .models import (
     Message, MessageRole, ToolCall, TokenUsage, SessionMetadata, ToolResult, LLMConfig,
@@ -79,9 +90,15 @@ class ChatSession:
         config_manager: ConfigManager,
         provider: Optional[str] = None,
         model: Optional[str] = None,
+        workspace_root: Optional[str] = None,
     ):
         self.cm = config_manager
         self.console = Console()
+        self.workspace_root = normalize_workdir(
+            workspace_root,
+            base=Path.cwd() if bool(self.cm.get_nested("interaction", "cwd", "inherit_process_cwd", default=True)) else Path.cwd(),
+        )
+        self._current_cwd = self.workspace_root
 
         initial_model = model if model is not None else (self.cm.get("model") or None)
         self.llm: LLMProvider = get_provider(self.cm, provider=provider, model=initial_model)
@@ -99,9 +116,9 @@ class ChatSession:
 
         ext_path = self.cm.get_nested("memory", "external_file", default="")
         self.external_memory = load_external_memory(ext_path)
-        self.hook_manager = HookManager(self.cm)
-        self.skill_manager = SkillManager(self.cm)
-        self.mcp_manager = MCPManager(self.cm)
+        self.hook_manager = HookManager(self.cm, workspace_root=self.workspace_root)
+        self.skill_manager = SkillManager(self.cm, workspace_root=self.workspace_root)
+        self.mcp_manager = MCPManager(self.cm, workspace_root=self.workspace_root)
 
         self._session_id: Optional[str] = None
         self._exit_requested: bool = False
@@ -123,6 +140,13 @@ class ChatSession:
         self._mcp_catalog_loaded: bool = False
         self._turn_skill_result = SkillActivationResult(activated=(), available=(), issues=())
         self._session_skill_names: tuple[str, ...] = ()
+        self._mixed_input_parser = MixedInputParser(
+            shell_prefix=str(self.cm.get_nested("interaction", "input", "shell_prefix", default="!") or "!"),
+            python_prefix=str(self.cm.get_nested("interaction", "input", "python_prefix", default=">") or ">"),
+            ephemeral_prefix=str(self.cm.get_nested("interaction", "input", "ephemeral_prefix", default="/?") or "/?"),
+        )
+        self._shell_runner: Optional[ShellRunner] = None
+        self._python_runner: Optional[PythonRunner] = None
         self._session_tool_policy_overrides: Dict[str, Dict[str, str]] = {
             "tools": {},
             "categories": {},
@@ -161,6 +185,8 @@ class ChatSession:
             get_mcp_catalog=lambda force_refresh=False: self.mcp_manager.catalog(force_refresh=force_refresh),
             mcp_read_resource=self.read_mcp_resource,
             mcp_get_prompt=self.get_mcp_prompt,
+            get_cwd=lambda: str(self._current_cwd),
+            set_cwd=lambda raw: str(self.set_current_cwd(raw)),
             is_interrupt_requested=lambda: self._interrupt_requested,
         )
         self.tool_registry: ToolRegistry = create_registry(self._tool_ctx)
@@ -206,6 +232,75 @@ class ChatSession:
             return None
         default_model = cfg.get("default_model")
         return str(default_model) if default_model else None
+
+    def current_cwd(self) -> Path:
+        return self._current_cwd
+
+    def set_current_cwd(self, raw_path: str | os.PathLike[str]) -> Path:
+        resolved = normalize_workdir(raw_path, base=self._current_cwd)
+        self._current_cwd = resolved
+        if self._shell_runner is not None:
+            self._shell_runner.cwd = resolved
+        if self._python_runner is not None:
+            self._python_runner.cwd = resolved
+        return resolved
+
+    def _runner_env(self) -> Dict[str, str]:
+        env = dict(os.environ)
+        env["PWD"] = str(self._current_cwd)
+        env.setdefault("PS1", "")
+        env.setdefault("PROMPT", "")
+        env.setdefault("RPROMPT", "")
+        return env
+
+    async def _get_shell_runner(self) -> ShellRunner:
+        if self._shell_runner is None:
+            command = str(
+                self.cm.get_nested(
+                    "interaction",
+                    "runners",
+                    "shell",
+                    "command",
+                    default="zsh -l -i",
+                )
+                or "zsh -l -i"
+            )
+            self._shell_runner = ShellRunner(
+                shell_command=command,
+                cwd=self._current_cwd,
+                console=self.console,
+                env=self._runner_env(),
+            )
+        return self._shell_runner
+
+    async def _get_python_runner(self) -> PythonRunner:
+        if self._python_runner is None:
+            mode = str(
+                self.cm.get_nested(
+                    "interaction",
+                    "runners",
+                    "python",
+                    "executable_mode",
+                    default="current",
+                )
+                or "current"
+            ).strip().lower()
+            executable = sys.executable if mode == "current" else str(Path(sys.executable))
+            self._python_runner = PythonRunner(
+                python_executable=executable,
+                cwd=self._current_cwd,
+                console=self.console,
+                env=self._runner_env(),
+            )
+        return self._python_runner
+
+    def _close_runners(self) -> None:
+        if self._shell_runner is not None:
+            self._shell_runner.close()
+            self._shell_runner = None
+        if self._python_runner is not None:
+            self._python_runner.close()
+            self._python_runner = None
 
     def history_has_nonportable_tool_state(self) -> bool:
         return any(
@@ -284,6 +379,7 @@ class ChatSession:
             "provider": self.llm.provider_name,
             "model": self.llm.model_name,
             "auth_mode": self.llm.auth_mode or "n/a",
+            "cwd": str(self._current_cwd),
             "temperature": self.cm.get("temperature"),
             "max_tokens": self.cm.get("max_tokens"),
             "stream": self.cm.get("stream"),
@@ -949,7 +1045,7 @@ class ChatSession:
     # System prompt builder
     # ------------------------------------------------------------------
 
-    def _build_system_prompt(self, include_sessions: bool = False) -> str:
+    def _build_system_prompt(self, include_sessions: bool = False, mode: str = "chat") -> str:
         parts: List[str] = []
 
         parts.append(
@@ -965,12 +1061,17 @@ class ChatSession:
             entries_text = "\n".join(f"- {e.text}" for e in self.memory.entries)
             parts.append(f"## Remembered Facts\n{entries_text}")
 
-        identity = self._render_prompt_template(self.cm.get_nested("prompts", "identity", default=(
+        identity_key = "identity"
+        if mode == "ask":
+            identity_key = "ask_identity"
+        elif mode == "ephemeral":
+            identity_key = "ephemeral_identity"
+        identity = self._render_prompt_template(self.cm.get_nested("prompts", identity_key, default=(
             "You are {assistant_name}, an intelligent CLI chat assistant."
         )))
         parts.append(identity)
 
-        if self._session_id:
+        if mode == "chat" and self._session_id:
             active = self.session_store.get_session(self._session_id)
             if active:
                 active_summary = active.summary or (active.title if active.title != active.id else "(untitled)")
@@ -985,7 +1086,7 @@ class ChatSession:
                     "propose switch_session instead of mixing unrelated topics into the current session."
                 )
 
-        if self._continuation_after_switch:
+        if mode == "chat" and self._continuation_after_switch:
             source_summary = self._continuation_after_switch.get("summary", "").strip() or "(unspecified)"
             source_reason = self._continuation_after_switch.get("reason", "").strip() or "(no reason provided)"
             parts.append(
@@ -1008,7 +1109,7 @@ class ChatSession:
                 )
             )
 
-        if self._init_mode:
+        if mode == "chat" and self._init_mode:
             parts.append("## Active Tools\n" + ", ".join(self._active_tool_names()))
             parts.append(
                 "## Initialization Mode\n"
@@ -1024,7 +1125,7 @@ class ChatSession:
                 )
             )
 
-        if include_sessions:
+        if mode == "chat" and include_sessions:
             max_recent = self.cm.get_nested("sessions", "max_recent", default=10)
             sessions = self.session_store.list_sessions(limit=max_recent)
             if sessions:
@@ -1053,8 +1154,13 @@ class ChatSession:
         if self.system_prompt:
             parts.append(f"## Custom Instructions\n{self.system_prompt}")
 
-        if self._turn_session_guidance:
+        if mode == "chat" and self._turn_session_guidance:
             parts.append(f"## Current Turn Guidance\n{self._turn_session_guidance}")
+
+        if mode != "chat":
+            if mode == "ask" and bool(self.cm.get_nested("interaction", "ask", "include_external_memory", default=False)) and self.external_memory:
+                parts.append(f"## User Context\n{self.external_memory}")
+            return "\n\n".join(parts)
 
         skill_hint = self._render_prompt_template(
             self.cm.get_nested(
@@ -1132,8 +1238,8 @@ class ChatSession:
 
         return "\n\n".join(parts)
 
-    def _messages_with_system(self, include_sessions: bool = False) -> List[Message]:
-        system_text = self._build_system_prompt(include_sessions=include_sessions)
+    def _messages_with_system(self, include_sessions: bool = False, mode: str = "chat") -> List[Message]:
+        system_text = self._build_system_prompt(include_sessions=include_sessions, mode=mode)
         return [Message(role=MessageRole.SYSTEM, content=system_text)] + self.history
 
     def _prompt_template_vars(self, extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
@@ -1607,7 +1713,7 @@ class ChatSession:
             # Boot greeting (ephemeral)
             await self._boot_greeting(recent)
 
-        # Build prompt session with styled prompt and slash autocompletion
+        # Build prompt session with styled prompt, slash autocompletion, and multiline support
         slash_completer = FuzzyCompleter(
             WordCompleter(SLASH_COMMANDS, sentence=True)
         )
@@ -1616,12 +1722,25 @@ class ChatSession:
             "prompt": "bold ansicyan",
         })
 
+        kb = KeyBindings()
+
+        @kb.add("enter")
+        def _submit_buffer(event):
+            event.current_buffer.validate_and_handle()
+
+        @kb.add("escape", "enter")
+        @kb.add("c-j")
+        def _insert_newline(event):
+            event.current_buffer.insert_text("\n")
+
         prompt_session: PromptSession = PromptSession(
             history=InMemoryHistory(),
             completer=slash_completer,
             complete_while_typing=True,
             reserve_space_for_menu=4,
             style=pt_style,
+            multiline=bool(self.cm.get_nested("interaction", "input", "multiline", default=True)),
+            key_bindings=kb,
         )
 
         @Condition
@@ -1683,14 +1802,26 @@ class ChatSession:
 
             try:
                 user_input = await prompt_session.prompt_async(
-                    [("class:prompt", "You: ")]
+                    [
+                        (
+                            "class:prompt",
+                            str(self.cm.get_nested("interaction", "input", "prompt_label", default="You: ") or "You: "),
+                        )
+                    ],
+                    prompt_continuation=lambda _w, _n, _r: [
+                        (
+                            "class:prompt",
+                            str(self.cm.get_nested("interaction", "input", "continuation_label", default="... ") or "... "),
+                        )
+                    ],
                 )
                 self._reset_prompt_interrupts()
-                user_input = user_input.strip()
-                if not user_input:
+                if not user_input.strip():
                     continue
 
-                if user_input.startswith("/"):
+                if user_input.strip().startswith("/") and not user_input.lstrip().startswith(
+                    str(self.cm.get_nested("interaction", "input", "ephemeral_prefix", default="/?") or "/?")
+                ):
                     result = await self.command_handler.handle(user_input)
                     if result is False:
                         break
@@ -1701,8 +1832,8 @@ class ChatSession:
                     self._do_new_session()
 
                 theme_name = self.cm.get_nested("cli", "theme", default="default")
-                self.console.print(render_user_panel(user_input, theme_name=theme_name))
-                await self._process_message(user_input)
+                self.console.print(render_user_panel(user_input.rstrip(), theme_name=theme_name))
+                await self._process_submitted_document(user_input)
 
                 if first_message and self._session_id and len(self.history) >= 2:
                     await self._auto_generate_session_summary()
@@ -1737,6 +1868,7 @@ class ChatSession:
             payload={"reason": "exit", "history_messages": len(self.history)},
         )
         self._render_hook_warnings(stop_result.warnings)
+        self._close_runners()
         self.console.print(f"\n[bold green]{self._notice_value('goodbye_message', 'Goodbye!')}[/bold green]")
 
     # ------------------------------------------------------------------
@@ -1848,6 +1980,101 @@ class ChatSession:
             )
         except Exception as e:
             self.console.print(f"[dim]Initialization intro skipped: {e}[/dim]")
+
+    # ------------------------------------------------------------------
+    # Mixed document processing
+    # ------------------------------------------------------------------
+
+    async def _process_submitted_document(self, document: str) -> None:
+        try:
+            blocks = self._mixed_input_parser.parse(document)
+        except MixedInputParserError as exc:
+            render_notice(
+                self.console,
+                str(exc),
+                level="warning",
+                title="Input Error",
+            )
+            return
+        if not blocks:
+            return
+        if len(blocks) == 1 and blocks[0].kind == DocumentKind.LLM:
+            await self._process_message(blocks[0].content)
+            return
+        if len(blocks) == 1 and blocks[0].kind == DocumentKind.EPHEMERAL:
+            await self._answer_ephemeral(blocks[0].content)
+            return
+
+        local_results: list[RunnerExecutionResult] = []
+        for block in blocks:
+            if block.kind == DocumentKind.LLM:
+                payload = self._compose_batch_user_message(block, local_results)
+                await self._process_message(payload)
+                local_results = []
+                continue
+            if block.kind == DocumentKind.EPHEMERAL:
+                payload = self._compose_batch_user_message(block, local_results)
+                await self._answer_ephemeral(payload)
+                local_results = []
+                continue
+            if block.kind == DocumentKind.SHELL:
+                local_results.append(await self._run_shell_block(block))
+                continue
+            if block.kind == DocumentKind.PYTHON:
+                local_results.append(await self._run_python_block(block))
+                continue
+
+    def _compose_batch_user_message(
+        self,
+        block: DocumentBlock,
+        local_results: Sequence[RunnerExecutionResult],
+    ) -> str:
+        if not local_results:
+            return block.content.strip()
+        rendered: list[str] = [
+            "The user executed local session-persistent blocks before this message.",
+            "Use their outputs as fresh local context for the current answer.",
+            "",
+        ]
+        for index, item in enumerate(local_results, start=1):
+            rendered.append(
+                f"[local-{index} {item.runner.value} cwd={item.cwd or self._current_cwd}]"
+            )
+            rendered.append(item.command.strip())
+            rendered.append("")
+            rendered.append(item.stdout.strip() or "(no output)")
+            rendered.append("")
+        rendered.append("[user-message]")
+        rendered.append(block.content.strip())
+        return "\n".join(rendered).strip()
+
+    async def _run_shell_block(self, block: DocumentBlock) -> RunnerExecutionResult:
+        runner = await self._get_shell_runner()
+        title = str(self.cm.get_nested("interaction", "runners", "runtime", "shell_title", default="User Shell") or "User Shell")
+        self.console.print(f"[bold cyan]{title}[/bold cyan] [dim](cwd: {self._current_cwd})[/dim]")
+        result = runner.run_block(block.content)
+        if result.cwd is not None:
+            self._current_cwd = result.cwd
+        return result
+
+    async def _run_python_block(self, block: DocumentBlock) -> RunnerExecutionResult:
+        runner = await self._get_python_runner()
+        title = str(self.cm.get_nested("interaction", "runners", "runtime", "python_title", default="User Python") or "User Python")
+        self.console.print(f"[bold cyan]{title}[/bold cyan] [dim](cwd: {self._current_cwd})[/dim]")
+        result = runner.run_block(block.content)
+        if result.cwd is not None:
+            self._current_cwd = result.cwd
+        return result
+
+    async def _answer_ephemeral(self, message: str) -> str:
+        response = await self._run_stateless_completion(
+            message=message,
+            mode="ephemeral",
+            include_history=True,
+        )
+        theme_name = self.cm.get_nested("cli", "theme", default="default")
+        self.console.print(render_assistant_panel(response, self.llm.model_name, theme_name=theme_name))
+        return response
 
     # ------------------------------------------------------------------
     # Agentic message processing loop
@@ -2664,6 +2891,31 @@ class ChatSession:
     # Programmatic API
     # ------------------------------------------------------------------
 
+    async def _run_stateless_completion(
+        self,
+        *,
+        message: str,
+        mode: str,
+        include_history: bool,
+    ) -> str:
+        messages: list[Message] = [
+            Message(role=MessageRole.SYSTEM, content=self._build_system_prompt(mode=mode)),
+        ]
+        if include_history:
+            messages.extend(self.history)
+        messages.append(Message(role=MessageRole.USER, content=message))
+        full_content = ""
+        async for chunk in self.llm.chat_stream(messages):
+            full_content += chunk.delta_content
+        return full_content
+
+    async def ask(self, message: str) -> str:
+        return await self._run_stateless_completion(
+            message=message,
+            mode="ask",
+            include_history=False,
+        )
+
     async def send(self, message: str) -> str:
         if not await self._prepare_programmatic_turn():
             return ""
@@ -2696,6 +2948,37 @@ class ChatSession:
             elif not self.skill_manager.should_keep_previous(message):
                 self._session_skill_names = ()
             self._turn_skill_result = SkillActivationResult(activated=(), available=(), issues=())
+
+    async def focus_runner(self, runner_name: str) -> None:
+        escape_label = str(
+            self.cm.get_nested("interaction", "runners", "escape_sequence_label", default="Ctrl+]") or "Ctrl+]"
+        )
+        notice_template = str(
+            self.cm.get_nested(
+                "interaction",
+                "runners",
+                "runtime",
+                "focus_notice",
+                default=(
+                    "Focus mode is active. Your keystrokes go directly to the runner and are not persisted. "
+                    "Press {escape_sequence} to return to chat."
+                ),
+            )
+            or ""
+        )
+        notice = notice_template.format(escape_sequence=escape_label)
+        target = str(runner_name or "").strip().lower()
+        if target == "shell":
+            runner = await self._get_shell_runner()
+            runner.focus(notice)
+            self._current_cwd = runner.refresh_cwd()
+            return
+        if target == "python":
+            runner = await self._get_python_runner()
+            runner.focus(notice)
+            self._current_cwd = runner.refresh_cwd()
+            return
+        raise ValueError("runner_name must be shell or python")
 
     async def send_with_tools(
         self,

@@ -23,6 +23,7 @@ lands incrementally.
 2. Hooks
 3. Filesystem editing primitives (`write`, `edit`, `diff`, preview)
 4. Full MCP client support (`tools`, `resources`, `prompts`, `roots`, transport)
+5. High-fidelity interaction runtime (`ask`, mixed input parsing, persistent local runners, focus)
 
 ## Skills Direction
 
@@ -121,3 +122,32 @@ Each layer is considered complete only when it has:
 - exhaustive unit/integration tests
 - real execution validation in a sandbox
 - updated docs/changelog/TODO where relevant
+
+## Interaction Runtime Direction
+
+The chat input surface must evolve without turning `session.py` into an
+implicit parser or a terminal spaghetti stack.
+
+Targets:
+
+- Root one-shot mode via `k-ai "..."` plus explicit `k-ai ask ...`
+- Explicit session working directory (`-C/--cwd`) shared across:
+  - chat
+  - one-shot ask
+  - local shell runner
+  - local Python runner
+  - runtime tools such as `shell_exec` / `python_exec`
+- Deterministic multiline document parsing with explicit block prefixes
+- Persistent user-side runners per session, not per block
+- PTY-backed focus mode for interactive shell/Python prompts
+- No persistence of focused keystrokes or ephemeral quick questions
+
+Implementation shape:
+
+- `k_ai.interaction.cwd`
+- `k_ai.interaction.models`
+- `k_ai.interaction.parser`
+- `k_ai.interaction.runners`
+
+The session layer should orchestrate these subsystems, not absorb their
+terminal-control, parsing, or execution details.

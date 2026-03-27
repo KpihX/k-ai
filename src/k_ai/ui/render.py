@@ -96,6 +96,12 @@ def render_runtime_panel(snapshot: dict, title: str = "Runtime Transparency", mo
         str(snapshot.get("session_type", "") or "-"),
     )
     body.add_row(
+        "CWD",
+        str(snapshot.get("cwd", "") or "-"),
+        "",
+        "",
+    )
+    body.add_row(
         "Context",
         f"{context_used:,} / {context_total:,} tok  ({context_pct:.1f}%)",
         "Auth",

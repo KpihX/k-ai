@@ -134,7 +134,11 @@ fi
 
 if [[ "${PURGE_UV_TOOL}" -eq 1 ]]; then
   DIST_NAME="$(resolve_distribution_name)"
-  if command -v uv >/dev/null 2>&1 && uv tool list 2>/dev/null | grep -q "^${DIST_NAME} "; then
+  UV_TOOL_LIST=""
+  if command -v uv >/dev/null 2>&1; then
+    UV_TOOL_LIST="$(uv tool list 2>/dev/null || true)"
+  fi
+  if [[ -n "${UV_TOOL_LIST}" ]] && [[ "${UV_TOOL_LIST}" == *"${DIST_NAME} "* ]]; then
     uv tool uninstall "${DIST_NAME}" || warn "Failed to uninstall uv tool ${DIST_NAME}"
     ok "Removed uv tool install (${DIST_NAME})"
   else

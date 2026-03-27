@@ -239,6 +239,11 @@ class TestSystemPrompt:
         assert "Preferred user name: NewInternal." in prompt
         assert prompt.index("## Remembered Facts") < prompt.index("## User Context")
 
+    def test_runtime_snapshot_includes_current_cwd(self, session, tmp_path):
+        session.set_current_cwd(tmp_path)
+        snapshot = session.get_runtime_snapshot()
+        assert snapshot["cwd"] == str(tmp_path.resolve())
+
     def test_build_system_prompt_includes_init_guidance_when_active(self, session):
         session._init_mode = True
         prompt = session._build_system_prompt()

@@ -1,0 +1,58 @@
+# ==============================================================================
+# Interactive User Runtime
+# ==============================================================================
+
+interaction:
+  ask:
+    enabled: true
+    # One-shot CLI mode: minimal system prompt, remembered facts only, no tools.
+    include_internal_memory: true
+    include_external_memory: false
+    include_runtime_sections: false
+    include_tool_catalog: false
+    stream: true
+
+  cwd:
+    # If false, ChatSession starts from the process cwd unless overridden via -C.
+    inherit_process_cwd: true
+
+  input:
+    shell_prefix: "!"
+    python_prefix: ">"
+    ephemeral_prefix: "/?"
+    multiline: true
+    prompt_label: "You: "
+    continuation_label: "... "
+    # Terminal portability is poor for Shift+Enter. Use Esc+Enter or Ctrl+J for a newline.
+    submit_bindings:
+      - "enter"
+    newline_bindings:
+      - "escape-enter"
+      - "c-j"
+    parse_blank_lines: true
+
+  runners:
+    escape_sequence_label: "Ctrl+]"
+    shell:
+      enabled: true
+      command: "zsh -l"
+    python:
+      enabled: true
+      executable_mode: "current"
+    runtime:
+      focus_notice: >-
+        Focus mode is active. Your keystrokes go directly to the runner and are
+        not persisted. Press {escape_sequence} to return to chat.
+      shell_title: "User Shell"
+      python_title: "User Python"
+
+prompts:
+  ask_identity: >-
+    You are {assistant_name}, an intelligent CLI assistant answering one direct
+    question in a one-shot mode. You do not have access to tools in this mode.
+    Answer directly, clearly, and without proposing extra runtime actions.
+  ephemeral_identity: >-
+    You are {assistant_name}. The user is asking a short contextual question
+    that should not modify or pollute the current chat history. Tools are not
+    available in this mode. Answer concisely using the current discussion
+    context only.
