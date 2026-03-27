@@ -22,6 +22,7 @@ class MCPServerSpec:
     args: tuple[str, ...]
     cwd: Path | None
     env: Mapping[str, str]
+    stderr_mode: str
     roots: tuple[MCPRootSpec, ...]
     include_tools: tuple[str, ...] = ()
     exclude_tools: tuple[str, ...] = ()

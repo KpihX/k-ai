@@ -7,6 +7,7 @@ All external tools with side effects require user approval.
 import asyncio
 import ast
 import json
+import re
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, Dict, List
@@ -224,20 +225,20 @@ class PythonExecTool(InternalTool):
                         with suppress(ProcessLookupError):
                             proc.kill()
                     task.cancel()
-                    with suppress(Exception):
+                    with suppress(asyncio.CancelledError, Exception):
                         await task
                     raise KeyboardInterrupt
                 if loop.time() >= deadline:
                     with suppress(ProcessLookupError):
                         proc.terminate()
                     task.cancel()
-                    with suppress(Exception):
+                    with suppress(asyncio.CancelledError, Exception):
                         await task
                     raise asyncio.TimeoutError
         finally:
             if not task.done():
                 task.cancel()
-                with suppress(Exception):
+                with suppress(asyncio.CancelledError, Exception):
                     await task
 
     @staticmethod
@@ -496,6 +497,46 @@ class ShellExecTool(InternalTool):
                 return None
         return None
 
+    @staticmethod
+    def _interactive_patterns(ctx: ToolContext) -> List[str]:
+        raw = ctx.config.get_nested("tools", "shell", "interactive_patterns", default=[]) or []
+        if not isinstance(raw, list):
+            return []
+        return [str(item).strip() for item in raw if str(item).strip()]
+
+    @classmethod
+    def _looks_interactive(cls, command: str, ctx: ToolContext) -> bool:
+        text = str(command or "").strip()
+        if not text:
+            return False
+        for pattern in cls._interactive_patterns(ctx):
+            try:
+                if re.search(pattern, text):
+                    return True
+            except re.error:
+                continue
+        return False
+
+    @staticmethod
+    def _interactive_command_message(command: str, ctx: ToolContext) -> str:
+        template = str(
+            ctx.config.get_nested(
+                "tools",
+                "shell",
+                "interactive_command_message",
+                default=(
+                    "This command appears interactive or TTY-bound and should not run through shell_exec. "
+                    "Use a local shell block instead, for example `!{command}`, then use `/focus shell` "
+                    "if the command prompts for a password or further input."
+                ),
+            )
+            or ""
+        )
+        try:
+            return template.format(command=command.strip())
+        except Exception:
+            return template
+
     async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
         tool_cfg = ctx.config.get_nested("tools", "shell", default={})
         if not capability_enabled(ctx.config, "shell"):
@@ -504,6 +545,12 @@ class ShellExecTool(InternalTool):
         command = arguments.get("command", "")
         if not command.strip():
             return ToolResult(success=False, message="No command provided.")
+        if self._looks_interactive(command, ctx):
+            return ToolResult(
+                success=False,
+                message=self._interactive_command_message(command, ctx),
+                data={"interactive_command": True, "command": command},
+            )
 
         timeout = int(tool_cfg.get("timeout", 30))
         try:

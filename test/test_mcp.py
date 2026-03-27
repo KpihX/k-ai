@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
 from unittest.mock import MagicMock
 from unittest.mock import patch
-import shutil
 
 import pytest
 
 from k_ai import ConfigManager
 from k_ai.commands import CommandHandler
+from k_ai.mcp.client import MCPClient
+from k_ai.mcp.models import MCPServerSpec
 from k_ai.models import ToolCall
 from k_ai.session import ChatSession
 
@@ -137,6 +139,47 @@ class TestMCPManager:
 
         assert result.success is True
         assert session.cm.get_path("mcp.servers.fake.enabled") is False
+
+
+class TestMCPClient:
+    @pytest.mark.asyncio
+    async def test_stdio_transport_quiets_server_stderr_by_default(self, tmp_path):
+        client = MCPClient(
+            protocol_version="2025-06-18",
+            client_name="k-ai",
+            client_version="0.2.0",
+        )
+        spec = MCPServerSpec(
+            name="fake",
+            enabled=True,
+            transport="stdio",
+            command="python3",
+            args=("-c", "print('ready')"),
+            cwd=Path(tmp_path),
+            env={},
+            stderr_mode="quiet",
+            roots=(),
+        )
+
+        captured = {}
+
+        class _Dummy:
+            async def __aenter__(self):
+                return ("read", "write")
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        def fake_stdio(params, errlog):
+            captured["errlog_name"] = getattr(errlog, "name", None)
+            captured["command"] = params.command
+            return _Dummy()
+
+        with patch("k_ai.mcp.client.stdio_client", fake_stdio):
+            async with client._transport_streams(spec) as streams:
+                assert streams == ("read", "write")
+
+        assert captured["command"] == "python3"
+        assert captured["errlog_name"] == "/dev/null"
 
 
 class TestMCPCommands:

@@ -38,6 +38,8 @@ mcp:
     catalog_title: "MCP Catalog"
     discovery_none: "No MCP servers discovered."
     runtime_none_message: "none"
+    runtime_missing_sdk_message: "disabled (missing Python MCP SDK)"
+    stdio_stderr_mode: "quiet"
     summary_template: "{server_count} server(s) | {tool_count} tool(s) | {resource_count} resource(s) | {prompt_count} prompt(s)"
     server_line_template: "- {server_name}: transport={transport} tools={tool_count}"
     tool_line_template: "  - {tool_name}: {tool_description}"
@@ -99,6 +101,7 @@ mcp:
       args: []
       cwd: "{workspace_root}"
       env: {}
+      stderr: "quiet"
       roots:
         enabled: true
         include_workspace_root: true

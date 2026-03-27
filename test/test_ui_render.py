@@ -75,6 +75,11 @@ class TestTerminalOutputFilter:
         )
         assert cleaned == "hello"
 
+    def test_shell_output_normalizer_strips_prompt_prefixed_command_echo(self):
+        runner = ShellRunner.__new__(ShellRunner)
+        cleaned = runner._normalize_block_output("ls", "lls\nDesktop\nDocuments\n")
+        assert cleaned == "Desktop\nDocuments"
+
 
 class TestStreamingRenderer:
     def test_prefers_paragraph_boundary_for_incremental_flush(self):

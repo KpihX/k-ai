@@ -621,6 +621,14 @@ class TestQmdTools:
         result = await tool.execute({"command": ""}, ctx)
         assert result.success is False
 
+    @pytest.mark.asyncio
+    async def test_shell_exec_rejects_interactive_sudo_command(self, ctx):
+        tool = ShellExecTool()
+        result = await tool.execute({"command": "sudo apt update"}, ctx)
+        assert result.success is False
+        assert result.data["interactive_command"] is True
+        assert "/focus shell" in result.message
+
 
 # ---------------------------------------------------------------------------
 # OpenAI tool schema generation

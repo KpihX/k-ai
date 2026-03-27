@@ -263,6 +263,13 @@ class MCPManager:
                 for key, value in ((payload.get("headers", {}) or {}) if transport in {"streamable_http", "sse"} else (payload.get("env", {}) or {})).items()
                 if str(key).strip()
             }
+            stderr_mode = str(
+                payload.get(
+                    "stderr",
+                    self._config.get_nested("mcp", "runtime", "stdio_stderr_mode", default="quiet"),
+                )
+                or "quiet"
+            ).strip().lower()
             roots = self._build_roots(payload.get("roots", {}) or {})
             tools_cfg = payload.get("tools", {}) or {}
             servers.append(
@@ -274,6 +281,7 @@ class MCPManager:
                     args=tuple(self._render_template(item) for item in args),
                     cwd=cwd,
                     env=headers,
+                    stderr_mode=stderr_mode,
                     roots=roots,
                     include_tools=tuple(str(item).strip() for item in (tools_cfg.get("include", []) or []) if str(item).strip()),
                     exclude_tools=tuple(str(item).strip() for item in (tools_cfg.get("exclude", []) or []) if str(item).strip()),

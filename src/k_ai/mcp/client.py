@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from typing import Any, AsyncIterator, Callable, Iterable, Sequence, TypeVar
@@ -254,8 +255,13 @@ class MCPClient:
                 env=dict(spec.env) if spec.env else None,
                 cwd=spec.cwd,
             )
-            async with stdio_client(params) as streams:
-                yield streams
+            if spec.stderr_mode == "inherit":
+                async with stdio_client(params) as streams:
+                    yield streams
+            else:
+                with open(os.devnull, "w", encoding="utf-8") as errlog:
+                    async with stdio_client(params, errlog=errlog) as streams:
+                        yield streams
             return
 
         if spec.transport == "streamable_http":

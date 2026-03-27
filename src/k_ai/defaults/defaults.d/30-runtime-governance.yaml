@@ -475,6 +475,15 @@ tools:
   shell:
     enabled: true
     timeout: 30
+    interactive_patterns:
+      - "(?i)\\bsudo\\b"
+      - "(?i)\\bpasswd\\b"
+      - "(?i)\\bsu\\b"
+    interactive_command_message: >-
+      This command appears interactive or TTY-bound and should not run through
+      shell_exec. Use a local shell block instead, for example `!{command}`,
+      then use `/focus shell` if the command prompts for a password or further
+      input.
 
   # High-level capability switch for all QMD-backed knowledge tools.
   # Controls qmd_query, qmd_search, qmd_vsearch, qmd_get, collections, context,

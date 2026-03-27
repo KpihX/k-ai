@@ -410,12 +410,17 @@ class ShellRunner(PersistentPTYRunner):
         return ":"
 
     def _normalize_block_output(self, block: str, output: str) -> str:
-        commands = {line.strip() for line in block.splitlines() if line.strip()}
+        commands = [line.strip() for line in block.splitlines() if line.strip()]
         cleaned_lines: list[str] = []
         previous_blank = False
         for line in output.splitlines():
             stripped = line.strip()
             if stripped in commands:
+                continue
+            if any(
+                len(stripped) <= len(command) + 2 and stripped.endswith(command)
+                for command in commands
+            ):
                 continue
             if stripped == "%":
                 continue
