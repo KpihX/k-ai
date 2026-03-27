@@ -6,11 +6,22 @@ from contextlib import asynccontextmanager
 from datetime import timedelta
 from typing import Any, AsyncIterator, Callable, Iterable, Sequence, TypeVar
 
-from mcp import ClientSession, types
-from mcp.client.sse import sse_client
-from mcp.client.stdio import StdioServerParameters, stdio_client
-from mcp.client.streamable_http import streamablehttp_client
-from mcp.shared.exceptions import McpError
+try:
+    from mcp import ClientSession, types
+    from mcp.client.sse import sse_client
+    from mcp.client.stdio import StdioServerParameters, stdio_client
+    from mcp.client.streamable_http import streamablehttp_client
+    from mcp.shared.exceptions import McpError
+    _MCP_IMPORT_ERROR: ModuleNotFoundError | None = None
+except ModuleNotFoundError as exc:  # pragma: no cover - exercised via monkeypatch in tests
+    ClientSession = Any  # type: ignore[assignment]
+    types = None  # type: ignore[assignment]
+    sse_client = None  # type: ignore[assignment]
+    StdioServerParameters = Any  # type: ignore[assignment]
+    stdio_client = None  # type: ignore[assignment]
+    streamablehttp_client = None  # type: ignore[assignment]
+    McpError = RuntimeError  # type: ignore[assignment]
+    _MCP_IMPORT_ERROR = exc
 
 from .models import (
     MCPPromptGetResult,
@@ -33,11 +44,25 @@ class MCPClientError(RuntimeError):
 T = TypeVar("T")
 
 
+def mcp_sdk_available() -> bool:
+    return _MCP_IMPORT_ERROR is None
+
+
+def require_mcp_sdk() -> None:
+    if _MCP_IMPORT_ERROR is not None:
+        raise MCPClientError(
+            "The Python MCP SDK is not installed in this environment. "
+            "Install or sync dependencies to enable MCP."
+        ) from _MCP_IMPORT_ERROR
+
+
 def _root_to_model(root: MCPRootSpec) -> types.Root:
+    require_mcp_sdk()
     return types.Root(uri=root.path.resolve().as_uri(), name=root.name)
 
 
 def _content_to_text(items: Sequence[Any]) -> str:
+    require_mcp_sdk()
     lines: list[str] = []
     for item in items:
         if isinstance(item, types.TextContent):
@@ -68,6 +93,7 @@ def _content_to_text(items: Sequence[Any]) -> str:
 
 
 def _resource_contents_to_text(items: Sequence[Any]) -> str:
+    require_mcp_sdk()
     lines: list[str] = []
     for item in items:
         if isinstance(item, types.TextResourceContents):
@@ -83,6 +109,7 @@ def _resource_contents_to_text(items: Sequence[Any]) -> str:
 
 
 def _prompt_messages_to_text(items: Sequence[Any]) -> str:
+    require_mcp_sdk()
     chunks: list[str] = []
     for item in items:
         role = getattr(item, "role", "user")
@@ -104,6 +131,7 @@ class MCPClient:
         tool_prefix_template: str = "mcp__{server_name}__",
         read_timeout_seconds: int = 30,
     ):
+        require_mcp_sdk()
         self._protocol_version = str(protocol_version).strip()
         self._client_name = str(client_name).strip() or "k-ai"
         self._client_version = str(client_version).strip() or "0.0.0"
@@ -205,6 +233,7 @@ class MCPClient:
 
     @asynccontextmanager
     async def _session(self, spec: MCPServerSpec) -> AsyncIterator[ClientSession]:
+        require_mcp_sdk()
         async with self._transport_streams(spec) as (read_stream, write_stream):
             async with ClientSession(
                 read_stream,
@@ -217,6 +246,7 @@ class MCPClient:
 
     @asynccontextmanager
     async def _transport_streams(self, spec: MCPServerSpec):
+        require_mcp_sdk()
         if spec.transport == "stdio":
             params = StdioServerParameters(
                 command=spec.command,

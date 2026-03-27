@@ -64,6 +64,12 @@ def mcp_cm(tmp_path, monkeypatch):
 
 
 class TestMCPManager:
+    def test_manager_disables_itself_cleanly_when_sdk_missing(self, mcp_cm):
+        with patch("k_ai.mcp.manager.mcp_sdk_available", return_value=False):
+            session = ChatSession(mcp_cm)
+            assert session.mcp_manager.enabled() is False
+            assert "missing Python MCP SDK" in session.mcp_manager.runtime_summary_cached()
+
     @pytest.mark.asyncio
     async def test_manager_discovers_stdio_server_tools(self, mcp_cm, tmp_path):
         session = ChatSession(mcp_cm)

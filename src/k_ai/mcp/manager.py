@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping
 
 from ..config import ConfigManager
-from .client import MCPClient, MCPClientError
+from .client import MCPClient, MCPClientError, mcp_sdk_available
 from .models import (
     MCPCatalog,
     MCPIssue,
@@ -37,7 +37,7 @@ class MCPManager:
         )
 
     def enabled(self) -> bool:
-        return bool(self._config.get_nested("mcp", "enabled", default=True))
+        return bool(self._config.get_nested("mcp", "enabled", default=True)) and mcp_sdk_available()
 
     async def refresh(self) -> MCPCatalog:
         self._catalog = await self._discover_catalog()
@@ -68,6 +68,13 @@ class MCPManager:
         return self._runtime_summary_for(self._catalog)
 
     def _runtime_summary_for(self, catalog: MCPCatalog) -> str:
+        if bool(self._config.get_nested("mcp", "enabled", default=True)) and not mcp_sdk_available():
+            return self.config_text(
+                "mcp",
+                "runtime",
+                "runtime_missing_sdk_message",
+                default="disabled (missing Python MCP SDK)",
+            )
         if not catalog.servers and not catalog.issues:
             return self.config_text("mcp", "runtime", "runtime_none_message", default="none")
         return self.config_text(
@@ -199,6 +206,20 @@ class MCPManager:
 
     async def _discover_catalog(self) -> MCPCatalog:
         if not self.enabled():
+            if bool(self._config.get_nested("mcp", "enabled", default=True)) and not mcp_sdk_available():
+                return MCPCatalog(
+                    issues=(
+                        MCPIssue(
+                            server_name="mcp",
+                            message=self.config_text(
+                                "mcp",
+                                "runtime",
+                                "runtime_missing_sdk_message",
+                                default="disabled (missing Python MCP SDK)",
+                            ),
+                        ),
+                    ),
+                )
             return MCPCatalog()
 
         servers: list[MCPServerSnapshot] = []
