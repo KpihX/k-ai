@@ -8,7 +8,7 @@ import pytest
 from textual.widgets import DataTable, TextArea
 
 from k_ai.models import CompletionChunk
-from k_ai.ui.textual_chat import TextualChatApp
+from k_ai.ui.textual_chat import TextualChatApp, sanitize_composer_text
 
 
 @dataclass
@@ -113,3 +113,8 @@ async def test_textual_chat_updates_sessions_and_stream(cm):
 
         await pilot.pause()
         assert "-active" not in app.query_one("#streaming-slot").classes
+
+
+def test_sanitize_composer_text_strips_terminal_garbage():
+    dirty = "\x1b[<35;71;27Mhello\x1b[200~"
+    assert sanitize_composer_text(dirty) == "hello"

@@ -1076,7 +1076,7 @@ class ChatSession:
 
             signal.signal(signal.SIGINT, _handler)
 
-        if allow_escape and sys.stdin.isatty():
+        if allow_escape and sys.stdin.isatty() and isinstance(self.ui, ClassicSessionUI):
             try:
                 fd = sys.stdin.fileno()
                 old_attrs = termios.tcgetattr(fd)

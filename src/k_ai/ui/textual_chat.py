@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from contextlib import AbstractContextManager
 from typing import Sequence
 
@@ -12,6 +13,7 @@ from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical
+from textual.events import Paste
 from textual.screen import ModalScreen
 from textual.widgets import Button, DataTable, Footer, Header, RichLog, Static, TabbedContent, TabPane, TextArea
 
@@ -24,7 +26,6 @@ from .render import (
     build_tool_result_renderable,
     render_assistant_panel,
     render_assistant_stream_panel,
-    render_runtime_panel,
     render_user_panel,
 )
 
@@ -110,8 +111,8 @@ Screen {
 }
 
 #inspector {
-  width: 28;
-  min-width: 22;
+  width: 32;
+  min-width: 26;
   border: round #5a6572;
   background: #141821;
   padding: 0 1;
@@ -151,6 +152,38 @@ Screen {
   align: right middle;
 }
 """
+
+_ANSI_RE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\].*?(?:\x07|\x1b\\)|P.*?\x1b\\)", re.DOTALL)
+_MOUSE_GARBAGE_RE = re.compile(r"\[<\d+(?:;\d+){2}[mM]")
+
+
+def sanitize_composer_text(text: str) -> str:
+    """Strip terminal control garbage that should never land in the composer."""
+    cleaned = _ANSI_RE.sub("", text)
+    cleaned = _MOUSE_GARBAGE_RE.sub("", cleaned)
+    return cleaned
+
+
+def build_runtime_text(snapshot: dict) -> Text:
+    """Compact one-column runtime view for the Textual sidebar."""
+    lines = [
+        f"Provider  {snapshot.get('provider', '?')} / {snapshot.get('model', '?')}",
+        f"Temp      {snapshot.get('temperature')}   Max {snapshot.get('max_tokens')}",
+        "",
+        f"Session   {str(snapshot.get('session_id') or '-')[:8]}   Type {snapshot.get('session_type') or '-'}",
+        f"CWD       {snapshot.get('cwd') or '-'}",
+        f"Context   {int(snapshot.get('estimated_context_tokens', 0) or 0):,} / {int(snapshot.get('context_window', 0) or 0):,} tok",
+        f"Remain    {int(snapshot.get('remaining_context_tokens', 0) or 0):,} tok",
+        f"History   {int(snapshot.get('history_messages', 0) or 0)} msg(s)",
+        f"Tokens    {int(snapshot.get('prompt_tokens', 0) or 0):,} in / {int(snapshot.get('completion_tokens', 0) or 0):,} out",
+        f"Skills    {snapshot.get('skills_summary') or '-'}",
+        f"Hooks     {snapshot.get('hooks_summary') or '-'}",
+        f"MCP       {snapshot.get('mcp_summary') or '-'}",
+    ]
+    summary = str(snapshot.get("session_summary") or "").strip()
+    if summary:
+        lines.extend(["", "Summary", summary])
+    return Text("\n".join(lines))
 
 
 class ToolApprovalScreen(ModalScreen[bool]):
@@ -323,7 +356,7 @@ class TextualSessionUI(SessionUI):
             self.app.append_activity(renderable)
 
     def show_runtime(self, snapshot: dict, *, title: str = "Runtime Transparency", mode: str = "compact", theme_name: str = "default") -> None:
-        self.app.update_runtime(render_runtime_panel(snapshot, title=title, mode=mode, theme_name=theme_name))
+        self.app.update_runtime(snapshot)
 
     def show_sessions(self, sessions: Sequence[SessionMetadata], *, title: str = "Recent Sessions") -> None:
         self.app.update_sessions(sessions, title=title)
@@ -438,11 +471,13 @@ class TextualChatApp(App[None]):
         self.sub_title = "Textual Chat"
         table = self.query_one("#sessions-table", DataTable)
         table.add_columns("#", "Session", "Type", "Summary", "Msgs")
+        self.query_one("#composer", TextArea).clear()
         self.call_after_refresh(self.action_focus_composer)
         self.run_worker(self._bootstrap(), exclusive=True, group="session")
 
     async def _bootstrap(self) -> None:
         await self.session.bootstrap()
+        self._sanitize_composer()
         self.action_refresh_runtime()
 
     def update_sessions(self, sessions: Sequence[SessionMetadata], *, title: str = "Recent Sessions") -> None:
@@ -460,6 +495,9 @@ class TextualChatApp(App[None]):
         self.append_activity(Text(f"{title}: {len(sessions)} session(s)"))
 
     def update_runtime(self, renderable) -> None:
+        if isinstance(renderable, dict):
+            self.query_one("#runtime-view", Static).update(build_runtime_text(renderable))
+            return
         self.query_one("#runtime-view", Static).update(renderable)
 
     def append_transcript(self, renderable) -> None:
@@ -489,10 +527,11 @@ class TextualChatApp(App[None]):
 
     async def submit_current_buffer(self) -> None:
         composer = self.query_one("#composer", TextArea)
+        self._sanitize_composer()
         text = composer.text
         if not text.strip():
             return
-        composer.text = ""
+        composer.clear()
         async with self._submit_lock:
             await self.session.submit_document(text)
             self.action_refresh_runtime()
@@ -516,7 +555,25 @@ class TextualChatApp(App[None]):
         self.query_one("#activity-log", RichLog).focus()
 
     def action_refresh_runtime(self) -> None:
-        self.presenter.show_runtime(self.session.get_runtime_snapshot(), mode=self.session.cm.get_nested("cli", "runtime_stats_mode", default="compact"), theme_name=self.session.cm.get_nested("cli", "theme", default="default"))
+        self.presenter.show_runtime(
+            self.session.get_runtime_snapshot(),
+            mode=self.session.cm.get_nested("cli", "runtime_stats_mode", default="compact"),
+            theme_name=self.session.cm.get_nested("cli", "theme", default="default"),
+        )
+
+    def _sanitize_composer(self) -> None:
+        composer = self.query_one("#composer", TextArea)
+        cleaned = sanitize_composer_text(composer.text)
+        if cleaned != composer.text:
+            composer.load_text(cleaned)
+
+    @on(TextArea.Changed, "#composer")
+    def _handle_composer_changed(self, event: TextArea.Changed) -> None:
+        self._sanitize_composer()
+
+    @on(Paste)
+    def _handle_paste(self, event: Paste) -> None:
+        self.call_after_refresh(self._sanitize_composer)
 
     @on(DataTable.RowSelected, "#sessions-table")
     async def _load_selected_session(self, event: DataTable.RowSelected) -> None:
