@@ -209,11 +209,25 @@ def render_thinking_panel(content: str, render_mode: str = "rich", active: bool 
     )
 
 
-def render_assistant_stream_header(model_name: str, theme_name: str = "default") -> Panel:
+def render_assistant_stream_panel(
+    content: str,
+    model_name: str,
+    *,
+    render_mode: str = "rich",
+    usage: Optional[TokenUsage] = None,
+    theme_name: str = "default",
+    initial: bool = False,
+) -> Panel:
     theme = resolve_ui_theme(theme_name)
-    return Panel.fit(
-        Text.from_markup(f"[bold green]Assistant[/bold green] [dim]{model_name}[/dim]"),
+    subtitle = None
+    if usage and usage.total_tokens:
+        subtitle = f"[dim]{usage.prompt_tokens} in / {usage.completion_tokens} out[/dim]"
+    return Panel(
+        render_content(content, render_mode),
+        title=f"[bold green]Assistant[/bold green] [dim]{model_name}[/dim]" if initial else None,
+        subtitle=subtitle,
         border_style=str(theme.get("assistant_border", "green")),
+        expand=True,
         padding=(0, 1),
     )
 
@@ -340,9 +354,6 @@ class StreamingRenderer:
             self.console.print(render_thinking_panel(self.full_thought, self.render_mode, theme_name=self.theme_name))
             self._thinking_committed = True
         self._content_started = True
-        if not self._stream_header_printed:
-            self.console.print(render_assistant_stream_header(self.model_name, theme_name=self.theme_name))
-            self._stream_header_printed = True
 
     def _flush_streamed_content(self, *, final: bool) -> None:
         pending = self.full_content[self._flushed_chars:]
@@ -352,7 +363,17 @@ class StreamingRenderer:
         if boundary <= 0:
             return
         chunk = pending[:boundary]
-        self.console.print(render_content(chunk, self.render_mode))
+        self.console.print(
+            render_assistant_stream_panel(
+                chunk,
+                self.model_name,
+                render_mode=self.render_mode,
+                usage=self.last_usage if final else None,
+                theme_name=self.theme_name,
+                initial=not self._stream_header_printed,
+            )
+        )
+        self._stream_header_printed = True
         self._flushed_chars += boundary
 
     def _find_flush_boundary(self, pending: str, *, final: bool) -> int:
