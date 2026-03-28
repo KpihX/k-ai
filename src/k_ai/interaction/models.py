@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 
 class DocumentKind(str, Enum):
@@ -37,5 +37,4 @@ class RunnerExecutionResult:
     returncode: Optional[int] = None
     cwd: Optional[Path] = None
     interrupted: bool = False
-    metadata: dict[str, str] = field(default_factory=dict)
-
+    metadata: dict[str, Any] = field(default_factory=dict)

@@ -4,6 +4,8 @@ Tests for ChatSession: programmatic API (send, send_with_tools), history
 management, provider reload, and system-prompt handling.
 """
 from contextlib import contextmanager
+import asyncio
+from pathlib import Path
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -11,6 +13,7 @@ from k_ai import ConfigManager
 from k_ai.session import ChatSession
 from k_ai.models import Message, MessageRole, ToolCall, ToolResult, TokenUsage, CompletionChunk
 from k_ai.exceptions import LLMError, ContextLengthExceededError
+from k_ai.tools.base import InternalTool
 
 
 # ---------------------------------------------------------------------------
@@ -50,6 +53,29 @@ def mock_llm(response_chunks: list[CompletionChunk], provider="ollama", model="p
     return llm
 
 
+class _ExplodingTool(InternalTool):
+    name = "exploding_tool"
+    description = "Explodes."
+    parameters_schema = {"type": "object", "properties": {}, "required": []}
+    requires_approval = False
+    requires_catalog_entry = False
+
+    async def execute(self, arguments, ctx):
+        raise RuntimeError("boom")
+
+
+class _HangingTool(InternalTool):
+    name = "hanging_tool"
+    description = "Hangs."
+    parameters_schema = {"type": "object", "properties": {}, "required": []}
+    requires_approval = False
+    requires_catalog_entry = False
+
+    async def execute(self, arguments, ctx):
+        await asyncio.sleep(60)
+        return ToolResult(success=True, message="done")
+
+
 @pytest.fixture
 def session(cm, tmp_path):
     """ChatSession with ollama (no key needed); uses tmp dir for isolation."""
@@ -68,14 +94,18 @@ class TestSend:
     @pytest.mark.asyncio
     async def test_send_returns_full_text(self, session):
         session.llm = mock_llm(make_text_chunks("Hello", " world"))
+        session._print_runtime_snapshot = MagicMock()
         result = await session.send("hi")
         assert result == "Hello world"
+        session._print_runtime_snapshot.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_send_single_chunk(self, session):
         session.llm = mock_llm([CompletionChunk(delta_content="42", finish_reason="stop")])
+        session._print_runtime_snapshot = MagicMock()
         result = await session.send("what is 6*7?")
         assert result == "42"
+        session._print_runtime_snapshot.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_send_empty_response(self, session):
@@ -258,7 +288,21 @@ class TestSystemPrompt:
         prompt = session._build_system_prompt()
         assert "Continuation After Session Switch" in prompt
         assert "do not propose another session-switch tool" in prompt
-        assert "Présentation de l'assistant" in prompt
+
+    @pytest.mark.asyncio
+    async def test_local_interactive_shell_sets_input_active_guard(self, session):
+        dummy = MagicMock()
+        dummy.run_block.return_value = MagicMock(cwd=None)
+        session._shell_runner = dummy
+        session._discard_next_interactive_newline = True
+
+        result = await session._run_local_interactive_shell_command("sudo apt update")
+
+        assert result is dummy.run_block.return_value
+        assert session._local_interactive_input_active is False
+        assert session._discard_next_interactive_newline is False
+        dummy.run_block.assert_called_once()
+        assert dummy.run_block.call_args.kwargs["discard_initial_newline"] is True
 
     def test_build_system_prompt_includes_skill_catalog(self, session, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -353,6 +397,43 @@ class TestRuntimeConfig:
         assert session.cm.get("model") == "phi4-mini:latest"
         assert session.llm.model_name == "phi4-mini:latest"
 
+    def test_reload_config_from_disk_refreshes_provider_default_model(self, session):
+        persist_path = Path("~/.k-ai/config.yaml").expanduser()
+        persist_path.parent.mkdir(parents=True, exist_ok=True)
+        persist_path.write_text(
+            "provider: mistral\n"
+            "model: ''\n"
+            "api_key:\n"
+            "  mistral:\n"
+            "    api_key_env_var: MISTRAL_API_KEY\n"
+            "    base_url: https://api.mistral.ai/v1\n"
+            "    default_model: magistral-medium-latest\n"
+            "    context_window: 128000\n",
+            encoding="utf-8",
+        )
+
+        session.reload_config_from_disk()
+
+        assert session.llm.provider_name == "mistral"
+        assert session.llm.model_name == "magistral-medium-latest"
+
+    def test_apply_config_change_persisted_mcp_server_survives_restart(self, session):
+        change = session.apply_config_change(
+            "mcp.servers.tick_mcp",
+            {
+                "enabled": True,
+                "transport": "stdio",
+                "command": "tick-mcp",
+                "args": ["serve"],
+            },
+            persist=True,
+        )
+
+        restarted = ConfigManager()
+
+        assert change["saved_to"] == str(Path("~/.k-ai/config.yaml").expanduser())
+        assert restarted.get_nested("mcp", "servers", "tick_mcp", "command") == "tick-mcp"
+
     def test_handle_prompt_interrupt_requires_two_ctrl_c(self, session):
         assert session._handle_prompt_interrupt() is False
         assert session._handle_prompt_interrupt() is True
@@ -389,6 +470,20 @@ class TestRuntimeConfig:
         assert snapshot["skills_summary"] == "python-review"
         assert snapshot["skills_catalog_count"] == 1
         assert snapshot["skills_visibility_mode"] == "announce"
+
+    @pytest.mark.asyncio
+    async def test_prepare_runtime_snapshot_for_startup_preloads_mcp_catalog(self, session):
+        called = {"count": 0}
+
+        async def fake_ensure(force_refresh=False):
+            called["count"] += 1
+
+        session.mcp_manager.enabled = lambda: True
+        session._ensure_mcp_catalog_loaded = fake_ensure
+
+        await session._prepare_runtime_snapshot_for_startup()
+
+        assert called["count"] == 1
 
 
 class TestSkillActivationLoop:
@@ -635,7 +730,7 @@ class TestToolPolicies:
         session.console = MagicMock()
         session._tool_ctx.console = session.console
         tc = ToolCall(id="c1", function_name="clear_screen", arguments={})
-        with patch("k_ai.session.Confirm.ask", side_effect=AssertionError("Confirm should not be called")):
+        with patch.object(session, "_prompt_tool_approval", side_effect=AssertionError("approval prompt should not be called")):
             result = await session._execute_internal_tool(tc)
         assert result.success is True
 
@@ -670,7 +765,7 @@ class TestToolPolicies:
         session.console = MagicMock()
         session._tool_ctx.console = session.console
         tc = ToolCall(id="c1", function_name="tool_policy_list", arguments={})
-        with patch("k_ai.session.Confirm.ask", return_value=False) as confirm:
+        with patch.object(session, "_prompt_tool_approval", return_value=(False, None)) as confirm:
             result = await session._execute_internal_tool(tc)
         assert confirm.called
         assert result.success is False
@@ -1112,7 +1207,7 @@ class TestTurnRollback:
         session._tool_ctx.console = session.console
         session._do_new_session()
 
-        with patch("k_ai.session.Confirm.ask", return_value=True):
+        with patch.object(session, "_prompt_tool_approval", return_value=(True, None)):
             await session._process_message("clear")
 
         assert session.history == []
@@ -1132,7 +1227,7 @@ class TestTurnRollback:
         session._tool_ctx.console = session.console
         tc = ToolCall(id="c1", function_name="delete_session", arguments={"session_id": "deadbeef"})
 
-        with patch("k_ai.session.Confirm.ask", side_effect=KeyboardInterrupt):
+        with patch.object(session, "_prompt_tool_approval", side_effect=KeyboardInterrupt):
             result = await session._execute_internal_tool(tc)
 
         assert result.data["interrupted"] is True
@@ -1152,10 +1247,42 @@ class TestTurnRollback:
                 session._interrupt_requested = True
 
         with patch.object(session, "_interrupt_scope", interrupted_scope):
-            with patch("k_ai.session.Confirm.ask", return_value=True):
+            with patch.object(session, "_prompt_tool_approval", return_value=(True, None)):
                 result = await session._execute_internal_tool(tc)
 
         assert result.data["interrupted"] is True
+
+    @pytest.mark.asyncio
+    async def test_turn_tool_approval_ya_auto_approves_following_tools(self, session):
+        session.console = MagicMock()
+        session._tool_ctx.console = session.console
+        tc1 = ToolCall(id="c1", function_name="delete_session", arguments={"session_id": "a"})
+        tc2 = ToolCall(id="c2", function_name="delete_session", arguments={"session_id": "b"})
+
+        session._turn_tool_approval_mode = None
+        with patch.object(session, "_prompt_tool_approval", return_value=(True, "approve_all")) as prompt:
+            await session._execute_internal_tool(tc1)
+            await session._execute_internal_tool(tc2)
+
+        prompt.assert_called_once()
+        assert session._turn_tool_approval_mode == "approve_all"
+
+    @pytest.mark.asyncio
+    async def test_turn_tool_approval_na_rejects_following_tools(self, session):
+        session.console = MagicMock()
+        session._tool_ctx.console = session.console
+        tc1 = ToolCall(id="c1", function_name="delete_session", arguments={"session_id": "a"})
+        tc2 = ToolCall(id="c2", function_name="delete_session", arguments={"session_id": "b"})
+
+        session._turn_tool_approval_mode = None
+        with patch.object(session, "_prompt_tool_approval", return_value=(False, "reject_all")) as prompt:
+            result1 = await session._execute_internal_tool(tc1)
+            result2 = await session._execute_internal_tool(tc2)
+
+        prompt.assert_called_once()
+        assert result1.success is False
+        assert result2.success is False
+        assert session._turn_tool_approval_mode == "reject_all"
 
     @pytest.mark.asyncio
     async def test_process_message_stops_batch_after_interrupted_tool(self, session):
@@ -1567,3 +1694,36 @@ class TestReloadProvider:
 
         reload_mock.assert_called_once()
         assert [m.role for m in session.history] == [MessageRole.USER, MessageRole.ASSISTANT]
+
+
+class TestInternalToolExecution:
+    @pytest.mark.asyncio
+    async def test_execute_internal_tool_converts_unexpected_exception_into_failure_result(self, session):
+        session.tool_registry.register(_ExplodingTool())
+
+        result = await session._execute_internal_tool(
+            ToolCall(id="boom", function_name="exploding_tool", arguments={})
+        )
+
+        assert result.success is False
+        assert result.message == "boom"
+
+    @pytest.mark.asyncio
+    async def test_execute_internal_tool_interrupt_cancels_long_running_tool(self, session):
+        session.tool_registry.register(_HangingTool())
+        session._interrupt_requested = False
+
+        async def trigger_interrupt():
+            await asyncio.sleep(0.05)
+            session._interrupt_requested = True
+
+        interrupter = asyncio.create_task(trigger_interrupt())
+        try:
+            result = await session._execute_internal_tool(
+                ToolCall(id="hang", function_name="hanging_tool", arguments={})
+            )
+        finally:
+            await interrupter
+
+        assert result.success is False
+        assert result.data["interrupted"] is True

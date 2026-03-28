@@ -85,7 +85,7 @@ def backup_runtime_state(cm: ConfigManager, memory: MemoryStore, session_store: 
     backup_dir = backup_root / f"doctor-{stamp}"
     backup_dir.mkdir(parents=True, exist_ok=True)
 
-    config_path = cm.override_path or Path(str(cm.get_nested("config", "persist_path", default="~/.k-ai/config.yaml"))).expanduser()
+    config_path = cm.persist_target_path()
     if config_path.exists():
         shutil.copy2(config_path, backup_dir / config_path.name)
 
@@ -105,7 +105,7 @@ def _apply_resets(
     session_store: SessionStore,
 ) -> None:
     if "config" in reset_targets:
-        config_path = cm.override_path or Path(str(cm.get_nested("config", "persist_path", default="~/.k-ai/config.yaml"))).expanduser()
+        config_path = cm.persist_target_path()
         config_path.parent.mkdir(parents=True, exist_ok=True)
         config_path.write_text(ConfigManager.get_default_yaml(), encoding="utf-8")
         cm._load_and_merge()
@@ -140,8 +140,7 @@ def _check_config(cm: ConfigManager, console: Console) -> None:
         exists = cm.override_path.exists()
         table.add_row(_icon(exists), f"User config: {cm.override_path}")
     else:
-        persist_path = Path(str(cm.get_nested("config", "persist_path", default="~/.k-ai/config.yaml"))).expanduser()
-        table.add_row(_icon(True), f"Persist path: {persist_path}")
+        table.add_row(_icon(True), f"Persist path: {cm.persist_target_path()}")
 
     temp = cm.get("temperature", 0.7)
     if isinstance(temp, (int, float)) and temp > 1.5:
@@ -327,7 +326,7 @@ def _print_recovery_footer(
     session_store: SessionStore,
     console: Console,
 ) -> None:
-    config_path = cm.override_path or Path(str(cm.get_nested("config", "persist_path", default="~/.k-ai/config.yaml"))).expanduser()
+    config_path = cm.persist_target_path()
     base_dir = session_store.directory.parent
     backup_root = base_dir / "doctor-backups"
 

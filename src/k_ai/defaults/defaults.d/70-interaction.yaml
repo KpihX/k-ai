@@ -32,21 +32,29 @@ interaction:
     parse_blank_lines: true
 
   runners:
-    escape_sequence_label: "Ctrl+]"
+    detach_sequence_label: "Esc Esc"
     shell:
       enabled: true
       command: "zsh -l"
       sanitize_output: true
       init_commands:
-        - "stty -echo 2>/dev/null || true"
-        - "export PS1=' ' PROMPT=' ' RPROMPT='' RPS1='' PS2=' '"
-        - "unset PROMPT_COMMAND 2>/dev/null || true"
-        - "set +o xtrace +o verbose 2>/dev/null || true"
-        - "if [ -n \"${ZSH_VERSION:-}\" ]; then unsetopt XTRACE VERBOSE 2>/dev/null || true; precmd_functions=(); preexec_functions=(); unset RPS1 RPROMPT 2>/dev/null || true; fi"
+        - " export HISTCONTROL=ignorespace 2>/dev/null || true"
+        - " export HISTIGNORE=' *' 2>/dev/null || true"
+        - " stty -echo 2>/dev/null || true"
+        - " export PS1=' ' PROMPT=' ' RPROMPT='' RPS1='' PS2=' '"
+        - " unset PROMPT_COMMAND 2>/dev/null || true"
+        - " set +o xtrace +o verbose 2>/dev/null || true"
+        - " if [ -n \"${ZSH_VERSION:-}\" ]; then unsetopt XTRACE VERBOSE HIST_VERIFY 2>/dev/null || true; setopt HIST_IGNORE_SPACE 2>/dev/null || true; precmd_functions=(); preexec_functions=(); unset RPS1 RPROMPT 2>/dev/null || true; fi"
       focus_enter_commands:
-        - "stty echo 2>/dev/null || true"
+        - " stty echo 2>/dev/null || true"
       focus_exit_commands:
-        - "stty -echo 2>/dev/null || true"
+        - " stty -echo 2>/dev/null || true"
+      interactive_output_patterns:
+        - "(?i)password\\s*[:?]?$"
+        - "(?i)passphrase\\s*[:?]?$"
+        - "(?i)\\[(?:y|n|Y|N)/(?:y|n|Y|N)\\]"
+        - "(?i)continue\\s*\\?"
+        - "(?i)press\\s+enter"
     python:
       enabled: true
       executable_mode: "current"
@@ -56,10 +64,17 @@ interaction:
       focus_enter_commands:
         - "import sys; sys.stdout.flush()"
       focus_exit_commands: []
+      interactive_patterns:
+        - "\\binput\\s*\\("
+        - "\\bgetpass\\b"
+      interactive_output_patterns:
+        - "(?i)password\\s*[:?]?$"
+        - "(?i)enter\\s+.*:$"
     runtime:
-      focus_notice: >-
-        Focus mode is active. Your keystrokes go directly to the runner and are
-        not persisted. Press {escape_sequence} to return to chat.
+      input_notice: >-
+        {runner} is waiting for local input. Type directly here; your
+        keystrokes are not persisted. Press {detach_sequence} to return to
+        chat.
       block_output_mode: "buffered"
       shell_title: "User Shell"
       python_title: "User Python"

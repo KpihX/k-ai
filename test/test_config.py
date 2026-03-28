@@ -101,6 +101,35 @@ class TestDefaultLoad:
 # ---------------------------------------------------------------------------
 
 class TestOverrideFile:
+    def test_default_manager_auto_loads_existing_persisted_user_config(self):
+        persist_path = Path("~/.k-ai/config.yaml").expanduser()
+        persist_path.parent.mkdir(parents=True, exist_ok=True)
+        persist_path.write_text(
+            yaml.dump(
+                {
+                    "cli": {"theme": "persisted"},
+                    "mcp": {
+                        "servers": {
+                            "tick_mcp": {
+                                "enabled": True,
+                                "transport": "stdio",
+                                "command": "tick-mcp",
+                                "args": ["serve"],
+                            }
+                        }
+                    },
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+
+        cm = ConfigManager()
+
+        assert cm.override_path == persist_path
+        assert cm.get_nested("cli", "theme") == "persisted"
+        assert cm.get_nested("mcp", "servers", "tick_mcp", "command") == "tick-mcp"
+
     def test_override_top_level_value(self, tmp_path):
         p = write_yaml(tmp_path, {"temperature": 0.1, "provider": "mistral"})
         cm = ConfigManager(override_path=str(p))
@@ -286,6 +315,20 @@ class TestGetAllDump:
         assert written == target
         assert target.exists()
 
+    def test_save_active_yaml_reuses_auto_loaded_persisted_user_config_path(self):
+        persist_path = Path("~/.k-ai/config.yaml").expanduser()
+        persist_path.parent.mkdir(parents=True, exist_ok=True)
+        persist_path.write_text(yaml.dump({"cli": {"theme": "persisted"}}, sort_keys=False), encoding="utf-8")
+
+        cm = ConfigManager()
+        cm.set("cli.theme", "rewritten")
+
+        written = cm.save_active_yaml()
+        saved = yaml.safe_load(persist_path.read_text(encoding="utf-8"))
+
+        assert written == persist_path
+        assert saved["cli"]["theme"] == "rewritten"
+
     def test_resolve_edit_target_all_uses_active_override(self, tmp_path):
         override_path = tmp_path / "user-config.yaml"
         cm = ConfigManager(override_path=str(override_path))
@@ -293,10 +336,32 @@ class TestGetAllDump:
         assert target == override_path
         assert target.exists()
 
+    def test_resolve_edit_target_all_uses_auto_loaded_persisted_user_config(self):
+        persist_path = Path("~/.k-ai/config.yaml").expanduser()
+        persist_path.parent.mkdir(parents=True, exist_ok=True)
+        persist_path.write_text(yaml.dump({"cli": {"theme": "persisted"}}, sort_keys=False), encoding="utf-8")
+
+        cm = ConfigManager()
+        target = cm.resolve_edit_target("all")
+
+        assert target == persist_path
+
     def test_resolve_edit_target_section_returns_fragment_path(self, cm):
         target = cm.resolve_edit_target("governance")
         assert target.name == "30-runtime-governance.yaml"
         assert target.exists()
+
+    def test_reload_reloads_modified_persisted_user_config(self):
+        persist_path = Path("~/.k-ai/config.yaml").expanduser()
+        persist_path.parent.mkdir(parents=True, exist_ok=True)
+        persist_path.write_text(yaml.dump({"cli": {"theme": "first"}}, sort_keys=False), encoding="utf-8")
+
+        cm = ConfigManager()
+        persist_path.write_text(yaml.dump({"cli": {"theme": "second"}}, sort_keys=False), encoding="utf-8")
+
+        cm.reload()
+
+        assert cm.get_nested("cli", "theme") == "second"
 
     def test_resolve_editor_command_prefers_configured_editor(self, cm, monkeypatch):
         cm.set("config.editor", "micro --config-dir /tmp/micro")

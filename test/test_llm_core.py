@@ -329,6 +329,32 @@ class TestChatStreamContent:
         assert "think" not in "".join(content)
 
     @pytest.mark.asyncio
+    async def test_structured_thinking_blocks_extracted_from_list_content(self, ollama_driver):
+        async def fake(**kwargs):
+            return stream_chunks(
+                make_chunk(
+                    [
+                        {"type": "thinking", "thinking": "analyse"},
+                        {"type": "text", "text": "Réponse"},
+                    ],
+                    finish_reason="stop",
+                )
+            )
+
+        from k_ai.models import Message, MessageRole
+        msgs = [Message(role=MessageRole.USER, content="think")]
+        thoughts = []
+        content = []
+        with patch("k_ai.llm_core.litellm.acompletion", new=fake):
+            async for chunk in ollama_driver.chat_stream(msgs):
+                if chunk.delta_thought:
+                    thoughts.append(chunk.delta_thought)
+                if chunk.delta_content:
+                    content.append(chunk.delta_content)
+        assert "".join(thoughts) == "analyse"
+        assert "".join(content) == "Réponse"
+
+    @pytest.mark.asyncio
     async def test_params_include_temperature_and_max_tokens(self, ollama_driver):
         captured = {}
 
@@ -600,6 +626,18 @@ class TestChatStreamNonStreaming:
     @pytest.mark.asyncio
     async def test_thinking_blocks_extracted(self, ollama_driver):
         resp = make_non_streaming_response(content="<think>reasoning</think>Answer")
+        chunks = await self._run(ollama_driver, self._make_cfg(), resp)
+        assert chunks[0].delta_thought == "reasoning"
+        assert chunks[0].delta_content == "Answer"
+
+    @pytest.mark.asyncio
+    async def test_structured_non_streaming_thinking_blocks_extracted(self, ollama_driver):
+        resp = make_non_streaming_response(
+            content=[
+                {"type": "thinking", "thinking": "reasoning"},
+                {"type": "text", "text": "Answer"},
+            ]
+        )
         chunks = await self._run(ollama_driver, self._make_cfg(), resp)
         assert chunks[0].delta_thought == "reasoning"
         assert chunks[0].delta_content == "Answer"

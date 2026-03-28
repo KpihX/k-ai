@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
+from rich.console import Group
 from rich.table import Table
+from rich.text import Text
 
 from ..mcp.installers import (
     build_install_plan,
@@ -53,6 +56,48 @@ def _server_cfg_from_args(arguments: Dict[str, Any]) -> dict[str, Any]:
     if name:
         cfg.setdefault("meta", {})
     return cfg
+
+
+def _runtime_target_label(ctx: ToolContext) -> str:
+    return str(ctx.config.get_nested("mcp", "runtime", "target_runtime_label", default="current k-ai runtime") or "current k-ai runtime")
+
+
+def _runtime_persist_path(ctx: ToolContext) -> str:
+    return str(ctx.config.persist_target_path())
+
+
+def _mcp_server_upsert_summary(arguments: Dict[str, Any], ctx: ToolContext) -> Group:
+    server_name = str(arguments.get("server_name", "") or "").strip() or "(missing server_name)"
+    transport = str(arguments.get("transport", "stdio") or "stdio").strip()
+    persist = bool(arguments.get("persist", True))
+    title = Text()
+    title.append(server_name, style="bold cyan")
+    title.append(f" via {transport}", style="dim")
+    lines = [
+        Text(f"Target: {_runtime_target_label(ctx)}", style="bold"),
+        Text(f"Persist: {'yes' if persist else 'no'}", style="green" if persist else "yellow"),
+        Text(
+            f"Destination: {_runtime_persist_path(ctx) if persist else 'runtime-only override'}",
+            style="dim",
+        ),
+        Text(f"Enabled: {bool(arguments.get('enabled', True))}", style="dim"),
+    ]
+    if transport == "stdio":
+        lines.extend(
+            [
+                Text(f"Command: {str(arguments.get('command', '') or '(missing command)')}", style="white"),
+                Text(f"Cwd: {str(arguments.get('cwd', '{session_cwd}') or '{session_cwd}')}", style="dim"),
+            ]
+        )
+        args = list(arguments.get("args", []) or [])
+        if args:
+            lines.append(Text(f"Args: {args}", style="dim"))
+    else:
+        lines.append(Text(f"URL: {str(arguments.get('url', '') or '(missing url)')}", style="white"))
+        headers = dict(arguments.get("headers", {}) or {})
+        if headers:
+            lines.append(Text(f"Headers: {sorted(headers.keys())}", style="dim"))
+    return Group(title, *lines)
 
 
 class MCPServerListTool(InternalTool):
@@ -135,7 +180,7 @@ class MCPServerUpsertTool(InternalTool):
     category = "mcp-admin"
     danger_level = "high"
     accent_color = "yellow"
-    description = "Create or update one MCP server definition in the runtime config."
+    description = "Create or update one MCP server definition in the current k-ai runtime config."
     parameters_schema = {
         "type": "object",
         "properties": {
@@ -158,6 +203,9 @@ class MCPServerUpsertTool(InternalTool):
         "required": ["server_name", "transport"],
     }
     requires_approval = True
+
+    def proposal_sections(self, arguments: Dict[str, Any], ctx: ToolContext) -> list[tuple[str, Any]]:
+        return [("MCP Server Config", _mcp_server_upsert_summary(arguments, ctx))]
 
     async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
         if ctx.apply_config_change is None or ctx.refresh_mcp_catalog is None:
@@ -182,7 +230,7 @@ class MCPServerRemoveTool(InternalTool):
     category = "mcp-admin"
     danger_level = "high"
     accent_color = "yellow"
-    description = "Remove one MCP server definition from the runtime config."
+    description = "Remove one MCP server definition from the current k-ai runtime config."
     parameters_schema = {
         "type": "object",
         "properties": {"server_name": {"type": "string"}, "persist": {"type": "boolean"}},
@@ -211,7 +259,7 @@ class MCPServerSetEnabledTool(InternalTool):
     category = "mcp-admin"
     danger_level = "medium"
     accent_color = "yellow"
-    description = "Enable or disable one configured MCP server."
+    description = "Enable or disable one configured MCP server in the current k-ai runtime."
     parameters_schema = {
         "type": "object",
         "properties": {
@@ -245,7 +293,7 @@ class MCPServerInstallTool(InternalTool):
     category = "mcp-admin"
     danger_level = "high"
     accent_color = "yellow"
-    description = "Install a stdio MCP server package and register it in the runtime config."
+    description = "Install a stdio MCP server package and register it in the current k-ai runtime config."
     parameters_schema = {
         "type": "object",
         "properties": {
@@ -283,12 +331,12 @@ class MCPServerInstallTool(InternalTool):
             "transport": "stdio",
             "command": resolved_command,
             "args": [],
-            "cwd": str(arguments.get("cwd", "{workspace_root}") or "{workspace_root}"),
+            "cwd": str(arguments.get("cwd", "{session_cwd}") or "{session_cwd}"),
             "env": {},
             "roots": {
                 "enabled": True,
                 "include_workspace_root": True,
-                "additional_paths": [],
+                "additional_paths": ["/tmp"],
             },
             "tools": {"include": [], "exclude": []},
         }
@@ -298,6 +346,64 @@ class MCPServerInstallTool(InternalTool):
             success=True,
             message=f"Installed MCP server '{server_name}' from {plan.package_name} using {install_result['package_manager']}.",
             data={"config_change": change, "install": install_result, "resolved_command": resolved_command},
+        )
+
+
+class MCPFilesystemAllowDirTool(InternalTool):
+    name = "mcp_filesystem_allow_dir"
+    display_name = "Allow Filesystem Directory"
+    category = "mcp-admin"
+    danger_level = "medium"
+    accent_color = "yellow"
+    description = "Allow one directory for the filesystem MCP server in the current k-ai runtime, either for this session or persistently."
+    parameters_schema = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string"},
+            "scope": {"type": "string", "enum": ["session", "persistent"]},
+        },
+        "required": ["path"],
+    }
+    requires_approval = True
+
+    async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
+        if ctx.apply_config_change is None or ctx.refresh_mcp_catalog is None:
+            return ToolResult(success=False, message="MCP filesystem admin is unavailable.")
+        raw_path = str(arguments.get("path", "") or "").strip()
+        if not raw_path:
+            return ToolResult(success=False, message="path is required.")
+        scope = str(arguments.get("scope", "session") or "session").strip().lower()
+        if scope not in {"session", "persistent"}:
+            return ToolResult(success=False, message="scope must be 'session' or 'persistent'.")
+        base = Path(ctx.get_cwd() or Path.cwd()) if ctx.get_cwd is not None else Path.cwd()
+        resolved = Path(raw_path).expanduser()
+        if not resolved.is_absolute():
+            resolved = (base / resolved).resolve()
+        else:
+            resolved = resolved.resolve()
+
+        current = ctx.config.get_path("mcp.servers.filesystem")
+        if not isinstance(current, dict):
+            return ToolResult(success=False, message="The filesystem MCP server is not configured.")
+
+        updated = dict(current)
+        roots = dict(updated.get("roots", {}) or {})
+        existing = [str(item) for item in (roots.get("additional_paths", []) or []) if str(item).strip()]
+        if str(resolved) not in existing:
+            existing.append(str(resolved))
+        roots["enabled"] = bool(roots.get("enabled", True))
+        roots["include_workspace_root"] = bool(roots.get("include_workspace_root", True))
+        roots["additional_paths"] = existing
+        updated["roots"] = roots
+
+        persist = scope == "persistent"
+        change = ctx.apply_config_change("mcp.servers.filesystem", updated, persist=persist)
+        await ctx.refresh_mcp_catalog()
+        mode_label = "persistently" if persist else "for this session"
+        return ToolResult(
+            success=True,
+            message=f"Allowed filesystem directory {resolved} {mode_label}.",
+            data={"config_change": change, "path": str(resolved), "scope": scope},
         )
 
 
@@ -465,6 +571,7 @@ def register_mcp_admin_tools(registry: ToolRegistry, ctx: ToolContext) -> None:
     registry.register(MCPServerRemoveTool())
     registry.register(MCPServerSetEnabledTool())
     registry.register(MCPServerInstallTool())
+    registry.register(MCPFilesystemAllowDirTool())
     registry.register(MCPResourceListTool())
     registry.register(MCPResourceTemplateListTool())
     registry.register(MCPResourceReadTool())

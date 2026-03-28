@@ -816,7 +816,7 @@ class SaveConfigTool(InternalTool):
         table = Table(show_header=False, box=None, padding=(0, 1))
         table.add_column("field", style="dim")
         table.add_column("value")
-        table.add_row("Destination", str(arguments.get("path") or ctx.config.override_path or ctx.config.get_nested("config", "persist_path", default="~/.k-ai/config.yaml")))
+        table.add_row("Destination", str(arguments.get("path") or ctx.config.persist_target_path()))
         return [("Config Save", table)]
 
 

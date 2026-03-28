@@ -3,7 +3,7 @@
 Pydantic models for k-ai, ensuring data consistency and validation.
 """
 import json
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from typing import List, Dict, Optional, Any
 from enum import Enum
 
@@ -28,6 +28,26 @@ class ToolCall(BaseModel):
     """Decoded JSON arguments (always a dict, never a raw string)."""
 
 
+def _coerce_message_content(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    if isinstance(value, list):
+        return "".join(_coerce_message_content(item) for item in value)
+    if isinstance(value, dict):
+        block_type = str(value.get("type", "") or "").strip().lower()
+        if block_type in {"thinking", "reasoning", "thought", "reasoning_content"}:
+            return ""
+        for key in ("text", "content", "value", "thinking", "reasoning"):
+            if key in value:
+                return _coerce_message_content(value.get(key))
+        return ""
+    return str(value)
+
+
 class Message(BaseModel):
     """A single turn in the conversation history."""
 
@@ -39,6 +59,11 @@ class Message(BaseModel):
     """When role=tool, the id of the ToolCall this result is responding to."""
     tool_calls: Optional[List[ToolCall]] = None
     """When role=assistant and the model requested tool calls, they go here."""
+
+    @field_validator("content", mode="before")
+    @classmethod
+    def _normalize_content(cls, value: Any) -> str:
+        return _coerce_message_content(value)
 
     def to_litellm(self) -> Dict[str, Any]:
         """

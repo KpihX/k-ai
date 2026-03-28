@@ -24,6 +24,68 @@ from .secrets import resolve_secret
 from .utils import ThinkingParser
 
 
+def _coerce_block_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    if isinstance(value, list):
+        return "".join(_coerce_block_text(item) for item in value)
+    if isinstance(value, dict):
+        for key in ("text", "content", "value"):
+            if key in value:
+                return _coerce_block_text(value.get(key))
+        return ""
+    return str(value)
+
+
+def _split_rich_content(raw_content: Any, parser: ThinkingParser) -> tuple[str, str]:
+    if raw_content is None:
+        return "", ""
+    if isinstance(raw_content, str):
+        return parser.parse(raw_content)
+
+    thought_parts: list[str] = []
+    content_parts: list[str] = []
+    blocks = raw_content if isinstance(raw_content, list) else [raw_content]
+
+    for block in blocks:
+        if isinstance(block, str):
+            thought, content = parser.parse(block)
+            if thought:
+                thought_parts.append(thought)
+            if content:
+                content_parts.append(content)
+            continue
+        if not isinstance(block, dict):
+            text = _coerce_block_text(block)
+            if text:
+                content_parts.append(text)
+            continue
+
+        block_type = str(block.get("type", "") or "").strip().lower()
+        text = ""
+        if block_type in {"thinking", "reasoning", "thought", "reasoning_content"}:
+            for key in ("thinking", "reasoning", "text", "content", "value"):
+                text = _coerce_block_text(block.get(key))
+                if text:
+                    break
+            if text:
+                thought_parts.append(text)
+            continue
+
+        for key in ("text", "content", "value"):
+            text = _coerce_block_text(block.get(key))
+            if text:
+                break
+        if text:
+            content_parts.append(text)
+
+    return "".join(thought_parts), "".join(content_parts)
+
+
 class LLMProvider(ABC):
     """
     Abstract Base Class for all LLM providers.
@@ -255,8 +317,7 @@ class LiteLLMDriver(LLMProvider):
                     finish_reason = chunk.choices[0].finish_reason
 
                     # --- Text / thinking content ---
-                    raw_content = delta.content or ""
-                    thought, content = parser.parse(raw_content)
+                    thought, content = _split_rich_content(delta.content, parser)
 
                     # --- Tool call accumulation ---
                     completed_tool_calls: List[ToolCall] = []
@@ -313,8 +374,7 @@ class LiteLLMDriver(LLMProvider):
                         total_tokens=response.usage.total_tokens or 0,
                     )
 
-                raw_content = message.content or ""
-                thought, content = parser.parse(raw_content)
+                thought, content = _split_rich_content(message.content, parser)
 
                 tool_calls: List[ToolCall] = []
                 if message.tool_calls:

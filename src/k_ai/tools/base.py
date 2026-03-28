@@ -76,6 +76,7 @@ class ToolContext:
     mcp_get_prompt: Optional[Callable[..., Awaitable[Any]]] = None
     get_cwd: Optional[Callable[[], str]] = None
     set_cwd: Optional[Callable[[str], str]] = None
+    run_local_interactive_shell: Optional[Callable[[str], Awaitable[Any]]] = None
     is_interrupt_requested: Optional[Callable[[], bool]] = None
 
 

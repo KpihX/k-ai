@@ -5,6 +5,7 @@ Main CLI entry point for k-ai.
 import asyncio
 import os
 import subprocess
+from contextlib import suppress
 from typing import List, Optional
 
 import click
@@ -83,7 +84,11 @@ def _run_chat(
     session = ChatSession(cm, provider=provider, model=model, workspace_root=_resolve_cwd_option(cwd))
     if system:
         session.system_prompt = system
-    asyncio.run(session.start())
+    try:
+        asyncio.run(session.start())
+    finally:
+        with suppress(Exception):
+            session.close()
 
 
 def _run_ask(
@@ -101,8 +106,11 @@ def _run_ask(
     session = ChatSession(cm, provider=provider, model=model, workspace_root=_resolve_cwd_option(cwd))
     if system:
         session.system_prompt = system
-    answer = asyncio.run(session.ask(prompt))
-    console.print(answer)
+    try:
+        asyncio.run(session.ask_and_render(prompt))
+    finally:
+        with suppress(Exception):
+            session.close()
 
 
 @app.callback(invoke_without_command=True)
@@ -137,7 +145,7 @@ def root(
         "shows recent sessions, and lets you control everything from chat or slash commands.\n\n"
         "Typical workflow:\n"
         "  1. Start with defaults: [cyan]k-ai chat[/cyan]\n"
-        "  2. Override provider/model for one run: [cyan]k-ai chat -p mistral -m mistral-medium-latest[/cyan]\n"
+        "  2. Override provider/model for one run: [cyan]k-ai chat -p mistral -m magistral-medium-latest[/cyan]\n"
         "  3. Test a custom config file: [cyan]k-ai chat -c ./config.yaml[/cyan]\n"
         "  4. Force session generation settings: [cyan]k-ai chat -t 0.2 -n 4096[/cyan]\n\n"
         "Inside chat, use [cyan]/help[/cyan] to see all slash commands."
@@ -159,7 +167,7 @@ def chat(
         "--model",
         "-m",
         help=(
-            "Model override for this run only. Example: mistral-medium-latest, "
+            "Model override for this run only. Example: magistral-medium-latest, "
             "mistral-large-latest, claude-3-7-sonnet-latest."
         ),
     ),

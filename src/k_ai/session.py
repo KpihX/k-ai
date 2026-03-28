@@ -8,6 +8,7 @@ Manages an interactive chat session with consciousness:
   - Memory integration (external read-only + internal read-write)
 """
 from pathlib import Path
+import asyncio
 from contextlib import contextmanager
 import json
 import os
@@ -22,7 +23,6 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence
 
 from rich.console import Console
 from rich.panel import Panel as RichPanel
-from rich.prompt import Confirm
 from rich.text import Text
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import InMemoryHistory
@@ -58,6 +58,9 @@ from .tools.base import ToolContext
 from .tools.mcp import build_mcp_tools
 from .ui import (
     StreamingRenderer,
+    ephemeral_input,
+    erase_terminal_lines,
+    estimate_document_prompt_lines,
     render_assistant_panel,
     render_local_runner_output,
     render_notice,
@@ -139,8 +142,11 @@ class ChatSession:
         self._turn_hook_context: tuple[str, ...] = ()
         self._session_start_hooks_ran: bool = False
         self._mcp_catalog_loaded: bool = False
+        self._local_interactive_input_active: bool = False
+        self._discard_next_interactive_newline: bool = False
         self._turn_skill_result = SkillActivationResult(activated=(), available=(), issues=())
         self._session_skill_names: tuple[str, ...] = ()
+        self._turn_tool_approval_mode: Optional[str] = None
         self._mixed_input_parser = MixedInputParser(
             shell_prefix=str(self.cm.get_nested("interaction", "input", "shell_prefix", default="!") or "!"),
             python_prefix=str(self.cm.get_nested("interaction", "input", "python_prefix", default=">") or ">"),
@@ -188,6 +194,7 @@ class ChatSession:
             mcp_get_prompt=self.get_mcp_prompt,
             get_cwd=lambda: str(self._current_cwd),
             set_cwd=lambda raw: str(self.set_current_cwd(raw)),
+            run_local_interactive_shell=self._run_local_interactive_shell_command,
             is_interrupt_requested=lambda: self._interrupt_requested,
         )
         self.tool_registry: ToolRegistry = create_registry(self._tool_ctx)
@@ -226,6 +233,21 @@ class ChatSession:
         effective_model = model if model is not None else (self.cm.get("model") or None)
         self.llm = get_provider(self.cm, provider=effective_provider, model=effective_model)
 
+    def reload_config_from_disk(self) -> None:
+        """Reload active config from disk and resync provider/runtime managers."""
+        self.cm.reload()
+        self.reload_provider(
+            provider=self.cm.get("provider"),
+            model=self.cm.get("model") or None,
+        )
+        self.hook_manager = HookManager(self.cm, workspace_root=self.workspace_root)
+        self.skill_manager = SkillManager(self.cm, workspace_root=self.workspace_root)
+        self.mcp_manager = MCPManager(self.cm, workspace_root=self.workspace_root)
+        self.mcp_manager.set_session_cwd(self._current_cwd)
+        self._mcp_catalog_loaded = False
+        self.tool_registry = create_registry(self._tool_ctx)
+        self._apply_tool_catalog()
+
     def provider_default_model(self, provider: Optional[str] = None) -> Optional[str]:
         effective_provider = provider or self.cm.get("provider") or self.llm.provider_name
         cfg, _auth_mode = self.cm.get_provider_config_with_auth_mode(str(effective_provider))
@@ -240,6 +262,7 @@ class ChatSession:
     def set_current_cwd(self, raw_path: str | os.PathLike[str]) -> Path:
         resolved = normalize_workdir(raw_path, base=self._current_cwd)
         self._current_cwd = resolved
+        self.mcp_manager.set_session_cwd(resolved)
         if self._shell_runner is not None:
             self._shell_runner.cwd = resolved
         if self._python_runner is not None:
@@ -248,10 +271,15 @@ class ChatSession:
 
     def _runner_env(self) -> Dict[str, str]:
         env = dict(os.environ)
+        runtime_dir = Path(self.cm.get_nested("sessions", "directory", default="~/.k-ai/sessions")).expanduser().resolve().parent / "runtime"
+        runtime_dir.mkdir(parents=True, exist_ok=True)
         env["PWD"] = str(self._current_cwd)
         env.setdefault("PS1", "")
         env.setdefault("PROMPT", "")
         env.setdefault("RPROMPT", "")
+        env["HISTFILE"] = str(runtime_dir / "shell_history")
+        env.setdefault("HISTSIZE", "10000")
+        env.setdefault("SAVEHIST", "10000")
         return env
 
     async def _get_shell_runner(self) -> ShellRunner:
@@ -335,6 +363,9 @@ class ChatSession:
             self._python_runner.close()
             self._python_runner = None
 
+    def close(self) -> None:
+        self._close_runners()
+
     def history_has_nonportable_tool_state(self) -> bool:
         return any(
             message.role == MessageRole.TOOL or bool(message.tool_calls)
@@ -403,11 +434,7 @@ class ChatSession:
         session_meta = self.session_store.get_session(self._session_id) if self._session_id else None
         token_snapshot = self.get_token_snapshot()
         tool_policy = self.get_tool_policy_overview()
-        persist_path = (
-            str(self.cm.override_path.expanduser())
-            if self.cm.override_path
-            else str(Path(self.cm.get_nested("config", "persist_path", default="~/.k-ai/config.yaml")).expanduser())
-        )
+        persist_path = str(self.cm.persist_target_path())
         return {
             "provider": self.llm.provider_name,
             "model": self.llm.model_name,
@@ -1001,7 +1028,7 @@ class ChatSession:
         self.console.print(render_runtime_panel(self.get_runtime_snapshot(), title=title, mode=mode, theme_name=theme_name))
 
     @contextmanager
-    def _interrupt_scope(self, allow_escape: bool = True):
+    def _interrupt_scope(self, allow_escape: bool = True, capture_sigint: bool = True):
         self._interrupt_requested = False
         stop_event = threading.Event()
         watcher: Optional[threading.Thread] = None
@@ -1012,7 +1039,7 @@ class ChatSession:
         def _trigger_interrupt() -> None:
             self._interrupt_requested = True
 
-        if threading.current_thread() is threading.main_thread():
+        if capture_sigint and threading.current_thread() is threading.main_thread():
             old_handler = signal.getsignal(signal.SIGINT)
 
             def _handler(signum, frame):
@@ -1028,6 +1055,9 @@ class ChatSession:
 
                 def _watch_input() -> None:
                     while not stop_event.is_set():
+                        if self._local_interactive_input_active:
+                            stop_event.wait(0.05)
+                            continue
                         ready, _, _ = select.select([fd], [], [], 0.1)
                         if not ready:
                             continue
@@ -1719,6 +1749,15 @@ class ChatSession:
             unique.append(tc)
         return unique
 
+    async def _prepare_runtime_snapshot_for_startup(self) -> None:
+        """Warm up runtime-backed status so the first transparency panel is current."""
+        if self.mcp_manager.enabled():
+            try:
+                await self._ensure_mcp_catalog_loaded()
+            except Exception:
+                # Startup transparency should stay available even if MCP discovery fails.
+                pass
+
     # ------------------------------------------------------------------
     # Interactive loop
     # ------------------------------------------------------------------
@@ -1728,6 +1767,7 @@ class ChatSession:
         if not await self._ensure_session_start_hooks(source="startup"):
             self.console.print(f"\n[bold green]{self._notice_value('goodbye_message', 'Goodbye!')}[/bold green]")
             return
+        await self._prepare_runtime_snapshot_for_startup()
         if self.cm.get_nested("cli", "show_welcome_panel", default=True):
             self._print_welcome_panel()
 
@@ -1848,6 +1888,15 @@ class ChatSession:
                         )
                     ],
                 )
+                erase_terminal_lines(
+                    self.console,
+                    estimate_document_prompt_lines(
+                        user_input,
+                        prompt_label=str(self.cm.get_nested("interaction", "input", "prompt_label", default="You: ") or "You: "),
+                        continuation_label=str(self.cm.get_nested("interaction", "input", "continuation_label", default="... ") or "... "),
+                        console=self.console,
+                    ),
+                )
                 self._reset_prompt_interrupts()
                 if not user_input.strip():
                     continue
@@ -1932,6 +1981,7 @@ class ChatSession:
             render_mode = self.cm.get_nested("cli", "render_mode", default="rich")
             spinner_name = self.cm.get_nested("cli", "thinking_indicator", default="dots")
             theme_name = self.cm.get_nested("cli", "theme", default="default")
+            show_thinking = bool(self.cm.get_nested("cli", "show_thinking", default=False))
             flush_min_chars = int(self.cm.get_nested("cli", "streaming", "flush_min_chars", default=600) or 600)
             tail_chars = int(self.cm.get_nested("cli", "streaming", "tail_chars", default=120) or 120)
             interrupt_hint = str(self.cm.get_nested("cli", "streaming", "interrupt_hint", default="Ctrl+C to interrupt") or "")
@@ -1942,6 +1992,7 @@ class ChatSession:
                     render_mode=render_mode,
                     spinner_name=spinner_name,
                     theme_name=theme_name,
+                    show_thinking=show_thinking,
                     flush_min_chars=flush_min_chars,
                     tail_chars=tail_chars,
                     interrupt_hint=interrupt_hint,
@@ -1995,6 +2046,7 @@ class ChatSession:
             render_mode = self.cm.get_nested("cli", "render_mode", default="rich")
             spinner_name = self.cm.get_nested("cli", "thinking_indicator", default="dots")
             theme_name = self.cm.get_nested("cli", "theme", default="default")
+            show_thinking = bool(self.cm.get_nested("cli", "show_thinking", default=False))
             flush_min_chars = int(self.cm.get_nested("cli", "streaming", "flush_min_chars", default=600) or 600)
             tail_chars = int(self.cm.get_nested("cli", "streaming", "tail_chars", default=120) or 120)
             interrupt_hint = str(self.cm.get_nested("cli", "streaming", "interrupt_hint", default="Ctrl+C to interrupt") or "")
@@ -2005,6 +2057,7 @@ class ChatSession:
                     render_mode=render_mode,
                     spinner_name=spinner_name,
                     theme_name=theme_name,
+                    show_thinking=show_thinking,
                     flush_min_chars=flush_min_chars,
                     tail_chars=tail_chars,
                     interrupt_hint=interrupt_hint,
@@ -2068,6 +2121,25 @@ class ChatSession:
             if block.kind == DocumentKind.PYTHON:
                 local_results.append(await self._run_python_block(block))
                 continue
+        if local_results:
+            self._persist_local_activity(local_results)
+
+    def _persist_local_activity(self, local_results: Sequence[RunnerExecutionResult]) -> None:
+        if not local_results:
+            return
+        lines: list[str] = [
+            "The user executed local session-persistent blocks.",
+            "",
+        ]
+        for index, item in enumerate(local_results, start=1):
+            lines.append(f"[local-{index} {item.runner.value} cwd={item.cwd or self._current_cwd}]")
+            lines.append(item.command.strip())
+            lines.append("")
+            lines.append(item.stdout.strip() or "(no output)")
+            lines.append("")
+        message = Message(role=MessageRole.USER, content="\n".join(lines).strip())
+        self.history.append(message)
+        self._persist_message(message)
 
     def _compose_batch_user_message(
         self,
@@ -2093,6 +2165,65 @@ class ChatSession:
         rendered.append(block.content.strip())
         return "\n".join(rendered).strip()
 
+    def _runner_detach_sequences(self) -> tuple[bytes, ...]:
+        return (b"\x1b\x1b", b"\x1d")
+
+    def _runner_detach_label(self) -> str:
+        return str(
+            self.cm.get_nested("interaction", "runners", "detach_sequence_label", default="Esc Esc")
+            or "Esc Esc"
+        )
+
+    def _runner_input_notice(self, runner_name: str) -> str:
+        template = str(
+            self.cm.get_nested(
+                "interaction",
+                "runners",
+                "runtime",
+                "input_notice",
+                default=(
+                    "{runner} is waiting for local input. Type directly here; your keystrokes are not persisted. "
+                    "Press {detach_sequence} to return to chat."
+                ),
+            )
+            or ""
+        )
+        return template.format(runner=runner_name, detach_sequence=self._runner_detach_label())
+
+    @staticmethod
+    def _matches_any_pattern(text: str, patterns: Sequence[str]) -> bool:
+        for pattern in patterns:
+            try:
+                if re.search(pattern, text, re.IGNORECASE):
+                    return True
+            except re.error:
+                continue
+        return False
+
+    def _shell_interactive_patterns(self) -> list[str]:
+        raw = self.cm.get_nested("tools", "shell", "interactive_patterns", default=[]) or []
+        if not isinstance(raw, list):
+            return []
+        return [str(item).strip() for item in raw if str(item).strip()]
+
+    def _shell_interactive_output_patterns(self) -> list[str]:
+        raw = self.cm.get_nested("interaction", "runners", "shell", "interactive_output_patterns", default=[]) or []
+        if not isinstance(raw, list):
+            return []
+        return [str(item).strip() for item in raw if str(item).strip()]
+
+    def _python_interactive_patterns(self) -> list[str]:
+        raw = self.cm.get_nested("interaction", "runners", "python", "interactive_patterns", default=[]) or []
+        if not isinstance(raw, list):
+            return []
+        return [str(item).strip() for item in raw if str(item).strip()]
+
+    def _python_interactive_output_patterns(self) -> list[str]:
+        raw = self.cm.get_nested("interaction", "runners", "python", "interactive_output_patterns", default=[]) or []
+        if not isinstance(raw, list):
+            return []
+        return [str(item).strip() for item in raw if str(item).strip()]
+
     async def _run_shell_block(self, block: DocumentBlock) -> RunnerExecutionResult:
         runner = await self._get_shell_runner()
         title = str(self.cm.get_nested("interaction", "runners", "runtime", "shell_title", default="User Shell") or "User Shell")
@@ -2100,18 +2231,50 @@ class ChatSession:
             self.cm.get_nested("interaction", "runners", "runtime", "block_output_mode", default="buffered") or "buffered"
         ).strip().lower()
         display_output = block_output_mode == "streamed"
+        interactive_patterns = self._shell_interactive_patterns()
+        interactive_output_patterns = self._shell_interactive_output_patterns()
+        route_stdin = self._matches_any_pattern(block.content, interactive_patterns)
+        input_notice = self._runner_input_notice(title) if route_stdin else None
         if display_output:
             self.console.print(f"[bold cyan]{title}[/bold cyan] [dim](cwd: {self._current_cwd})[/dim]")
-        result = runner.run_block(block.content, display_output=display_output)
+        result = runner.run_block(
+            block.content,
+            display_output=display_output,
+            route_stdin=route_stdin,
+            input_notice=input_notice,
+            input_prompt_patterns=interactive_output_patterns,
+            detach_sequences=self._runner_detach_sequences(),
+        )
         if result.cwd is not None:
             self._current_cwd = result.cwd
-        if not display_output:
+        if bool(result.metadata.get("interactive_handoff")) or not display_output:
             render_local_runner_output(
                 self.console,
                 title=title,
                 content=result.stdout,
                 cwd=str(result.cwd or self._current_cwd),
             )
+        return result
+
+    async def _run_local_interactive_shell_command(self, command: str) -> RunnerExecutionResult:
+        runner = await self._get_shell_runner()
+        title = str(self.cm.get_nested("interaction", "runners", "runtime", "shell_title", default="User Shell") or "User Shell")
+        self._local_interactive_input_active = True
+        try:
+            result = runner.run_block(
+                command,
+                display_output=False,
+                route_stdin=True,
+                input_notice=self._runner_input_notice(title),
+                input_prompt_patterns=self._shell_interactive_output_patterns(),
+                detach_sequences=self._runner_detach_sequences(),
+                discard_initial_newline=self._discard_next_interactive_newline,
+            )
+        finally:
+            self._local_interactive_input_active = False
+            self._discard_next_interactive_newline = False
+        if result.cwd is not None:
+            self._current_cwd = result.cwd
         return result
 
     async def _run_python_block(self, block: DocumentBlock) -> RunnerExecutionResult:
@@ -2121,12 +2284,23 @@ class ChatSession:
             self.cm.get_nested("interaction", "runners", "runtime", "block_output_mode", default="buffered") or "buffered"
         ).strip().lower()
         display_output = block_output_mode == "streamed"
+        interactive_patterns = self._python_interactive_patterns()
+        interactive_output_patterns = self._python_interactive_output_patterns()
+        route_stdin = self._matches_any_pattern(block.content, interactive_patterns)
+        input_notice = self._runner_input_notice(title) if route_stdin else None
         if display_output:
             self.console.print(f"[bold cyan]{title}[/bold cyan] [dim](cwd: {self._current_cwd})[/dim]")
-        result = runner.run_block(block.content, display_output=display_output)
+        result = runner.run_block(
+            block.content,
+            display_output=display_output,
+            route_stdin=route_stdin,
+            input_notice=input_notice,
+            input_prompt_patterns=interactive_output_patterns,
+            detach_sequences=self._runner_detach_sequences(),
+        )
         if result.cwd is not None:
             self._current_cwd = result.cwd
-        if not display_output:
+        if bool(result.metadata.get("interactive_handoff")) or not display_output:
             render_local_runner_output(
                 self.console,
                 title=title,
@@ -2172,6 +2346,7 @@ class ChatSession:
         render_mode = self.cm.get_nested("cli", "render_mode", default="rich")
         spinner_name = self.cm.get_nested("cli", "thinking_indicator", default="dots")
         theme_name = self.cm.get_nested("cli", "theme", default="default")
+        show_thinking = bool(self.cm.get_nested("cli", "show_thinking", default=False))
         blocked_tools = {"switch_session", "new_session"} if suppress_switch else set()
         tools = self._get_active_tools(excluded_tools=blocked_tools)
         empty_rounds = 0
@@ -2179,6 +2354,7 @@ class ChatSession:
         pending_tool_calls: List[ToolCall] = []
         full_content = ""
         self._turn_session_guidance = ""
+        self._turn_tool_approval_mode = None
         await self._prepare_turn_skills(user_input)
         self._announce_turn_skill_activation()
         if not suppress_switch:
@@ -2208,6 +2384,7 @@ class ChatSession:
                         render_mode=render_mode,
                         spinner_name=spinner_name,
                         theme_name=theme_name,
+                        show_thinking=show_thinking,
                         flush_min_chars=flush_min_chars,
                         tail_chars=tail_chars,
                         interrupt_hint=interrupt_hint,
@@ -2405,6 +2582,7 @@ class ChatSession:
             self.console.print(f"[bold red]Unexpected error:[/bold red] {e}")
         finally:
             self._turn_session_guidance = None
+            self._turn_tool_approval_mode = None
             self._turn_hook_context = ()
             if self._turn_skill_result.activated:
                 self._session_skill_names = tuple(self._active_skill_names())
@@ -2469,6 +2647,12 @@ class ChatSession:
         )
 
         if needs_confirmation:
+            if self._turn_tool_approval_mode == "approve_all":
+                approved = True
+            elif self._turn_tool_approval_mode == "reject_all":
+                approved = False
+            else:
+                approved = None
             permission_request = await self._dispatch_hook_event(
                 event="PermissionRequest",
                 payload={
@@ -2482,24 +2666,31 @@ class ChatSession:
             self._render_hook_warnings(permission_request.warnings)
             if permission_request.blocked:
                 return ToolResult(success=False, message=permission_request.message or f"{tc.function_name} blocked by PermissionRequest hook.")
-            try:
-                with self._interrupt_scope(allow_escape=False):
-                    approved = Confirm.ask("Approve tool execution?", console=self.console, default=True)
-            except (KeyboardInterrupt, EOFError):
-                return ToolResult(success=False, message="Interrupted by user.", data={"interrupted": True})
-            if self._interrupt_requested:
-                return ToolResult(success=False, message="Interrupted by user.", data={"interrupted": True})
+            if approved is None:
+                try:
+                    with self._interrupt_scope(allow_escape=False, capture_sigint=False):
+                        approved, mode = self._prompt_tool_approval()
+                except (KeyboardInterrupt, EOFError):
+                    return ToolResult(success=False, message="Interrupted by user.", data={"interrupted": True})
+                if self._interrupt_requested:
+                    return ToolResult(success=False, message="Interrupted by user.", data={"interrupted": True})
+                if approved:
+                    self._discard_next_interactive_newline = True
+                if mode:
+                    self._turn_tool_approval_mode = mode
             if not approved:
                 self.console.print("  [dim]Skipped.[/dim]")
                 return ToolResult(success=False, message="User rejected.")
 
         try:
             with self._interrupt_scope(allow_escape=True):
-                result = await tool.execute(tc.arguments, self._tool_ctx)
+                result = await self._await_tool_interruptibly(tool.execute(tc.arguments, self._tool_ctx))
                 if self._interrupt_requested:
                     raise KeyboardInterrupt
         except KeyboardInterrupt:
             return ToolResult(success=False, message="Interrupted by user.", data={"interrupted": True})
+        except Exception as exc:
+            result = ToolResult(success=False, message=str(exc) or exc.__class__.__name__, data={"error": str(exc or "")})
         post_event = "PostToolUse" if result.success else "PostToolUseFailure"
         post_dispatch = await self._dispatch_hook_event(
             event=post_event,
@@ -2532,6 +2723,42 @@ class ChatSession:
         if result.success and tool.category == "config":
             self._print_runtime_snapshot(title="Runtime Updated")
         return result
+
+    async def _await_tool_interruptibly(self, awaitable: Awaitable[ToolResult]) -> ToolResult:
+        task = asyncio.create_task(awaitable)
+        try:
+            while True:
+                done, _pending = await asyncio.wait({task}, timeout=0.1)
+                if task in done:
+                    return task.result()
+                if self._interrupt_requested:
+                    task.cancel()
+                    try:
+                        await task
+                    except BaseException:
+                        pass
+                    raise KeyboardInterrupt
+        finally:
+            if not task.done():
+                task.cancel()
+
+    def _prompt_tool_approval(self) -> tuple[bool, Optional[str]]:
+        prompt = "Approve tool execution? [Y/n/ya/na] (y): "
+        while True:
+            raw = ephemeral_input(self.console, prompt).strip().lower()
+            if raw in {"", "y", "yes"}:
+                return True, None
+            if raw in {"n", "no"}:
+                return False, None
+            if raw in {"ya", "yesall"}:
+                return True, "approve_all"
+            if raw in {"na", "noall"}:
+                return False, "reject_all"
+            self._show_notice(
+                "Approval input must be one of: y, n, ya, na.",
+                level="warning",
+                title="Invalid Approval Input",
+            )
 
     def _normalize_tool_result_for_history(self, content: str) -> str:
         max_len = int(self.cm.get_nested("cli", "tool_result_max_history", default=4000))
@@ -2991,6 +3218,51 @@ class ChatSession:
             include_history=False,
         )
 
+    async def ask_and_render(self, message: str) -> str:
+        messages: list[Message] = [
+            Message(role=MessageRole.SYSTEM, content=self._build_system_prompt(mode="ask")),
+            Message(role=MessageRole.USER, content=message),
+        ]
+        stream_enabled = bool(self.cm.get_nested("interaction", "ask", "stream", default=True))
+        render_mode = self.cm.get_nested("cli", "render_mode", default="rich")
+        spinner_name = self.cm.get_nested("cli", "thinking_indicator", default="dots")
+        theme_name = self.cm.get_nested("cli", "theme", default="default")
+        show_thinking = bool(self.cm.get_nested("cli", "show_thinking", default=False))
+        flush_min_chars = int(self.cm.get_nested("cli", "streaming", "flush_min_chars", default=600) or 600)
+        tail_chars = int(self.cm.get_nested("cli", "streaming", "tail_chars", default=120) or 120)
+        interrupt_hint = str(self.cm.get_nested("cli", "streaming", "interrupt_hint", default="Ctrl+C to interrupt") or "")
+
+        if stream_enabled:
+            full_content = ""
+            with self._interrupt_scope(allow_escape=True):
+                with StreamingRenderer(
+                    self.console,
+                    self.llm.model_name,
+                    render_mode=render_mode,
+                    spinner_name=spinner_name,
+                    theme_name=theme_name,
+                    show_thinking=show_thinking,
+                    flush_min_chars=flush_min_chars,
+                    tail_chars=tail_chars,
+                    interrupt_hint=interrupt_hint,
+                ) as renderer:
+                    async for chunk in self.llm.chat_stream(messages):
+                        if self._interrupt_requested:
+                            raise KeyboardInterrupt
+                        renderer.update(chunk)
+                        full_content += chunk.delta_content
+            self._print_runtime_snapshot()
+            return full_content
+
+        response = await self._run_stateless_completion(
+            message=message,
+            mode="ask",
+            include_history=False,
+        )
+        self.console.print(render_assistant_panel(response, self.llm.model_name, render_mode=render_mode, theme_name=theme_name))
+        self._print_runtime_snapshot()
+        return response
+
     async def send(self, message: str) -> str:
         if not await self._prepare_programmatic_turn():
             return ""
@@ -3012,6 +3284,7 @@ class ChatSession:
             self._persist_message(assistant_msg)
             await self._auto_generate_session_summary()
             await self._maybe_compact()
+            self._print_runtime_snapshot()
             return full_content
         except Exception:
             self._rollback_turn(turn_start)
@@ -3026,22 +3299,22 @@ class ChatSession:
 
     async def focus_runner(self, runner_name: str) -> None:
         escape_label = str(
-            self.cm.get_nested("interaction", "runners", "escape_sequence_label", default="Ctrl+]") or "Ctrl+]"
+            self.cm.get_nested("interaction", "runners", "detach_sequence_label", default="Esc Esc") or "Esc Esc"
         )
         notice_template = str(
             self.cm.get_nested(
                 "interaction",
                 "runners",
                 "runtime",
-                "focus_notice",
+                "input_notice",
                 default=(
-                    "Focus mode is active. Your keystrokes go directly to the runner and are not persisted. "
-                    "Press {escape_sequence} to return to chat."
+                    "{runner} is waiting for local input. Type directly here; your keystrokes are not persisted. "
+                    "Press {detach_sequence} to return to chat."
                 ),
             )
             or ""
         )
-        notice = notice_template.format(escape_sequence=escape_label)
+        notice = notice_template.format(runner=runner_name, detach_sequence=escape_label)
         target = str(runner_name or "").strip().lower()
         if target == "shell":
             runner = await self._get_shell_runner()
@@ -3087,6 +3360,7 @@ class ChatSession:
                     self._persist_message(assistant_msg)
                     await self._auto_generate_session_summary()
                     await self._maybe_compact()
+                    self._print_runtime_snapshot()
                     return full_content
                 assistant_msg = Message(
                     role=MessageRole.ASSISTANT, content=full_content,
@@ -3107,6 +3381,7 @@ class ChatSession:
                     self._persist_message(tool_msg)
             await self._auto_generate_session_summary()
             await self._maybe_compact()
+            self._print_runtime_snapshot()
             return full_content  # type: ignore[return-value]
         except Exception:
             self._rollback_turn(turn_start)

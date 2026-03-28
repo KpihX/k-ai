@@ -113,6 +113,17 @@ class TestCompletionChunk:
 # ---------------------------------------------------------------------------
 
 class TestMessageToLiteLLM:
+    def test_structured_content_blocks_are_coerced_to_visible_text(self):
+        msg = Message(
+            role=MessageRole.ASSISTANT,
+            content=[
+                {"type": "thinking", "thinking": "private"},
+                {"type": "text", "text": "Visible"},
+                {"content": " text"},
+            ],
+        )
+        assert msg.content == "Visible text"
+
     def test_system_message(self):
         msg = Message(role=MessageRole.SYSTEM, content="Be helpful.")
         d = msg.to_litellm()

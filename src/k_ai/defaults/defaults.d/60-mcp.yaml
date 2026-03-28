@@ -36,6 +36,7 @@ mcp:
   runtime:
     section_title: "MCP Runtime"
     catalog_title: "MCP Catalog"
+    target_runtime_label: "current k-ai runtime"
     discovery_none: "No MCP servers discovered."
     runtime_none_message: "none"
     runtime_missing_sdk_message: "disabled (missing Python MCP SDK)"
@@ -49,6 +50,15 @@ mcp:
     tools_table_title: "[bold cyan]MCP Tools[/bold cyan]"
     resources_table_title: "[bold cyan]MCP Resources[/bold cyan]"
     prompts_table_title: "[bold cyan]MCP Prompts[/bold cyan]"
+    proposals:
+      filesystem:
+        preview_max_lines: 96
+        diff_max_lines: 120
+        line_window_mode: "split"
+        create_title: "New File"
+        create_caption: "Create / overwrite preview"
+        diff_title: "Planned Diff"
+        diff_caption: "Planned diff"
     columns:
       server: "Server"
       status: "Status"
@@ -77,7 +87,10 @@ mcp:
       MCP tools are protocol-backed runtime tools. Prefer them over shell
       workarounds when they provide the needed capability directly. MCP
       resources and prompts are not injected automatically; load them through
-      the dedicated MCP runtime tools when needed.
+      the dedicated MCP runtime tools when needed. If the user asks to add or
+      modify an MCP "for you" or "for this runtime", target the current k-ai
+      runtime config, not external agent configs such as ~/.codex or ~/.claude,
+      unless the user explicitly names that other runtime or path.
 
   admin:
     install:
@@ -99,13 +112,14 @@ mcp:
       transport: "stdio"
       command: "mcp-server-filesystem"
       args: []
-      cwd: "{workspace_root}"
+      cwd: "{session_cwd}"
       env: {}
       stderr: "quiet"
       roots:
         enabled: true
         include_workspace_root: true
-        additional_paths: []
+        additional_paths:
+          - "/tmp"
       tools:
         include: []
         exclude: []

@@ -8,6 +8,7 @@ import asyncio
 import ast
 import json
 import re
+import shlex
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, Dict, List
@@ -489,6 +490,61 @@ class ShellExecTool(InternalTool):
         return Syntax(msg or "(no output)", "text", theme=syntax_theme, word_wrap=True)
 
     @staticmethod
+    def _window_output(text: str, *, max_lines: int = 80) -> str:
+        normalized = str(text or "").strip()
+        if not normalized:
+            return ""
+        lines = normalized.splitlines()
+        if len(lines) <= max_lines:
+            return normalized
+        head_count = max_lines // 2
+        tail_count = max_lines - head_count
+        excerpt = lines[:head_count] + lines[-tail_count:]
+        hidden = len(lines) - len(excerpt)
+        return "\n".join(excerpt + [f"... {hidden} line(s) omitted ..."])
+
+    @classmethod
+    def _command_state_label(
+        cls,
+        *,
+        success: bool,
+        interrupted: bool,
+        detached: bool,
+    ) -> str:
+        if interrupted:
+            return "interrupted"
+        if detached:
+            return "detached"
+        if success:
+            return "completed"
+        return "failed"
+
+    @classmethod
+    def _format_interactive_command_result(
+        cls,
+        *,
+        command: str,
+        stdout: str,
+        cwd: Path | None,
+        success: bool,
+        interrupted: bool,
+        detached: bool,
+        returncode: int | None,
+    ) -> str:
+        state = cls._command_state_label(success=success, interrupted=interrupted, detached=detached)
+        rows = [
+            f"Interactive shell command finished with state={state}.",
+            f"command={command}",
+            f"cwd={cwd}" if cwd else "cwd=(unknown)",
+            f"returncode={returncode}" if returncode is not None else "returncode=(unknown)",
+            f"detached={detached}",
+        ]
+        excerpt = cls._window_output(stdout, max_lines=80)
+        if excerpt:
+            rows.extend(["", "--- output ---", excerpt])
+        return "\n".join(rows).strip()
+
+    @staticmethod
     def _cwd(ctx: ToolContext) -> str | None:
         if ctx.get_cwd:
             try:
@@ -504,17 +560,81 @@ class ShellExecTool(InternalTool):
             return []
         return [str(item).strip() for item in raw if str(item).strip()]
 
+    @staticmethod
+    def _command_cwd(ctx: ToolContext) -> Path:
+        if ctx.get_cwd:
+            with suppress(Exception):
+                return Path(ctx.get_cwd()).expanduser().resolve()
+        return Path.cwd().resolve()
+
+    @staticmethod
+    def _contains_interactive_shell_primitives(text: str) -> bool:
+        patterns = (
+            r"(?i)\bread\b\s+-[A-Za-z]*p\b",
+            r"(?i)\bread\b(?:\s+[^;&|]+)?\s+-[A-Za-z]*p\b",
+            r"(?i)\bselect\b\s+\w+\s+in\b",
+            r"(?i)\bwhiptail\b",
+            r"(?i)\bdialog\b",
+            r"(?i)\bfzf\b",
+            r"(?i)\bgum\s+(confirm|input|choose)\b",
+        )
+        return any(re.search(pattern, text) for pattern in patterns)
+
+    @classmethod
+    def _referenced_script_path(cls, command: str, ctx: ToolContext) -> Path | None:
+        try:
+            argv = shlex.split(command)
+        except ValueError:
+            return None
+        if not argv:
+            return None
+        cwd = cls._command_cwd(ctx)
+        candidates: list[str] = []
+        first = argv[0]
+        if first in {"bash", "sh", "zsh"} and len(argv) >= 2:
+            for arg in argv[1:]:
+                if arg.startswith("-"):
+                    continue
+                candidates.append(arg)
+                break
+        elif first.endswith(".sh") or first.startswith("./") or first.startswith("../") or "/" in first:
+            candidates.append(first)
+        for raw in candidates:
+            path = Path(raw).expanduser()
+            if not path.is_absolute():
+                path = cwd / path
+            with suppress(Exception):
+                resolved = path.resolve()
+                if resolved.is_file():
+                    return resolved
+        return None
+
+    @classmethod
+    def _script_looks_interactive(cls, command: str, ctx: ToolContext) -> bool:
+        script_path = cls._referenced_script_path(command, ctx)
+        if script_path is None:
+            return False
+        try:
+            content = script_path.read_text(encoding="utf-8", errors="ignore")[:16384]
+        except Exception:
+            return False
+        return cls._contains_interactive_shell_primitives(content)
+
     @classmethod
     def _looks_interactive(cls, command: str, ctx: ToolContext) -> bool:
         text = str(command or "").strip()
         if not text:
             return False
+        if cls._contains_interactive_shell_primitives(text):
+            return True
         for pattern in cls._interactive_patterns(ctx):
             try:
                 if re.search(pattern, text):
                     return True
             except re.error:
                 continue
+        if cls._script_looks_interactive(text, ctx):
+            return True
         return False
 
     @staticmethod
@@ -526,8 +646,8 @@ class ShellExecTool(InternalTool):
                 "interactive_command_message",
                 default=(
                     "This command appears interactive or TTY-bound and should not run through shell_exec. "
-                    "Use a local shell block instead, for example `!{command}`, then use `/focus shell` "
-                    "if the command prompts for a password or further input."
+                    "Use a local shell block instead, for example `!{command}`. "
+                    "k-ai will hand control to you automatically if the command prompts for a password or further input."
                 ),
             )
             or ""
@@ -546,6 +666,38 @@ class ShellExecTool(InternalTool):
         if not command.strip():
             return ToolResult(success=False, message="No command provided.")
         if self._looks_interactive(command, ctx):
+            if ctx.run_local_interactive_shell:
+                try:
+                    result = await ctx.run_local_interactive_shell(command)
+                    output = self._format_interactive_command_result(
+                        command=command,
+                        stdout=result.stdout or "",
+                        cwd=result.cwd,
+                        success=bool(result.success),
+                        interrupted=bool(result.interrupted),
+                        detached=bool((result.metadata or {}).get("detached")),
+                        returncode=result.returncode,
+                    )
+                    return ToolResult(
+                        success=bool(result.success),
+                        message=output,
+                        data={
+                            "interactive_command": True,
+                            "command": command,
+                            "state": self._command_state_label(
+                                success=bool(result.success),
+                                interrupted=bool(result.interrupted),
+                                detached=bool((result.metadata or {}).get("detached")),
+                            ),
+                            "stdout": result.stdout,
+                            "cwd": str(result.cwd) if result.cwd else None,
+                            "returncode": result.returncode,
+                            "interrupted": bool(result.interrupted),
+                            "detached": bool((result.metadata or {}).get("detached")),
+                        },
+                    )
+                except Exception as e:
+                    return ToolResult(success=False, message=f"Interactive local command failed: {e}")
             return ToolResult(
                 success=False,
                 message=self._interactive_command_message(command, ctx),

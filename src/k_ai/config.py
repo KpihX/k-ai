@@ -3,7 +3,7 @@
 Configuration management for k-ai.
 Handles loading, merging, and live editing of configuration with a clear override hierarchy:
   1. Built-in defaults  (src/k_ai/defaults/defaults.d/*.yaml)
-  2. User config file   (--config path, or override_path=...)
+  2. User config file   (--config path, explicit override_path, or the persisted runtime config when present)
   3. Inline kwargs      (ConfigManager(temperature=0.9, provider="openai"))
 """
 import copy
@@ -107,7 +107,7 @@ class ConfigManager:
 
     Usage examples::
 
-        # Defaults only
+        # Built-in defaults, plus the persisted runtime config when present
         cm = ConfigManager()
 
         # Override from file (partial file — only defined keys override defaults)
@@ -127,7 +127,7 @@ class ConfigManager:
         self.default_config_path = Path(__file__).parent / "defaults" / DEFAULT_CONFIG_DIRNAME
         self.default_config_files = list(_discover_yaml_fragments(self.default_config_path))
         self.default_config_sections = self._build_default_section_index(self.default_config_path)
-        self.override_path = Path(override_path).expanduser() if override_path else None
+        self.override_path = self._resolve_override_path(override_path)
         self._kwargs: Dict[str, Any] = kwargs
         self._normalization_notes: List[str] = []
 
@@ -164,6 +164,22 @@ class ConfigManager:
             )
         return index
 
+    def _default_persist_path(self) -> Path:
+        defaults = _load_yaml_tree(self.default_config_path)
+        raw = (
+            defaults.get("config", {}).get("persist_path", "~/.k-ai/config.yaml")
+            if isinstance(defaults.get("config"), dict)
+            else "~/.k-ai/config.yaml"
+        )
+        return Path(str(raw)).expanduser()
+
+    def _resolve_override_path(self, override_path: Optional[str]) -> Optional[Path]:
+        explicit = Path(override_path).expanduser() if override_path else None
+        if explicit is not None:
+            return explicit
+        persisted = self._default_persist_path()
+        return persisted if persisted.exists() else None
+
     def _load_and_merge(self) -> None:
         """Build self.config from all layers (deepcopy avoids mutating on-disk data)."""
         # Layer 1: package defaults
@@ -180,6 +196,17 @@ class ConfigManager:
             self.config[key] = value
 
         self._normalize_loaded_config()
+
+    def reload(self) -> None:
+        """Reload defaults + active override from disk, invalidating YAML caches first."""
+        _load_yaml.cache_clear()
+        _load_yaml_tree.cache_clear()
+        _concat_yaml_tree.cache_clear()
+        _discover_yaml_fragments.cache_clear()
+        self.default_config_files = list(_discover_yaml_fragments(self.default_config_path))
+        self.default_config_sections = self._build_default_section_index(self.default_config_path)
+        self.override_path = self._resolve_override_path(str(self.override_path) if self.override_path else None)
+        self._load_and_merge()
 
     def _normalize_mapping_in_place(self, mapping: Dict[str, Any]) -> None:
         tools = mapping.get("tools")
@@ -297,15 +324,19 @@ class ConfigManager:
         return {"errors": errors, "warnings": warnings}
 
     def backup_active_yaml(self, suffix: str = ".bak") -> Optional[Path]:
-        target_path = self.override_path or Path(
-            str(self.get_nested("config", "persist_path", default="~/.k-ai/config.yaml"))
-        ).expanduser()
+        target_path = self.persist_target_path()
         if not target_path.exists():
             return None
         backup = target_path.with_suffix(target_path.suffix + suffix)
         backup.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(target_path, backup)
         return backup
+
+    def persist_target_path(self) -> Path:
+        if self.override_path is not None:
+            return self.override_path.expanduser()
+        raw = self.get_nested("config", "persist_path", default=str(self._default_persist_path()))
+        return Path(str(raw)).expanduser()
 
     # ------------------------------------------------------------------
     # Read API
@@ -500,14 +531,7 @@ class ConfigManager:
 
     def save_active_yaml(self, path: Optional[str] = None) -> Path:
         """Persist the active merged configuration to disk and return the written path."""
-        target = Path(
-            path
-            or (
-                str(self.override_path)
-                if self.override_path
-                else self.get_nested("config", "persist_path", default="~/.k-ai/config.yaml")
-            )
-        ).expanduser()
+        target = Path(path).expanduser() if path else self.persist_target_path()
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(self.dump_yaml(), encoding="utf-8")
         return target

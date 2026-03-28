@@ -12,9 +12,11 @@ import pytest
 from k_ai import ConfigManager
 from k_ai.commands import CommandHandler
 from k_ai.mcp.client import MCPClient
-from k_ai.mcp.models import MCPServerSpec
-from k_ai.models import ToolCall
+from k_ai.mcp.models import MCPServerSpec, MCPToolSpec
+from k_ai.models import ToolCall, ToolResult
 from k_ai.session import ChatSession
+from k_ai.tools.mcp import MCPToolAdapter
+from k_ai.tools.mcp_admin import MCPServerUpsertTool
 
 
 def write_fake_mcp_server(path: Path) -> Path:
@@ -128,7 +130,7 @@ class TestMCPManager:
         session = ChatSession(mcp_cm)
         await session._ensure_mcp_catalog_loaded(force_refresh=True)
 
-        with patch("k_ai.session.Confirm.ask", return_value=True):
+        with patch.object(session, "_prompt_tool_approval", return_value=(True, None)):
             result = await session._execute_internal_tool(
                 ToolCall(
                     id="m2",
@@ -139,6 +141,203 @@ class TestMCPManager:
 
         assert result.success is True
         assert session.cm.get_path("mcp.servers.fake.enabled") is False
+
+    @pytest.mark.asyncio
+    async def test_manager_uses_current_session_cwd_for_runtime_server_spec(self, mcp_cm, tmp_path):
+        mcp_cm.set("mcp.servers.fake.cwd", "{session_cwd}")
+        session = ChatSession(mcp_cm)
+        await session._ensure_mcp_catalog_loaded(force_refresh=True)
+
+        new_cwd = tmp_path / "shifted"
+        new_cwd.mkdir()
+        session.set_current_cwd(new_cwd)
+
+        captured: dict[str, object] = {}
+
+        async def fake_call_tool(*, spec, tool_name, qualified_name, arguments):
+            captured["spec"] = spec
+            captured["tool_name"] = tool_name
+            captured["qualified_name"] = qualified_name
+            captured["arguments"] = arguments
+            return "ok"
+
+        with patch.object(session.mcp_manager._client, "call_tool", side_effect=fake_call_tool):
+            result = await session.mcp_manager.call_tool(
+                "mcp__fake__write_file",
+                {"path": "./test.md", "content": "demo"},
+            )
+
+        spec = captured["spec"]
+        assert isinstance(spec, MCPServerSpec)
+        assert spec.cwd == new_cwd
+        assert spec.roots
+        assert spec.roots[0].path == tmp_path
+        assert captured["tool_name"] == "write_file"
+        assert captured["qualified_name"] == "mcp__fake__write_file"
+        assert captured["arguments"] == {"path": "./test.md", "content": "demo"}
+        assert result == "ok"
+
+    def test_filesystem_server_injects_root_paths_into_empty_args(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cm = ConfigManager()
+        cm.set("mcp.enabled", True)
+        cm.set("mcp.servers.filesystem.enabled", True)
+        cm.set("mcp.servers.filesystem.command", "mcp-server-filesystem")
+        cm.set("mcp.servers.filesystem.args", [])
+        cm.set("mcp.servers.filesystem.cwd", "{workspace_root}")
+        cm.set("mcp.servers.filesystem.roots.enabled", True)
+        cm.set("mcp.servers.filesystem.roots.include_workspace_root", True)
+
+        session = ChatSession(cm, workspace_root=str(tmp_path))
+        spec = session.mcp_manager._server_spec_by_name("filesystem")
+
+        assert spec is not None
+        assert spec.cwd == tmp_path
+        assert spec.args == (str(tmp_path), "/tmp")
+
+    @pytest.mark.asyncio
+    async def test_filesystem_allow_dir_tool_updates_session_scope_without_persisting(self, cm, tmp_path):
+        cm.set("mcp.enabled", False)
+        session = ChatSession(cm, workspace_root=str(tmp_path))
+
+        with patch.object(session, "_prompt_tool_approval", return_value=(True, None)):
+            result = await session._execute_internal_tool(
+                ToolCall(
+                    id="allow-dir-session",
+                    function_name="mcp_filesystem_allow_dir",
+                    arguments={"path": "./sandbox", "scope": "session"},
+                )
+            )
+
+        assert result.success is True
+        paths = session.cm.get_path("mcp.servers.filesystem.roots.additional_paths")
+        assert str((tmp_path / "sandbox").resolve()) in paths
+        assert "/tmp" in paths
+
+    @pytest.mark.asyncio
+    async def test_filesystem_allow_dir_tool_persists_when_requested(self, cm, tmp_path):
+        cm.set("mcp.enabled", False)
+        session = ChatSession(cm, workspace_root=str(tmp_path))
+
+        with patch.object(session, "_prompt_tool_approval", return_value=(True, None)):
+            result = await session._execute_internal_tool(
+                ToolCall(
+                    id="allow-dir-persistent",
+                    function_name="mcp_filesystem_allow_dir",
+                    arguments={"path": str(tmp_path / "persisted"), "scope": "persistent"},
+                )
+            )
+
+        assert result.success is True
+        saved_to = result.data["config_change"]["saved_to"]
+        assert saved_to
+
+    def test_filesystem_write_file_proposal_renders_preview_section(self, cm, tmp_path):
+        session = ChatSession(cm, workspace_root=str(tmp_path))
+        spec = MCPToolSpec(
+            server_name="filesystem",
+            server_title="Filesystem",
+            name="write_file",
+            qualified_name="mcp__filesystem__write_file",
+            description="Write a file.",
+            input_schema={"type": "object"},
+            annotations={"destructiveHint": True},
+        )
+        tool = MCPToolAdapter(manager=session.mcp_manager, spec=spec, ctx=session._tool_ctx)
+
+        sections = tool.proposal_sections(
+            {"path": "./demo.py", "content": "print('a')\nprint('b')\n"},
+            session._tool_ctx,
+        )
+
+        assert [title for title, _content in sections] == ["New File"]
+
+    def test_filesystem_edit_file_proposal_renders_diff_section(self, cm, tmp_path):
+        session = ChatSession(cm, workspace_root=str(tmp_path))
+        spec = MCPToolSpec(
+            server_name="filesystem",
+            server_title="Filesystem",
+            name="edit_file",
+            qualified_name="mcp__filesystem__edit_file",
+            description="Edit a file.",
+            input_schema={"type": "object"},
+            annotations={"destructiveHint": True},
+        )
+        tool = MCPToolAdapter(manager=session.mcp_manager, spec=spec, ctx=session._tool_ctx)
+
+        sections = tool.proposal_sections(
+            {
+                "path": "./demo.py",
+                "edits": [
+                    {
+                        "oldText": "def hello():\n    return 1",
+                        "newText": "def hello():\n    return 2",
+                    }
+                ],
+            },
+            session._tool_ctx,
+        )
+
+        assert [title for title, _content in sections] == ["Planned Diff"]
+
+    def test_filesystem_edit_result_renderable_is_short_confirmation(self, cm, tmp_path):
+        session = ChatSession(cm, workspace_root=str(tmp_path))
+        spec = MCPToolSpec(
+            server_name="filesystem",
+            server_title="Filesystem",
+            name="edit_file",
+            qualified_name="mcp__filesystem__edit_file",
+            description="Edit a file.",
+            input_schema={"type": "object"},
+            annotations={"destructiveHint": True},
+        )
+        tool = MCPToolAdapter(manager=session.mcp_manager, spec=spec, ctx=session._tool_ctx)
+
+        renderable = tool.result_renderable(
+            ToolResult(success=True, message="diff body", data={"__requested_path": "./demo.py"}),
+            max_display_length=2000,
+            ctx=session._tool_ctx,
+        )
+
+        assert "Confirmed edit to ./demo.py." in renderable.plain
+
+    def test_filesystem_preview_uses_mcp_centralized_defaults(self, cm, tmp_path):
+        cm.set("mcp.runtime.proposals.filesystem.preview_max_lines", 2)
+        cm.set("mcp.runtime.proposals.filesystem.line_window_mode", "tail")
+        session = ChatSession(cm, workspace_root=str(tmp_path))
+        spec = MCPToolSpec(
+            server_name="filesystem",
+            server_title="Filesystem",
+            name="write_file",
+            qualified_name="mcp__filesystem__write_file",
+            description="Write a file.",
+            input_schema={"type": "object"},
+            annotations={"destructiveHint": True},
+        )
+        tool = MCPToolAdapter(manager=session.mcp_manager, spec=spec, ctx=session._tool_ctx)
+
+        sections = tool.proposal_sections(
+            {"path": "./demo.py", "content": "a\nb\nc\nd\n"},
+            session._tool_ctx,
+        )
+
+        assert [title for title, _content in sections] == ["New File"]
+
+    def test_mcp_server_upsert_proposal_explicitly_targets_current_runtime(self, cm, tmp_path):
+        session = ChatSession(cm, workspace_root=str(tmp_path))
+        tool = MCPServerUpsertTool()
+
+        sections = tool.proposal_sections(
+            {
+                "server_name": "tick_mcp_kai",
+                "transport": "streamable_http",
+                "url": "https://tick.kpihx-labs.com/mcp",
+                "persist": True,
+            },
+            session._tool_ctx,
+        )
+
+        assert [title for title, _content in sections] == ["MCP Server Config"]
 
 
 class TestMCPClient:
@@ -235,7 +434,7 @@ class TestLiveFilesystemServer:
         assert any(tool.qualified_name == "mcp__filesystem__write_file" for tool in catalog.tools)
 
         target = tmp_path / "live.txt"
-        with patch("k_ai.session.Confirm.ask", return_value=True):
+        with patch.object(session, "_prompt_tool_approval", return_value=(True, None)):
             write_result = await session._execute_internal_tool(
                 ToolCall(
                     id="live-write",

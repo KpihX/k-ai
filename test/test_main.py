@@ -18,11 +18,12 @@ def test_root_prompt_invokes_ask(tmp_path):
     target.mkdir()
     with patch("k_ai.main.ChatSession") as session_cls:
         instance = session_cls.return_value
-        instance.ask = AsyncMock(return_value="ok")
+        instance.ask_and_render = AsyncMock(return_value="ok")
         result = runner.invoke(app, ["-C", str(target), "bonjour"])
     assert result.exit_code == 0
-    assert "ok" in result.stdout
     assert session_cls.call_args.kwargs["workspace_root"] == str(target.resolve())
+    instance.ask_and_render.assert_awaited_once_with("bonjour")
+    instance.close.assert_called_once_with()
 
 
 def test_chat_accepts_cwd_option(tmp_path):
@@ -34,3 +35,4 @@ def test_chat_accepts_cwd_option(tmp_path):
         result = runner.invoke(app, ["chat", "-C", str(target)])
     assert result.exit_code == 0
     assert session_cls.call_args.kwargs["workspace_root"] == str(target.resolve())
+    instance.close.assert_called_once_with()

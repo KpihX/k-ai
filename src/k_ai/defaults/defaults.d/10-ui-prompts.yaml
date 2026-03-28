@@ -14,6 +14,11 @@ cli:
   # Any Rich spinner name is accepted; invalid names fall back safely at runtime.
   thinking_indicator: "clock"
 
+  # Show model reasoning/thinking blocks when the provider emits them.
+  # Keep false by default to avoid visual noise and accidental chain-of-thought
+  # exposure in normal usage.
+  show_thinking: false
+
   # Show a human-readable justification panel before each tool execution.
   # If the model does not provide one, k-ai derives a fallback rationale from
   # the tool description and main input so the approval panel stays transparent.
@@ -111,9 +116,19 @@ prompts:
     If a sessions list already contains summary, themes, and message counts,
     use that metadata directly. Do not call session_digest just to restate
     metadata that is already visible.
+    For questions about past k-ai conversations, prefer session/history/QMD
+    tools over broad filesystem exploration. Reuse exact session IDs, QMD
+    files, and URIs returned by tools; do not shorten or reconstruct them from
+    memory. If a QMD lookup fails, first retry with session_extract or a more
+    precise QMD tool call before considering any filesystem fallback.
     Keep each session semantically homogeneous. If the current session is
     clearly drifting into a different dominant intent, propose switch_session
     instead of mixing unrelated work into the same thread.
+    When the user says "for you", "pour toi", "for this runtime", or similar,
+    interpret that as the current k-ai runtime unless they explicitly name a
+    different agent, config file, or path. Do not edit external runtime files
+    such as ~/.codex/, ~/.claude/, or similar unless the user clearly asks for
+    that exact runtime or path.
     When the user wants to initialize, rename, or personalize the assistant
     identity, use init_system instead of only acknowledging the request.
     The user will validate or reject your proposals. For normal questions,

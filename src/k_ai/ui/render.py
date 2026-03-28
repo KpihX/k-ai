@@ -257,6 +257,7 @@ class StreamingRenderer:
         render_mode: str = "rich",
         spinner_name: str = "dots",
         theme_name: str = "default",
+        show_thinking: bool = False,
         flush_min_chars: int = 600,
         tail_chars: int = 120,
         interrupt_hint: str = "",
@@ -266,6 +267,7 @@ class StreamingRenderer:
         self.render_mode = render_mode
         self.spinner_name = spinner_name or "dots"
         self.theme_name = theme_name or "default"
+        self.show_thinking = bool(show_thinking)
         self.flush_min_chars = max(int(flush_min_chars or 0), 80)
         self.tail_chars = max(int(tail_chars or 0), 0)
         self.interrupt_hint = str(interrupt_hint or "").strip()
@@ -279,6 +281,7 @@ class StreamingRenderer:
         self._stream_header_printed: bool = False
         self._flushed_chars: int = 0
         self._live: Optional[Live] = None
+        self._stream_chunks: List[str] = []
 
     def __enter__(self) -> "StreamingRenderer":
         spinner_text = "[dim]Generating...[/dim]"
@@ -309,12 +312,19 @@ class StreamingRenderer:
 
         # If thinking was shown but never committed (no content followed),
         # print the thinking panel statically.
-        if self.full_thought and not self._thinking_committed:
+        if self.show_thinking and self.full_thought and not self._thinking_committed:
             self.console.print(render_thinking_panel(self.full_thought, self.render_mode, theme_name=self.theme_name))
 
         if self.full_content:
-            self._begin_content_stream()
-            self._flush_streamed_content(final=True)
+            self.console.print(
+                render_assistant_panel(
+                    self.full_content,
+                    self.model_name,
+                    render_mode=self.render_mode,
+                    usage=self.last_usage,
+                    theme_name=self.theme_name,
+                )
+            )
 
     def update(self, chunk: CompletionChunk) -> None:
         if not self._live:
@@ -341,7 +351,7 @@ class StreamingRenderer:
 
         if has_content:
             self._flush_streamed_content(final=False)
-        elif has_thought:
+        elif has_thought and self.show_thinking:
             self._live.update(render_thinking_panel(self.full_thought, self.render_mode, active=True, theme_name=self.theme_name))
 
     def _begin_content_stream(self) -> None:
@@ -350,9 +360,17 @@ class StreamingRenderer:
         has_thought = bool(self.full_thought)
         if self._live:
             self._live.stop()
-        if has_thought and not self._thinking_committed:
+            self._live = None
+        if self.show_thinking and has_thought and not self._thinking_committed:
             self.console.print(render_thinking_panel(self.full_thought, self.render_mode, theme_name=self.theme_name))
             self._thinking_committed = True
+        self._live = Live(
+            Group(),
+            console=self.console,
+            refresh_per_second=15,
+            transient=True,
+        )
+        self._live.start()
         self._content_started = True
 
     def _flush_streamed_content(self, *, final: bool) -> None:
@@ -363,18 +381,35 @@ class StreamingRenderer:
         if boundary <= 0:
             return
         chunk = pending[:boundary]
-        self.console.print(
-            render_assistant_stream_panel(
-                chunk,
-                self.model_name,
-                render_mode=self.render_mode,
-                usage=self.last_usage if final else None,
-                theme_name=self.theme_name,
-                initial=not self._stream_header_printed,
-            )
-        )
-        self._stream_header_printed = True
+        self._stream_chunks.append(chunk)
+        self._update_stream_live(final=final)
         self._flushed_chars += boundary
+
+    def _update_stream_live(self, *, final: bool) -> None:
+        if not self._live:
+            return
+        max_chunks = self._visible_stream_chunk_limit()
+        visible_chunks = self._stream_chunks[-max_chunks:]
+        panels = [
+            render_assistant_stream_panel(
+                content=chunk,
+                model_name=self.model_name,
+                render_mode=self.render_mode,
+                usage=self.last_usage if final and index == len(visible_chunks) - 1 else None,
+                theme_name=self.theme_name,
+                initial=index == 0 and not self._stream_header_printed,
+            )
+            for index, chunk in enumerate(visible_chunks)
+        ]
+        self._live.update(Group(*panels))
+        self._stream_header_printed = True
+
+    def _visible_stream_chunk_limit(self) -> int:
+        try:
+            height = int(getattr(self.console.size, "height", 24) or 24)
+        except Exception:
+            height = 24
+        return max(min(height // 6, 6), 2)
 
     def _find_flush_boundary(self, pending: str, *, final: bool) -> int:
         if not pending:

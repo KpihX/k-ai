@@ -112,12 +112,24 @@ class TestCommandHandler:
         assert tool_call.arguments["server_name"] == "filesystem"
 
     @pytest.mark.asyncio
+    async def test_mcp_allow_dir_routes_through_internal_tool_executor(self, session_for_commands):
+        handler = CommandHandler(session_for_commands)
+        session_for_commands._execute_internal_tool = AsyncMock(return_value=ToolResult(success=True, message="ok"))
+
+        await handler.handle("/mcp allow-dir ~/Work/Test persistent")
+
+        tool_call = session_for_commands._execute_internal_tool.await_args.args[0]
+        assert tool_call.function_name == "mcp_filesystem_allow_dir"
+        assert tool_call.arguments["path"] == "~/Work/Test"
+        assert tool_call.arguments["scope"] == "persistent"
+
+    @pytest.mark.asyncio
     async def test_config_get_uses_confirm_prompt(self, session_for_commands, tmp_path):
         handler = CommandHandler(session_for_commands)
         target = tmp_path / "config.yaml"
         target.write_text("old", encoding="utf-8")
 
-        with patch("k_ai.commands.Confirm.ask", return_value=False):
+        with patch("k_ai.commands.ephemeral_confirm", return_value=False):
             await handler.handle(f"/config get {target}")
 
         assert target.read_text(encoding="utf-8") == "old"
@@ -151,6 +163,56 @@ class TestCommandHandler:
         assert session_for_commands.console.print.called
 
     @pytest.mark.asyncio
+    async def test_provider_list_renders_numbered_choices(self, session_for_commands):
+        handler = CommandHandler(session_for_commands)
+        session_for_commands.cm.config.setdefault("api_key", {})["mistral"] = {
+            "api_key_env_var": "MISTRAL_API_KEY",
+            "default_model": "magistral-small-latest",
+        }
+
+        await handler.handle("/provider list")
+
+        assert handler._last_provider_choices
+        assert "ollama" in handler._last_provider_choices
+        assert "mistral" in handler._last_provider_choices
+        assert session_for_commands.console.print.called
+
+    @pytest.mark.asyncio
+    async def test_provider_set_accepts_number(self, session_for_commands):
+        handler = CommandHandler(session_for_commands)
+        handler._switch_provider = AsyncMock(return_value=True)
+        handler._provider_choices = MagicMock(return_value=[
+            ("ollama", "no_auth", "phi4-mini:latest"),
+            ("mistral", "api_key", "magistral-small-latest"),
+        ])
+
+        await handler.handle("/provider set 2")
+
+        handler._switch_provider.assert_awaited_once_with("mistral", session_for_commands.provider_default_model("mistral"))
+
+    @pytest.mark.asyncio
+    async def test_model_list_renders_available_models(self, session_for_commands):
+        handler = CommandHandler(session_for_commands)
+        session_for_commands.llm.list_models = AsyncMock(return_value=["phi4-mini:latest", "phi4:latest"])
+
+        await handler.handle("/model list")
+
+        assert handler._last_model_choices == ["phi4-mini:latest", "phi4:latest"]
+        assert session_for_commands.console.print.called
+
+    @pytest.mark.asyncio
+    async def test_model_set_accepts_number(self, session_for_commands):
+        handler = CommandHandler(session_for_commands)
+        handler._last_model_choices = ["phi4-mini:latest", "phi4:latest"]
+        session_for_commands._execute_internal_tool = AsyncMock(return_value=ToolResult(success=True, message="ok"))
+
+        await handler.handle("/model set 2")
+
+        tool_call = session_for_commands._execute_internal_tool.await_args.args[0]
+        assert tool_call.function_name == "set_config"
+        assert tool_call.arguments == {"key": "model", "value": "phi4:latest"}
+
+    @pytest.mark.asyncio
     async def test_init_routes_through_internal_tool_executor(self, session_for_commands):
         handler = CommandHandler(session_for_commands)
         session_for_commands._execute_internal_tool = AsyncMock(
@@ -180,6 +242,7 @@ class TestCommandHandler:
     async def test_config_edit_opens_requested_fragment(self, session_for_commands):
         handler = CommandHandler(session_for_commands)
         session_for_commands.cm.set("config.editor", "nano")
+        session_for_commands.reload_config_from_disk = MagicMock()
 
         with (
             patch.object(session_for_commands.cm, "resolve_editor_command", return_value=["/usr/bin/nano"]),
@@ -188,6 +251,7 @@ class TestCommandHandler:
             await handler.handle("/config edit governance")
 
         run_mock.assert_called_once()
+        session_for_commands.reload_config_from_disk.assert_called_once()
         args = run_mock.call_args.args[0]
         assert args[0] == "/usr/bin/nano"
         assert args[1].endswith("30-runtime-governance.yaml")
@@ -380,7 +444,7 @@ class TestCommandHandler:
         session_for_commands.history_has_nonportable_tool_state = MagicMock(return_value=True)
         session_for_commands.provider_default_model = MagicMock(return_value="mistral-medium-latest")
 
-        with patch("k_ai.commands.Confirm.ask", return_value=True):
+        with patch("k_ai.commands.ephemeral_confirm", return_value=True):
             await handler.handle("/provider mistral")
 
         session_for_commands._finalize_active_session.assert_awaited_once()
@@ -401,7 +465,7 @@ class TestCommandHandler:
         session_for_commands.preserve_simple_history_only = MagicMock(return_value=4)
         session_for_commands.provider_default_model = MagicMock(return_value="mistral-medium-latest")
 
-        with patch("k_ai.commands.Confirm.ask", return_value=False):
+        with patch("k_ai.commands.ephemeral_confirm", return_value=False):
             await handler.handle("/provider mistral")
 
         session_for_commands.preserve_simple_history_only.assert_called_once()

@@ -45,6 +45,18 @@ class MCPClientError(RuntimeError):
 T = TypeVar("T")
 
 
+def _format_exception_message(exc: BaseException) -> str:
+    if isinstance(exc, BaseExceptionGroup):
+        parts: list[str] = []
+        for item in exc.exceptions:
+            text = _format_exception_message(item)
+            if text and text not in parts:
+                parts.append(text)
+        return "; ".join(parts) or exc.__class__.__name__
+    text = str(exc).strip()
+    return text or exc.__class__.__name__
+
+
 def mcp_sdk_available() -> bool:
     return _MCP_IMPORT_ERROR is None
 
@@ -187,9 +199,12 @@ class MCPClient:
         qualified_name: str,
         arguments: dict[str, Any] | None = None,
     ) -> MCPToolCallResult:
-        async with self._session(spec) as session:
-            await session.initialize()
-            result = await session.call_tool(tool_name, arguments=arguments or {})
+        try:
+            async with self._session(spec) as session:
+                await session.initialize()
+                result = await session.call_tool(tool_name, arguments=arguments or {})
+        except Exception as exc:
+            raise MCPClientError(_format_exception_message(exc)) from exc
         message = _content_to_text(result.content)
         raw = result.model_dump(exclude_none=True)
         return MCPToolCallResult(
@@ -202,9 +217,12 @@ class MCPClient:
         )
 
     async def read_resource(self, *, spec: MCPServerSpec, uri: str) -> MCPResourceReadResult:
-        async with self._session(spec) as session:
-            await session.initialize()
-            result = await session.read_resource(uri)
+        try:
+            async with self._session(spec) as session:
+                await session.initialize()
+                result = await session.read_resource(uri)
+        except Exception as exc:
+            raise MCPClientError(_format_exception_message(exc)) from exc
         message = _resource_contents_to_text(result.contents)
         return MCPResourceReadResult(
             server_name=spec.name,
@@ -220,9 +238,12 @@ class MCPClient:
         prompt_name: str,
         arguments: dict[str, str] | None = None,
     ) -> MCPPromptGetResult:
-        async with self._session(spec) as session:
-            await session.initialize()
-            result = await session.get_prompt(prompt_name, arguments=arguments or {})
+        try:
+            async with self._session(spec) as session:
+                await session.initialize()
+                result = await session.get_prompt(prompt_name, arguments=arguments or {})
+        except Exception as exc:
+            raise MCPClientError(_format_exception_message(exc)) from exc
         message = _prompt_messages_to_text(result.messages)
         return MCPPromptGetResult(
             server_name=spec.name,

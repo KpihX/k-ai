@@ -13,11 +13,11 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Dict, List
 
 from rich.panel import Panel
-from rich.prompt import Confirm
 from rich.syntax import Syntax
 from rich.table import Table
 
 from .config import ConfigManager
+from .ui import ephemeral_confirm
 from .ui_theme import resolve_syntax_theme
 
 if TYPE_CHECKING:
@@ -33,7 +33,7 @@ SLASH_COMMANDS = [
     "/new", "/init", "/load", "/sessions", "/rename", "/delete",
     "/compact", "/clear", "/reset",
     "/digest", "/extract",
-    "/history", "/model", "/provider", "/system",
+    "/history", "/model", "/model list", "/model set", "/provider", "/provider list", "/provider set", "/system",
     "/cwd", "/focus",
     "/set", "/settings", "/status",
     "/tools", "/tools capabilities", "/tools enable", "/tools disable",
@@ -43,7 +43,7 @@ SLASH_COMMANDS = [
     "/skills", "/skills list", "/skills show", "/skills reload", "/skills active",
     "/hooks", "/hooks list", "/hooks reload",
     "/mcp", "/mcp list", "/mcp tools", "/mcp resources", "/mcp templates", "/mcp prompts", "/mcp reload",
-    "/mcp probe", "/mcp install", "/mcp add-stdio", "/mcp add-http", "/mcp enable", "/mcp disable", "/mcp remove",
+    "/mcp probe", "/mcp install", "/mcp add-stdio", "/mcp add-http", "/mcp enable", "/mcp disable", "/mcp remove", "/mcp allow-dir",
     "/doctor", "/doctor reset",
     "/qmd query", "/qmd search", "/qmd vsearch",
     "/qmd get", "/qmd ls", "/qmd collections",
@@ -95,11 +95,20 @@ _HELP: dict[str, tuple[str, str, str]] = {
         "/extract a3b5b372 20 15",
     ),
     "/history": ("Show current in-context history size and first/last message previews.", "-", "/history"),
-    "/model [name|default]": ("Reset to the current provider default model when omitted or set to default, or switch to a specific model live.", "optional model name", "/model mistral-large-latest"),
+    "/model [name|default|list|set]": (
+        "Show the provider default model, list available models for the current provider, or set one by name/number.",
+        "default | list | set <number|name>",
+        "/model set 3",
+    ),
     "/provider [name] [model]": (
         "Show current provider or switch provider, optionally changing model at the same time.",
         "provider + optional model",
-        "/provider mistral mistral-medium-latest",
+        "/provider mistral magistral-medium-latest",
+    ),
+    "/provider list | /provider set <number|name>": (
+        "List configured providers with stable numbers, then switch by number or exact name.",
+        "list | set <number|name>",
+        "/provider set 2",
     ),
     "/system [prompt|off]": ("Show, set, or disable the session-specific system prompt.", "free text or off", "/system You are concise."),
     "/cwd [path]": (
@@ -108,7 +117,7 @@ _HELP: dict[str, tuple[str, str, str]] = {
         "/cwd ~/Work/AI/k_ai",
     ),
     "/focus <shell|python>": (
-        "Focus a persistent local runner. Keystrokes go directly to it and are not persisted; press Ctrl+] to return to chat.",
+        "Manually attach to a persistent local runner. Normally k-ai hands off interactive local input automatically; press Esc Esc to return to chat.",
         "shell|python",
         "/focus shell",
     ),
@@ -152,8 +161,8 @@ _HELP: dict[str, tuple[str, str, str]] = {
         "optional subcommand",
         "/hooks list",
     ),
-    "/mcp [list|tools|resources|templates|prompts|reload|probe|install|add-stdio|add-http|enable|disable|remove]": (
-        "Inspect or administer MCP servers, imported tools, resources, prompts, installation, and enablement from chat.",
+    "/mcp [list|tools|resources|templates|prompts|reload|probe|install|add-stdio|add-http|enable|disable|remove|allow-dir]": (
+        "Inspect or administer MCP servers, imported tools, resources, prompts, installation, enablement, and filesystem allow dirs from chat.",
         "optional subcommand",
         "/mcp tools",
     ),
@@ -182,6 +191,8 @@ class CommandHandler:
     def __init__(self, session: "ChatSession"):
         self.session = session
         self.console = session.console
+        self._last_provider_choices: list[str] = []
+        self._last_model_choices: list[str] = []
 
     async def _run_internal_tool(self, tool_name: str, arguments: Dict[str, object]) -> bool:
         tool = self.session.tool_registry.get(tool_name)
@@ -193,6 +204,95 @@ class CommandHandler:
         from .models import ToolCall
         tool_call = ToolCall(id=f"cmd_{tool_name}", function_name=tool_name, arguments=dict(arguments))
         await self.session._execute_internal_tool(tool_call, rationale="Triggered explicitly via slash command.")
+        return True
+
+    def _provider_choices(self) -> list[tuple[str, str, str]]:
+        seen: set[str] = set()
+        rows: list[tuple[str, str, str]] = []
+        for auth_mode, providers in self.session.cm.list_providers().items():
+            for provider in providers:
+                if provider in seen:
+                    continue
+                seen.add(provider)
+                default_model = self.session.provider_default_model(provider) or "-"
+                rows.append((provider, auth_mode, default_model))
+        return rows
+
+    def _render_provider_table(self, rows: list[tuple[str, str, str]]) -> None:
+        table = Table(title="Providers", header_style="bold cyan")
+        table.add_column("#", style="dim", width=4)
+        table.add_column("Provider", style="cyan")
+        table.add_column("Auth", style="magenta")
+        table.add_column("Default Model", style="green")
+        current = self.session.llm.provider_name
+        for idx, (provider, auth_mode, default_model) in enumerate(rows, start=1):
+            label = f"{provider} [dim](current)[/dim]" if provider == current else provider
+            table.add_row(str(idx), label, auth_mode, default_model)
+        self.console.print(table)
+
+    async def _list_models_for_current_provider(self) -> list[str]:
+        models = await self.session.llm.list_models()
+        normalized = sorted(dict.fromkeys(str(item) for item in models if str(item).strip()))
+        self._last_model_choices = normalized
+        return normalized
+
+    def _render_model_table(self, models: list[str]) -> None:
+        table = Table(title=f"Models [{self.session.llm.provider_name}]", header_style="bold cyan")
+        table.add_column("#", style="dim", width=4)
+        table.add_column("Model", style="cyan")
+        current = self.session.llm.model_name
+        for idx, model in enumerate(models, start=1):
+            label = f"{model} [dim](current)[/dim]" if model == current else model
+            table.add_row(str(idx), label)
+        self.console.print(table)
+
+    def _resolve_index_or_name(self, raw: str, choices: list[str], noun: str) -> str:
+        value = str(raw or "").strip()
+        if not value:
+            raise ValueError(f"{noun} is required.")
+        if value.isdigit():
+            index = int(value)
+            if index < 1 or index > len(choices):
+                raise ValueError(f"{noun.capitalize()} index must be between 1 and {len(choices)}.")
+            return choices[index - 1]
+        if value in choices:
+            return value
+        raise ValueError(f"Unknown {noun}: {value}")
+
+    async def _switch_provider(self, target_provider: str, target_model: str | None) -> bool:
+        if (
+            self.session._session_id
+            and self.session.history
+            and target_provider != self.session.llm.provider_name
+            and self.session.history_has_nonportable_tool_state()
+        ):
+            self.console.print(
+                "[yellow]This session contains tool-call history from the current provider.[/yellow]"
+            )
+            start_new = ephemeral_confirm(
+                self.console,
+                "Start a new session for this provider change?",
+                default=True,
+            )
+            if start_new:
+                current_meta = self.session.session_store.get_session(self.session._session_id) if self.session._session_id else None
+                seed = None
+                if current_meta:
+                    seed = {
+                        "session_type": current_meta.session_type,
+                    }
+                await self.session._finalize_active_session()
+                self.session._do_new_session(seed=seed)
+                self.console.print("[green]Started a new session for the provider switch.[/green]")
+            else:
+                removed = self.session.preserve_simple_history_only()
+                self.console.print(
+                    f"[yellow]Kept only simple user/assistant text history ({removed} complex tool messages removed) before switching provider.[/yellow]"
+                )
+
+        await self._run_internal_tool("set_config", {"key": "provider", "value": target_provider})
+        if target_model:
+            await self._run_internal_tool("set_config", {"key": "model", "value": target_model})
         return True
 
     async def handle(self, text: str) -> bool:
@@ -650,7 +750,26 @@ class CommandHandler:
         return True
 
     async def _model(self, args: List[str]) -> bool:
-        if not args or args[0].lower() == "default":
+        sub = args[0].lower() if args else "default"
+        if sub in {"list", "ls"}:
+            models = await self._list_models_for_current_provider()
+            if not models:
+                self.console.print("[yellow]No models found for the current provider.[/yellow]")
+                return True
+            self._render_model_table(models)
+            return True
+        if sub == "set":
+            if len(args) < 2:
+                self.console.print("[yellow]Usage:[/yellow] /model set <number|name>")
+                return True
+            models = self._last_model_choices or await self._list_models_for_current_provider()
+            try:
+                target_model = self._resolve_index_or_name(args[1], models, "model")
+            except ValueError as exc:
+                self.console.print(f"[bold red]Error:[/bold red] {exc}")
+                return True
+            return await self._run_internal_tool("set_config", {"key": "model", "value": target_model})
+        if not args or sub == "default":
             default_model = self.session.provider_default_model()
             if not default_model:
                 self.console.print("[red]No default model is configured for the current provider.[/red]")
@@ -659,45 +778,31 @@ class CommandHandler:
         return await self._run_internal_tool("set_config", {"key": "model", "value": args[0]})
 
     async def _provider(self, args: List[str]) -> bool:
+        sub = args[0].lower() if args else "status"
+        if sub in {"list", "ls"}:
+            rows = self._provider_choices()
+            self._last_provider_choices = [provider for provider, _auth, _default in rows]
+            self._render_provider_table(rows)
+            return True
+        if sub == "set":
+            if len(args) < 2:
+                self.console.print("[yellow]Usage:[/yellow] /provider set <number|name> [model_number|model_name]")
+                return True
+            rows = self._provider_choices()
+            choices = [provider for provider, _auth, _default in rows]
+            self._last_provider_choices = choices
+            try:
+                target_provider = self._resolve_index_or_name(args[1], choices, "provider")
+            except ValueError as exc:
+                self.console.print(f"[bold red]Error:[/bold red] {exc}")
+                return True
+            target_model = args[2] if len(args) > 2 else self.session.provider_default_model(target_provider)
+            return await self._switch_provider(target_provider, target_model)
         if not args:
             return await self._run_internal_tool("runtime_status", {"mode": "compact"})
         target_provider = args[0]
         target_model = args[1] if len(args) > 1 else self.session.provider_default_model(target_provider)
-
-        if (
-            self.session._session_id
-            and self.session.history
-            and target_provider != self.session.llm.provider_name
-            and self.session.history_has_nonportable_tool_state()
-        ):
-            self.console.print(
-                "[yellow]This session contains tool-call history from the current provider.[/yellow]"
-            )
-            start_new = Confirm.ask(
-                "Start a new session for this provider change?",
-                console=self.console,
-                default=True,
-            )
-            if start_new:
-                current_meta = self.session.session_store.get_session(self.session._session_id) if self.session._session_id else None
-                seed = None
-                if current_meta:
-                    seed = {
-                        "session_type": current_meta.session_type,
-                    }
-                await self.session._finalize_active_session()
-                self.session._do_new_session(seed=seed)
-                self.console.print("[green]Started a new session for the provider switch.[/green]")
-            else:
-                removed = self.session.preserve_simple_history_only()
-                self.console.print(
-                    f"[yellow]Kept only simple user/assistant text history ({removed} complex tool messages removed) before switching provider.[/yellow]"
-                )
-
-        await self._run_internal_tool("set_config", {"key": "provider", "value": target_provider})
-        if target_model:
-            await self._run_internal_tool("set_config", {"key": "model", "value": target_model})
-        return True
+        return await self._switch_provider(target_provider, target_model)
 
     async def _system(self, args: List[str]) -> bool:
         if not args:
@@ -869,6 +974,8 @@ class CommandHandler:
                 editor_cmd = self.session.cm.resolve_editor_command()
                 self.console.print(f"[cyan]Opening[/cyan] {target_path} [cyan]with[/cyan] {' '.join(editor_cmd)}")
                 subprocess.run([*editor_cmd, str(target_path)], check=True)
+                self.session.reload_config_from_disk()
+                self.console.print(f"[green]Reloaded active config from[/green] {self.session.cm.persist_target_path()}")
             except FileNotFoundError as e:
                 self.console.print(f"[bold red]Error:[/bold red] {e}")
             except subprocess.CalledProcessError as e:
@@ -890,7 +997,7 @@ class CommandHandler:
                     section_names = [item.lower() for item in extra[1:]]
             try:
                 if os.path.exists(target):
-                    if not Confirm.ask(f"Overwrite '{target}'?", console=self.console, default=False):
+                    if not ephemeral_confirm(self.console, f"Overwrite '{target}'?", default=False):
                         return True
                 with open(target, "w", encoding="utf-8") as f:
                     f.write(self.session.cm.get_default_yaml(sections=section_names))
@@ -1000,6 +1107,15 @@ class CommandHandler:
                 self.console.print("[yellow]Usage:[/yellow] /mcp remove <server_name>")
                 return True
             return await self._run_internal_tool("mcp_server_remove", {"server_name": args[1]})
+
+        if sub == "allow-dir":
+            if len(args) < 2:
+                self.console.print("[yellow]Usage:[/yellow] /mcp allow-dir <path> [session|persistent]")
+                return True
+            payload: Dict[str, object] = {"path": args[1]}
+            if len(args) > 2:
+                payload["scope"] = args[2]
+            return await self._run_internal_tool("mcp_filesystem_allow_dir", payload)
 
         await self.session._ensure_mcp_catalog_loaded()
         catalog = self.session.mcp_manager.current_catalog()

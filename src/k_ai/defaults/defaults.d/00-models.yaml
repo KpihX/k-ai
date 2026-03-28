@@ -11,7 +11,7 @@
 
 # Default provider used when the user does not force one with --provider or
 # via /provider in chat. Must match a key under no_auth, api_key, or oauth.
-provider: "mistral"
+provider: "ollama"
 
 # Optional model override. Leave empty to use the provider's default_model.
 model: ""
@@ -67,7 +67,58 @@ api_key:
     # Name of the environment variable holding the provider key.
     api_key_env_var: "MISTRAL_API_KEY"
     base_url: "https://api.mistral.ai/v1"
-    default_model: "mistral-medium-latest"
+
+    # Tool-calling capable Mistral chat models (official docs, March 28 2026).
+    #
+    # Recommended general-purpose tool users:
+    #   - mistral-large-latest
+    #       Flagship general model. Best default when you want broad capability,
+    #       strong tool choice, and solid final answer quality without specializing.
+    #   - mistral-medium-2508
+    #       Strong frontier multimodal model. Good balance of quality/latency,
+    #       but use the dated ID explicitly because the old alias
+    #       "mistral-medium-latest" refers to an older legacy model.
+    #   - mistral-small-latest   (currently Mistral Small 3.2 / mistral-small-2506)
+    #       Faster and cheaper general model with tool use support.
+    #
+    # Reasoning / agentic models:
+    #   - magistral-medium-latest   (currently Magistral Medium 1.2 / magistral-medium-2509)
+    #       Best Mistral choice here for agentic reasoning, planning, and harder
+    #       multi-step tool flows.
+    #   - magistral-small-2509
+    #       Lighter reasoning model when you want Magistral-style behavior at lower cost.
+    #
+    # SWE-specialized models:
+    #   - devstral-latest
+    #       Best specialized model for software engineering agents, codebase exploration,
+    #       multi-file edits, and developer tooling.
+    #   - devstral-medium-2507
+    #       Enterprise-grade SWE model.
+    #   - devstral-small-2507
+    #       Smaller open SWE-oriented model.
+    #
+    # Coding model:
+    #   - codestral-2508
+    #       Strong coding model; useful when the task is code-heavy, but less of a
+    #       universal agentic default than Magistral or Mistral Large.
+    #
+    # Edge / compact tool-capable models:
+    #   - ministral-14b-2512
+    #   - ministral-8b-2512
+    #   - ministral-3b-2512
+    #       Compact edge-deployable models with function calling support.
+    #
+    # Vision-capable tool users:
+    #   - mistral-large-2512
+    #   - mistral-medium-2508
+    #   - mistral-small-2506
+    #   - ministral-14b-2512 / ministral-8b-2512 / ministral-3b-2512
+    #       Use these when the same agent must inspect images and call tools.
+    #
+    # Legacy alias to avoid:
+    #   - mistral-medium-latest
+    #       Old alias called out in the Mistral changelog; do not use as the default.
+    default_model: "magistral-small-latest"
     context_window: 128000
 
   openai:

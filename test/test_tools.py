@@ -588,6 +588,24 @@ class TestQmdTools:
         assert result.message == "ok"
 
     @pytest.mark.asyncio
+    async def test_qmd_get_resolves_short_qmd_uri_session_id_to_indexed_jsonl(self, ctx, monkeypatch):
+        meta = ctx.session_store.create_session()
+        captured = {}
+
+        async def fake_run_qmd(*args, timeout=60):
+            captured["args"] = args
+            return True, "ok"
+
+        monkeypatch.setattr("k_ai.tools.qmd._run_qmd", fake_run_qmd)
+
+        tool = QmdGetTool()
+        result = await tool.execute({"file": f"qmd://k-ai/{meta.id[:8]}.jsonl"}, ctx)
+
+        assert result.success is True
+        assert captured["args"] == ("get", f"qmd://k-ai/{meta.id}.jsonl")
+        assert result.message == "ok"
+
+    @pytest.mark.asyncio
     async def test_python_exec_error(self, ctx):
         tool = PythonExecTool()
         result = await tool.execute({"code": "raise ValueError('boom')"}, ctx)
@@ -627,7 +645,86 @@ class TestQmdTools:
         result = await tool.execute({"command": "sudo apt update"}, ctx)
         assert result.success is False
         assert result.data["interactive_command"] is True
-        assert "/focus shell" in result.message
+        assert "!sudo apt update" in result.message
+        assert "automatically" in result.message
+
+    @pytest.mark.asyncio
+    async def test_shell_exec_uses_local_interactive_shell_callback(self, ctx):
+        tool = ShellExecTool()
+
+        class _Result:
+            success = True
+            stdout = "apt output"
+            cwd = Path("/tmp/demo")
+            returncode = 0
+            interrupted = False
+            metadata = {"detached": False}
+
+        ctx.run_local_interactive_shell = AsyncMock(return_value=_Result())
+        result = await tool.execute({"command": "sudo apt update"}, ctx)
+        assert result.success is True
+        assert "state=completed" in result.message
+        assert "command=sudo apt update" in result.message
+        assert "returncode=0" in result.message
+        assert "apt output" in result.message
+        assert result.data["interactive_command"] is True
+        assert result.data["state"] == "completed"
+        ctx.run_local_interactive_shell.assert_awaited_once_with("sudo apt update")
+
+    @pytest.mark.asyncio
+    async def test_shell_exec_detects_read_prompt_as_interactive(self, ctx):
+        tool = ShellExecTool()
+
+        class _Result:
+            success = True
+            stdout = "first=y second=y"
+            cwd = Path("/tmp/demo")
+            returncode = 0
+            interrupted = False
+            metadata = {"detached": False}
+
+        command = """bash -c 'read -p "First confirmation [y/N]: " a; read -p "Second confirmation [y/N]: " b; printf "first=%s second=%s\\n" "$a" "$b"'"""
+        ctx.run_local_interactive_shell = AsyncMock(return_value=_Result())
+        result = await tool.execute({"command": command}, ctx)
+        assert result.success is True
+        assert result.data["interactive_command"] is True
+        ctx.run_local_interactive_shell.assert_awaited_once_with(command)
+
+    @pytest.mark.asyncio
+    async def test_shell_exec_detects_local_shell_script_with_read_prompt(self, ctx, tmp_path):
+        tool = ShellExecTool()
+
+        class _Result:
+            success = True
+            stdout = "done"
+            cwd = tmp_path
+            returncode = 0
+            interrupted = False
+            metadata = {"detached": False}
+
+        script = tmp_path / "confirm.sh"
+        script.write_text('#!/usr/bin/env bash\nread -p "Continue? " ans\nprintf "%s\\n" "$ans"\n', encoding="utf-8")
+        ctx.get_cwd = MagicMock(return_value=str(tmp_path))
+        ctx.run_local_interactive_shell = AsyncMock(return_value=_Result())
+        result = await tool.execute({"command": f"bash {script.name}"}, ctx)
+        assert result.success is True
+        assert result.data["interactive_command"] is True
+        ctx.run_local_interactive_shell.assert_awaited_once_with(f"bash {script.name}")
+
+    def test_shell_exec_formats_interactive_failure_state(self, ctx):
+        message = ShellExecTool._format_interactive_command_result(
+            command="sudo apt install vlc -y",
+            stdout="apt failed",
+            cwd=Path("/tmp/demo"),
+            success=False,
+            interrupted=False,
+            detached=False,
+            returncode=100,
+        )
+
+        assert "state=failed" in message
+        assert "returncode=100" in message
+        assert "apt failed" in message
 
 
 # ---------------------------------------------------------------------------

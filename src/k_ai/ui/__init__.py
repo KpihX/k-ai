@@ -12,6 +12,12 @@ from .render import (
     render_tool_result,
     render_user_panel,
 )
+from .input import (
+    ephemeral_confirm,
+    ephemeral_input,
+    erase_terminal_lines,
+    estimate_document_prompt_lines,
+)
 from .markdown import MathAwareMarkdown, render_content
 from .math import latex_to_unicode, MATH_REGEX
 
@@ -26,6 +32,10 @@ __all__ = [
     "render_tool_proposal",
     "render_tool_result",
     "render_user_panel",
+    "ephemeral_confirm",
+    "ephemeral_input",
+    "erase_terminal_lines",
+    "estimate_document_prompt_lines",
     "MathAwareMarkdown",
     "render_content",
     "latex_to_unicode",

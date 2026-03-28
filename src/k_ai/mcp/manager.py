@@ -27,6 +27,7 @@ class MCPManager:
     def __init__(self, config: ConfigManager, workspace_root: Path | None = None):
         self._config = config
         self._workspace_root = (workspace_root or Path.cwd()).expanduser().resolve()
+        self._session_cwd = self._workspace_root
         self._catalog = MCPCatalog()
         self._client = MCPClient(
             protocol_version=str(self._config.get_nested("mcp", "protocol_version", default="2025-06-18") or "2025-06-18"),
@@ -50,6 +51,18 @@ class MCPManager:
 
     def current_catalog(self) -> MCPCatalog:
         return self._catalog
+
+    def set_workspace_root(self, workspace_root: Path | None) -> Path:
+        resolved = (workspace_root or Path.cwd()).expanduser().resolve()
+        self._workspace_root = resolved
+        if self._session_cwd is None:
+            self._session_cwd = resolved
+        return resolved
+
+    def set_session_cwd(self, cwd: Path | None) -> Path:
+        resolved = (cwd or self._workspace_root).expanduser().resolve()
+        self._session_cwd = resolved
+        return resolved
 
     async def tools(self, force_refresh: bool = False) -> tuple[MCPToolSpec, ...]:
         return (await self.catalog(force_refresh=force_refresh)).tools
@@ -92,11 +105,11 @@ class MCPManager:
         tool = await self.get_tool(qualified_name)
         if tool is None:
             raise MCPClientError(f"Unknown MCP tool '{qualified_name}'.")
-        server = self._server_by_name(tool.server_name)
-        if server is None:
+        spec = self._server_spec_by_name(tool.server_name)
+        if spec is None:
             raise MCPClientError(f"MCP server '{tool.server_name}' is unavailable.")
         return await self._client.call_tool(
-            spec=server.spec,
+            spec=spec,
             tool_name=tool.name,
             qualified_name=tool.qualified_name,
             arguments=arguments or {},
@@ -121,16 +134,16 @@ class MCPManager:
         return None
 
     async def read_resource(self, server_name: str, uri: str) -> MCPResourceReadResult:
-        server = self._server_by_name(server_name)
-        if server is None:
+        spec = self._server_spec_by_name(server_name)
+        if spec is None:
             raise MCPClientError(f"MCP server '{server_name}' is unavailable.")
-        return await self._client.read_resource(spec=server.spec, uri=uri)
+        return await self._client.read_resource(spec=spec, uri=uri)
 
     async def load_prompt(self, server_name: str, prompt_name: str, arguments: dict[str, str] | None = None) -> MCPPromptGetResult:
-        server = self._server_by_name(server_name)
-        if server is None:
+        spec = self._server_spec_by_name(server_name)
+        if spec is None:
             raise MCPClientError(f"MCP server '{server_name}' is unavailable.")
-        return await self._client.get_prompt(spec=server.spec, prompt_name=prompt_name, arguments=arguments or {})
+        return await self._client.get_prompt(spec=spec, prompt_name=prompt_name, arguments=arguments or {})
 
     def config_text(self, *parts: str, default: str = "", **vars: str) -> str:
         raw = str(self._config.get_nested(*parts, default=default) or default)
@@ -271,6 +284,12 @@ class MCPManager:
                 or "quiet"
             ).strip().lower()
             roots = self._build_roots(payload.get("roots", {}) or {})
+            effective_args = self._effective_server_args(
+                server_name=str(name).strip(),
+                command=self._render_template(endpoint),
+                args=tuple(self._render_template(item) for item in args),
+                roots=roots,
+            )
             tools_cfg = payload.get("tools", {}) or {}
             servers.append(
                 MCPServerSpec(
@@ -278,7 +297,7 @@ class MCPManager:
                     enabled=bool(payload.get("enabled", True)),
                     transport=transport,
                     command=self._render_template(endpoint),
-                    args=tuple(self._render_template(item) for item in args),
+                    args=effective_args,
                     cwd=cwd,
                     env=headers,
                     stderr_mode=stderr_mode,
@@ -309,23 +328,54 @@ class MCPManager:
             roots.append(MCPRootSpec(path=path, name=path.name or str(path)))
         return tuple(roots)
 
+    def _effective_server_args(
+        self,
+        *,
+        server_name: str,
+        command: str,
+        args: tuple[str, ...],
+        roots: tuple[MCPRootSpec, ...],
+    ) -> tuple[str, ...]:
+        if args:
+            return args
+        filesystem_server_name = str(
+            self._config.get_nested("mcp", "admin", "install", "filesystem_server_name", default="filesystem")
+            or "filesystem"
+        ).strip()
+        filesystem_binary = str(
+            self._config.get_nested("mcp", "admin", "install", "filesystem_binary", default="mcp-server-filesystem")
+            or "mcp-server-filesystem"
+        ).strip()
+        command_name = Path(command).name.strip()
+        if server_name != filesystem_server_name and command_name != filesystem_binary:
+            return args
+        return tuple(str(root.path) for root in roots if str(root.path).strip())
+
     def _resolve_path_template(self, raw: str) -> Path:
         rendered = self._render_template(raw)
         path = Path(rendered).expanduser()
         if not path.is_absolute():
-            path = (self._workspace_root / path).resolve()
+            path = (self._session_cwd / path).resolve()
         else:
             path = path.resolve()
         return path
 
     def _render_template(self, text: str) -> str:
-        rendered = str(text or "").replace("{workspace_root}", str(self._workspace_root))
+        rendered = str(text or "")
+        rendered = rendered.replace("{workspace_root}", str(self._workspace_root))
+        rendered = rendered.replace("{session_cwd}", str(self._session_cwd))
         return os.path.expandvars(rendered)
 
     def _server_by_name(self, name: str) -> MCPServerSnapshot | None:
         for server in self._catalog.servers:
             if server.spec.name == name:
                 return server
+        return None
+
+    def _server_spec_by_name(self, name: str) -> MCPServerSpec | None:
+        for spec in self._build_server_specs():
+            if spec.name == name:
+                return spec
         return None
 
     def configured_server_names(self) -> tuple[str, ...]:

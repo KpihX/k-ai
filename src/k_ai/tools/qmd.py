@@ -68,6 +68,19 @@ def _resolve_qmd_collection(
     return _session_collection(ctx)
 
 
+def _resolve_session_docid(raw: str, ctx: ToolContext) -> str | None:
+    cleaned = raw.strip().strip("/")
+    if not cleaned:
+        return None
+    base = cleaned.removesuffix(".jsonl")
+    if not _SESSION_ID_RE.fullmatch(base):
+        return None
+    meta = ctx.session_store.get_session(base)
+    if not meta:
+        return None
+    return f"{meta.id}.jsonl"
+
+
 def _resolve_qmd_file(file: str, ctx: ToolContext) -> str:
     raw = file.strip()
     if not raw:
@@ -91,6 +104,12 @@ def _resolve_qmd_file(file: str, ctx: ToolContext) -> str:
             meta = ctx.session_store.get_session(session_id)
             if meta:
                 return f"qmd://{_session_collection(ctx)}/{meta.id}.jsonl{line_suffix}"
+        collection_prefix = f"qmd://{_session_collection(ctx)}/"
+        if base.startswith(collection_prefix):
+            relative = base.removeprefix(collection_prefix)
+            resolved_docid = _resolve_session_docid(relative, ctx)
+            if resolved_docid:
+                return f"{collection_prefix}{resolved_docid}{line_suffix}"
         if not base.startswith(f"qmd://{_session_collection(ctx)}/"):
             suffix = base.split("/", 3)[-1]
             return f"qmd://{_session_collection(ctx)}/{suffix}{line_suffix}"
@@ -102,9 +121,9 @@ def _resolve_qmd_file(file: str, ctx: ToolContext) -> str:
         if meta:
             return f"qmd://{_session_collection(ctx)}/{meta.id}.jsonl{line_suffix}"
 
-    meta = ctx.session_store.get_session(base.removesuffix(".jsonl"))
-    if meta:
-        return f"qmd://{_session_collection(ctx)}/{meta.id}.jsonl{line_suffix}"
+    resolved_docid = _resolve_session_docid(base, ctx)
+    if resolved_docid:
+        return f"qmd://{_session_collection(ctx)}/{resolved_docid}{line_suffix}"
 
     return raw
 

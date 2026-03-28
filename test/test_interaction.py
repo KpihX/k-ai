@@ -3,6 +3,7 @@
 Tests for mixed input parsing, cwd normalization, persistent local runners, and ask mode.
 """
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -106,8 +107,84 @@ class TestAskMode:
         assert "shell-output" in captured["message"]
         assert "explique ce résultat" in captured["message"]
 
+    @pytest.mark.asyncio
+    async def test_local_only_document_is_persisted_into_history(self, cm, tmp_path, monkeypatch):
+        from k_ai.interaction.models import RunnerExecutionResult, RunnerKind
+
+        cm.set("provider", "ollama")
+        cm.set("sessions.directory", str(tmp_path / "sessions"))
+        cm.set("memory.internal_file", str(tmp_path / "MEMORY.json"))
+        session = ChatSession(cm, workspace_root=str(tmp_path))
+        session._do_new_session()
+
+        async def fake_shell(block):
+            return RunnerExecutionResult(
+                runner=RunnerKind.SHELL,
+                command=block.content,
+                stdout="ok",
+                success=True,
+                cwd=Path(tmp_path),
+            )
+
+        monkeypatch.setattr(session, "_run_shell_block", fake_shell)
+        await session._process_submitted_document("!pwd")
+
+        assert session.history[-1].role == MessageRole.USER
+        assert "[local-1 shell" in session.history[-1].content
+        assert "pwd" in session.history[-1].content
+        assert "ok" in session.history[-1].content
+
 
 class TestPersistentRunners:
+    def test_session_close_closes_cached_runners(self, cm, tmp_path):
+        cm.set("provider", "ollama")
+        cm.set("sessions.directory", str(tmp_path / "sessions"))
+        cm.set("memory.internal_file", str(tmp_path / "MEMORY.json"))
+        session = ChatSession(cm, workspace_root=str(tmp_path))
+        shell_runner = MagicMock()
+        python_runner = MagicMock()
+        session._shell_runner = shell_runner
+        session._python_runner = python_runner
+
+        session.close()
+
+        shell_runner.close.assert_called_once_with()
+        python_runner.close.assert_called_once_with()
+        assert session._shell_runner is None
+        assert session._python_runner is None
+
+    def test_shell_runner_normalizes_control_debris(self):
+        from k_ai.interaction.runners import ShellRunner
+
+        runner = object.__new__(ShellRunner)
+        output = "''$'\\004'  file1  file2\n"
+        assert runner._normalize_block_output("ls", output) == "file1  file2"
+
+    def test_shell_runner_detach_sequence_handles_split_escape(self):
+        from k_ai.interaction.runners import ShellRunner
+
+        runner = object.__new__(ShellRunner)
+        runner.escape_sequence = b"\x1d"
+        first, detached, pending = runner._consume_detach_input(
+            b"\x1b",
+            pending_escape=False,
+            allow_escape=True,
+            detach_sequences=(b"\x1b\x1b",),
+        )
+        assert first == b""
+        assert detached is False
+        assert pending is True
+
+        second, detached, pending = runner._consume_detach_input(
+            b"\x1b",
+            pending_escape=pending,
+            allow_escape=True,
+            detach_sequences=(b"\x1b\x1b",),
+        )
+        assert second == b""
+        assert detached is True
+        assert pending is False
+
     @pytest.mark.asyncio
     async def test_shell_runner_persists_cwd(self, cm, tmp_path):
         cm.set("provider", "ollama")
@@ -131,3 +208,60 @@ class TestPersistentRunners:
         await session._run_python_block(type("Block", (), {"content": "x = 41"})())
         second = await session._run_python_block(type("Block", (), {"content": "print(x + 1)"})())
         assert "42" in second.stdout
+
+    @pytest.mark.asyncio
+    async def test_shell_block_enables_interactive_handoff_for_sudo(self, cm, tmp_path):
+        from k_ai.interaction.models import RunnerExecutionResult, RunnerKind
+
+        cm.set("provider", "ollama")
+        cm.set("sessions.directory", str(tmp_path / "sessions"))
+        cm.set("memory.internal_file", str(tmp_path / "MEMORY.json"))
+        session = ChatSession(cm, workspace_root=str(tmp_path))
+        captured = {}
+
+        class DummyRunner:
+            def run_block(self, block, **kwargs):
+                captured["block"] = block
+                captured["kwargs"] = kwargs
+                return RunnerExecutionResult(
+                    runner=RunnerKind.SHELL,
+                    command=block,
+                    stdout="ok",
+                    success=True,
+                    cwd=Path(tmp_path),
+                )
+
+        session._shell_runner = DummyRunner()
+        result = await session._run_shell_block(type("Block", (), {"content": "sudo apt update"})())
+        assert result.stdout == "ok"
+        assert captured["kwargs"]["route_stdin"] is True
+        assert captured["kwargs"]["input_notice"]
+        assert b"\x1b\x1b" in captured["kwargs"]["detach_sequences"]
+
+    @pytest.mark.asyncio
+    async def test_python_block_enables_interactive_handoff_for_input(self, cm, tmp_path):
+        from k_ai.interaction.models import RunnerExecutionResult, RunnerKind
+
+        cm.set("provider", "ollama")
+        cm.set("sessions.directory", str(tmp_path / "sessions"))
+        cm.set("memory.internal_file", str(tmp_path / "MEMORY.json"))
+        session = ChatSession(cm, workspace_root=str(tmp_path))
+        captured = {}
+
+        class DummyRunner:
+            def run_block(self, block, **kwargs):
+                captured["block"] = block
+                captured["kwargs"] = kwargs
+                return RunnerExecutionResult(
+                    runner=RunnerKind.PYTHON,
+                    command=block,
+                    stdout="ok",
+                    success=True,
+                    cwd=Path(tmp_path),
+                )
+
+        session._python_runner = DummyRunner()
+        result = await session._run_python_block(type("Block", (), {"content": "name = input('Name: ')"})())
+        assert result.stdout == "ok"
+        assert captured["kwargs"]["route_stdin"] is True
+        assert captured["kwargs"]["input_notice"]
