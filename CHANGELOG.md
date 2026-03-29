@@ -22,14 +22,12 @@ The format is based on Keep a Changelog.
 
 ### Changed
 
-- `shell_exec` and `python_exec` now honor the session working directory instead of implicitly running in the process cwd.
-- The interactive prompt is now multiline and routes submitted documents through a dedicated interaction parser instead of a single raw user string.
-- `scripts/purge.sh` now detects installed uv tools more robustly before uninstalling them.
-- Long assistant responses now stream append-only under a static assistant header instead of keeping one giant full-height Rich `Live` panel alive.
-- Default `!` and `>` block rendering is now buffered into clean local-result panels, while explicit `/focus` remains the path for raw interactive PTY control.
+- Migrated internal memory from JSON (`MEMORY.json`) to Markdown (`MEMORY.md`), allowing agents to use standard filesystem tools for proactive updates and enabling better git-versioning of the runtime state.
+- `scripts/install.sh` and `memory.py` now use Markdown templates for initial memory setup.
 
 ### Fixed
 
+- Resolved `AttributeError: 'Buffer' object has no attribute 'text_before_cursor'` when using `prompt-toolkit` v3.0.52+ during dynamic completion.
 - Shell/Python local runner output now strips PTY control noise, sentinel-command leakage, and login-shell echo artifacts before those results reach the user-facing UI or the LLM batch context.
 
 ## [0.2.0] - 2026-03-27
