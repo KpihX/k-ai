@@ -147,6 +147,24 @@ class TestSkillSelector:
         assert [item.summary.name for item in selected] == ["kpihx-workspace"]
         assert selected[0].explicit is True
 
+    def test_selector_matches_at_prefixed_skill_name(self, tmp_path):
+        root = tmp_path / "skills"
+        write_skill(
+            root,
+            "workspace",
+            name="kpihx-workspace",
+            description="Workspace and engineering standards.",
+            body="Body.",
+        )
+        registry = SkillRegistry([SkillRoot(path=root, scope="project", precedence=0)])
+        catalog = registry.refresh()
+        selector = SkillSelector(max_active=3, explicit_prefixes=("@", "$"))
+
+        selected = selector.select(user_input="charge @kpihx-workspace maintenant", available=catalog.skills)
+
+        assert [item.summary.name for item in selected] == ["kpihx-workspace"]
+        assert selected[0].explicit is True
+
     def test_selector_only_auto_activates_on_explicit_mentions_or_continuation(self, tmp_path):
         root = tmp_path / "skills"
         write_skill(
@@ -223,3 +241,61 @@ class TestSkillManager:
 
         assert "python-review" in rendered
         assert "Look for bugs first." in rendered
+
+    def test_manager_loads_explicit_skill_reference_file(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        skill_dir = tmp_path / ".k-ai" / "skills" / "project"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\n"
+            "name: k-project\n"
+            "description: Project initialization.\n"
+            "---\n\n"
+            "# Project\n\nUse templates.\n",
+            encoding="utf-8",
+        )
+        templates_dir = skill_dir / "templates"
+        templates_dir.mkdir(parents=True, exist_ok=True)
+        (templates_dir / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
+
+        cm = ConfigManager()
+        cm.set("skills.explicit_prefixes", ["$", "@"])
+        manager = SkillManager(cm, workspace_root=tmp_path)
+
+        result = manager.resolve_for_turn(
+            user_input="utilise @k-project/templates/pyproject.toml pour init le projet",
+            force_refresh=True,
+        )
+        rendered = manager.render_active_section(result.activated)
+
+        assert result.activated[0].references
+        assert result.activated[0].references[0].relative_path == "templates/pyproject.toml"
+        assert "Referenced Skill File: templates/pyproject.toml" in rendered
+        assert "name='demo'" in rendered
+
+    def test_manager_completion_entries_include_skill_and_one_level_files(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        skill_dir = tmp_path / ".k-ai" / "skills" / "project"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\n"
+            "name: k-project\n"
+            "description: Project initialization.\n"
+            "---\n\n"
+            "# Project\n",
+            encoding="utf-8",
+        )
+        (skill_dir / "README.md").write_text("top file\n", encoding="utf-8")
+        templates_dir = skill_dir / "templates"
+        templates_dir.mkdir(parents=True, exist_ok=True)
+        (templates_dir / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+
+        cm = ConfigManager()
+        cm.set("skills.explicit_prefixes", ["@", "$"])
+        manager = SkillManager(cm, workspace_root=tmp_path)
+
+        entries = manager.completion_entries()
+
+        assert "@k-project" in entries
+        assert "@k-project/README.md" in entries
+        assert "@k-project/templates/pyproject.toml" in entries

@@ -63,7 +63,7 @@ def test_install_script_configures_custom_runtime_root(tmp_path):
 
     data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert data["config"]["persist_path"] == str(config_path)
-    assert data["memory"]["internal_file"] == str(runtime_root / "MEMORY.json")
+    assert data["memory"]["path"] == str(runtime_root / "MEMORY.md")
     assert data["sessions"]["directory"] == str(runtime_root / "sessions")
     assert data["tools"]["qmd"]["session_collection"] == "audit-kai"
     assert data["tools"]["mcp"]["enabled"] is True

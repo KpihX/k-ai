@@ -51,7 +51,7 @@ Runtime git behavior:
 - it initializes a local git repo in `~/.k-ai/` when runtime git tracking is enabled
 - it writes a local git identity for the runtime repo so the first commit and later auto-commits do not depend on global git config
 - it runs the first `git add .` and initial commit after install
-- later, interactive chat exits can auto-commit `config.yaml`, `MEMORY.json`, and `sessions/*`
+- later, interactive chat exits can auto-commit `config.yaml`, `MEMORY.md`, and `sessions/*`
 
 Bootstrap behavior:
 

@@ -11,7 +11,7 @@
 
 # Default provider used when the user does not force one with --provider or
 # via /provider in chat. Must match a key under no_auth, api_key, or oauth.
-provider: "ollama"
+provider: "mistral"
 
 # Optional model override. Leave empty to use the provider's default_model.
 model: ""
@@ -35,6 +35,12 @@ provider_search_priority:
   - "no_auth"
   - "api_key"
   - "oauth"
+
+# Optional per-provider auth-mode overrides.
+# Example:
+#   provider_auth_mode_overrides:
+#     gemini: "oauth"
+provider_auth_mode_overrides: {}
 
 
 # ==============================================================================
@@ -118,7 +124,7 @@ api_key:
     # Legacy alias to avoid:
     #   - mistral-medium-latest
     #       Old alias called out in the Mistral changelog; do not use as the default.
-    default_model: "magistral-small-latest"
+    default_model: "mistral-small-latest"
     context_window: 128000
 
   openai:
@@ -164,5 +170,13 @@ oauth:
     oauth_scopes:
       - "https://www.googleapis.com/auth/cloud-platform"
     token_path: "~/.k-ai/tokens/google_oauth.json"
+    client_id_env_var: "GOOGLE_CLIENT_ID"
+    client_secret_env_var: "GOOGLE_CLIENT_SECRET"
+    vertex_project_env_var: "VERTEXAI_PROJECT"
+    vertex_location_env_var: "VERTEXAI_LOCATION"
+    vertex_location: "us-central1"
+    callback_host: "127.0.0.1"
+    callback_port: 0
+    login_timeout_seconds: 180
     default_model: "gemini-2.5-flash"
     context_window: 1000000

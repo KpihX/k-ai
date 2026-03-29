@@ -35,6 +35,7 @@ skills:
   # Pattern used when the user explicitly names a skill in chat.
   explicit_prefixes:
     - "$"
+    - "@"
 
   selection:
     reasons:
@@ -78,7 +79,7 @@ skills:
     catalog:
       line_template: "- {skill_name}: {skill_description} [scope={skill_scope}]"
       overflow_template: "- ... and {remaining_count} more skill(s)"
-      usage_line: "Use activate_skill with the exact skill name when you need to load one."
+      usage_line: "Use activate_skill, @skill_name, or @skill_name/path when you need to load a skill or one file from its folder."
     active:
       block_template: |-
         ### Skill: {skill_name}
@@ -87,6 +88,12 @@ skills:
         - reason: {skill_reason}
 
         {skill_body}
+      reference_block_template: |-
+        #### Referenced Skill File: {reference_path}
+        - mention: {reference_mention}
+        - source: {reference_source}
+
+        {reference_body}
     ui:
       reload_message: "Skill catalog refreshed."
       active_none_message: "No session skill context is currently retained."
@@ -119,6 +126,9 @@ prompts:
     Otherwise,
     use the visible skill catalog as routing metadata and call activate_skill
     with the exact skill name before answering when one skill clearly fits.
+    Users may also force-load skills directly inside their message with
+    @skill-name, and may attach one extra file from the skill folder with
+    @skill-name/path or @skill-name/subdir/file.
     If a skill is active, follow it. If no skill is active, answer normally
     without inventing unseen skill instructions.
 

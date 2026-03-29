@@ -13,6 +13,8 @@ import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
+from .memory import resolve_memory_path
+
 if TYPE_CHECKING:
     from .config import ConfigManager
 
@@ -21,7 +23,7 @@ RUNTIME_GITIGNORE_TEXT = """# Managed by k-ai
 # Track only the durable runtime state that matters to the user.
 *
 !.gitignore
-!MEMORY.json
+!MEMORY.md
 !config.yaml
 !sessions/
 !sessions/index.json
@@ -38,7 +40,7 @@ def _expanded_path(value: str) -> Path:
 
 def runtime_state_paths(cm: ConfigManager) -> Dict[str, Path]:
     config_path = _expanded_path(cm.get_nested("config", "persist_path", default="~/.k-ai/config.yaml"))
-    memory_path = _expanded_path(cm.get_nested("memory", "internal_file", default="~/.k-ai/MEMORY.json"))
+    memory_path = resolve_memory_path(cm)
     sessions_dir = _expanded_path(cm.get_nested("sessions", "directory", default="~/.k-ai/sessions"))
     return {
         "config": config_path,
@@ -62,7 +64,7 @@ def runtime_store_root_issues(cm: ConfigManager) -> List[str]:
     if len(distinct) <= 1:
         return []
     return [
-        "config.persist_path, memory.internal_file, and sessions.directory must share the same parent "
+        "config.persist_path, memory.path, and sessions.directory must share the same parent "
         "for runtime git tracking to work safely.",
         *(f"{name}: {path}" for name, path in parents.items()),
     ]

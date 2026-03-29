@@ -39,7 +39,7 @@ The format is based on Keep a Changelog.
 - Native MCP runtime foundation using the official Python `mcp` SDK, with `stdio` / `streamable_http` / `sse`, roots support, dynamic MCP tool import, MCP resources/prompts access, admin tools and `/mcp` commands, and the official `filesystem` server configured as the first bundled MCP.
 - Native hooks runtime with Claude-style event names, directory discovery (`.k-ai/hooks`, `.agents/hooks`, `~/.agents/hooks`), strict config parsing, command execution with stdin JSON payloads, blocking pre-hooks, post-tool feedback, and `/hooks` inspection commands.
 - Native `SKILL.md` runtime with `~/.agents/skills` default discovery, project overlays (`.k-ai/skills`, `.agents/skills`), lazy metadata/body loading, slash-command inspection, and the internal `activate_skill` tool.
-- Managed runtime-store git tracking for `~/.k-ai/`, including a committed `.gitignore` template that keeps only `config.yaml`, `MEMORY.json`, and `sessions/*`.
+- Managed runtime-store git tracking for `~/.k-ai/`, including a committed `.gitignore` template that keeps only `config.yaml`, `MEMORY.md`, and `sessions/*`.
 - Automatic runtime-store commit support on interactive chat exit, with commit subjects derived from the session digest.
 - Installation profile support for runtime git defaults (`runtime_git.*`) and installer-side initialization of the runtime git repo.
 - Integration tests for `scripts/install.sh` and `scripts/purge.sh`, including custom runtime roots and purge edge cases.

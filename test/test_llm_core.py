@@ -4,6 +4,7 @@ Tests for LiteLLMDriver: init, model routing, chat_stream, list_models,
 exception mapping, and the get_provider factory.
 """
 import asyncio
+import json
 import pytest
 import litellm
 from types import SimpleNamespace
@@ -126,6 +127,29 @@ class TestLiteLLMDriverInit:
         assert driver.api_key == "fresh-token"
         assert "fresh-token" in token_file.read_text(encoding="utf-8")
 
+    def test_google_gemini_oauth_builds_vertex_authorized_user_credentials(self, tmp_path):
+        token_file = tmp_path / "google.json"
+        token_file.write_text(
+            '{"access_token":"oauth-token","refresh_token":"rt","client_id":"123456789012-test.apps.googleusercontent.com","client_secret":"secret","token_uri":"https://oauth2.googleapis.com/token","expires_at":"2999-01-01T00:00:00+00:00","scopes":["https://www.googleapis.com/auth/cloud-platform"]}',
+            encoding="utf-8",
+        )
+        cm2 = ConfigManager()
+        cm2.config.setdefault("oauth", {})["gemini"] = {
+            "oauth_provider_name": "google",
+            "oauth_scopes": ["https://www.googleapis.com/auth/cloud-platform"],
+            "token_path": str(token_file),
+            "default_model": "gemini-2.5-flash",
+            "context_window": 1000000,
+            "vertex_location": "us-central1",
+        }
+        driver = LiteLLMDriver(cm2, provider_name="gemini", auth_mode="oauth")
+        params = driver._google_gemini_oauth_litellm_params()
+        assert params["model"] == "vertex_ai/gemini-2.5-flash"
+        assert params["vertex_project"] == "123456789012"
+        creds = json.loads(params["vertex_credentials"])
+        assert creds["type"] == "authorized_user"
+        assert creds["quota_project_id"] == "123456789012"
+
 
 # ===========================================================================
 # Model string routing (the LiteLLM openai/ prefix fix)
@@ -224,6 +248,29 @@ class TestModelStringRouting:
             params = await self._capture_params(cm, "xai")
         assert params["model"].startswith("xai/")
         assert "base_url" not in params
+
+    @pytest.mark.asyncio
+    async def test_gemini_oauth_routes_via_vertex_without_api_key(self, tmp_path):
+        token_file = tmp_path / "google.json"
+        token_file.write_text(
+            '{"access_token":"oauth-token","refresh_token":"rt","client_id":"123456789012-test.apps.googleusercontent.com","client_secret":"secret","token_uri":"https://oauth2.googleapis.com/token","expires_at":"2999-01-01T00:00:00+00:00","scopes":["https://www.googleapis.com/auth/cloud-platform"]}',
+            encoding="utf-8",
+        )
+        cm2 = ConfigManager()
+        cm2.config.setdefault("oauth", {})["gemini"] = {
+            "oauth_provider_name": "google",
+            "oauth_scopes": ["https://www.googleapis.com/auth/cloud-platform"],
+            "token_path": str(token_file),
+            "default_model": "gemini-2.5-flash",
+            "context_window": 1000000,
+            "vertex_location": "us-central1",
+        }
+        params = await self._capture_params(cm2, "gemini", auth_mode="oauth")
+        assert params["model"] == "vertex_ai/gemini-2.5-flash"
+        assert params["vertex_project"] == "123456789012"
+        assert params["vertex_location"] == "us-central1"
+        assert "vertex_credentials" in params
+        assert "api_key" not in params
 
 
 # ===========================================================================

@@ -61,7 +61,7 @@ class TestAskMode:
     async def test_ask_does_not_persist_history(self, cm, tmp_path):
         cm.set("provider", "ollama")
         cm.set("sessions.directory", str(tmp_path / "sessions"))
-        cm.set("memory.internal_file", str(tmp_path / "MEMORY.json"))
+        cm.set("memory.internal_file", str(tmp_path / "MEMORY.md"))
         session = ChatSession(cm, workspace_root=str(tmp_path))
         session.llm.chat_stream = _mock_llm("réponse rapide")
         result = await session.ask("question")
@@ -72,7 +72,7 @@ class TestAskMode:
     async def test_ephemeral_uses_context_without_persisting(self, cm, tmp_path):
         cm.set("provider", "ollama")
         cm.set("sessions.directory", str(tmp_path / "sessions"))
-        cm.set("memory.internal_file", str(tmp_path / "MEMORY.json"))
+        cm.set("memory.internal_file", str(tmp_path / "MEMORY.md"))
         session = ChatSession(cm, workspace_root=str(tmp_path))
         session.history.append(Message(role=MessageRole.USER, content="bonjour"))
         session.llm.chat_stream = _mock_llm("réponse contextuelle")
@@ -84,7 +84,7 @@ class TestAskMode:
     async def test_mixed_document_passes_local_outputs_into_llm_block(self, cm, tmp_path, monkeypatch):
         cm.set("provider", "ollama")
         cm.set("sessions.directory", str(tmp_path / "sessions"))
-        cm.set("memory.internal_file", str(tmp_path / "MEMORY.json"))
+        cm.set("memory.internal_file", str(tmp_path / "MEMORY.md"))
         session = ChatSession(cm, workspace_root=str(tmp_path))
         captured = {}
 
@@ -113,7 +113,7 @@ class TestAskMode:
 
         cm.set("provider", "ollama")
         cm.set("sessions.directory", str(tmp_path / "sessions"))
-        cm.set("memory.internal_file", str(tmp_path / "MEMORY.json"))
+        cm.set("memory.internal_file", str(tmp_path / "MEMORY.md"))
         session = ChatSession(cm, workspace_root=str(tmp_path))
         session._do_new_session()
 
@@ -139,7 +139,7 @@ class TestPersistentRunners:
     def test_session_close_closes_cached_runners(self, cm, tmp_path):
         cm.set("provider", "ollama")
         cm.set("sessions.directory", str(tmp_path / "sessions"))
-        cm.set("memory.internal_file", str(tmp_path / "MEMORY.json"))
+        cm.set("memory.internal_file", str(tmp_path / "MEMORY.md"))
         session = ChatSession(cm, workspace_root=str(tmp_path))
         shell_runner = MagicMock()
         python_runner = MagicMock()
@@ -189,7 +189,7 @@ class TestPersistentRunners:
     async def test_shell_runner_persists_cwd(self, cm, tmp_path):
         cm.set("provider", "ollama")
         cm.set("sessions.directory", str(tmp_path / "sessions"))
-        cm.set("memory.internal_file", str(tmp_path / "MEMORY.json"))
+        cm.set("memory.internal_file", str(tmp_path / "MEMORY.md"))
         cm.set("interaction.runners.shell.command", "sh")
         session = ChatSession(cm, workspace_root=str(tmp_path))
         target = tmp_path / "repo"
@@ -203,7 +203,7 @@ class TestPersistentRunners:
     async def test_python_runner_persists_state(self, cm, tmp_path):
         cm.set("provider", "ollama")
         cm.set("sessions.directory", str(tmp_path / "sessions"))
-        cm.set("memory.internal_file", str(tmp_path / "MEMORY.json"))
+        cm.set("memory.internal_file", str(tmp_path / "MEMORY.md"))
         session = ChatSession(cm, workspace_root=str(tmp_path))
         await session._run_python_block(type("Block", (), {"content": "x = 41"})())
         second = await session._run_python_block(type("Block", (), {"content": "print(x + 1)"})())
@@ -215,7 +215,7 @@ class TestPersistentRunners:
 
         cm.set("provider", "ollama")
         cm.set("sessions.directory", str(tmp_path / "sessions"))
-        cm.set("memory.internal_file", str(tmp_path / "MEMORY.json"))
+        cm.set("memory.internal_file", str(tmp_path / "MEMORY.md"))
         session = ChatSession(cm, workspace_root=str(tmp_path))
         captured = {}
 
@@ -244,7 +244,7 @@ class TestPersistentRunners:
 
         cm.set("provider", "ollama")
         cm.set("sessions.directory", str(tmp_path / "sessions"))
-        cm.set("memory.internal_file", str(tmp_path / "MEMORY.json"))
+        cm.set("memory.internal_file", str(tmp_path / "MEMORY.md"))
         session = ChatSession(cm, workspace_root=str(tmp_path))
         captured = {}
 

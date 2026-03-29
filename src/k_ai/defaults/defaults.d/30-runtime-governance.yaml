@@ -155,6 +155,12 @@ tool_approval:
         default_policy: ask
         protected: false
         description: Persist the current active merged config to disk.
+      oauth_login:
+        category: config
+        risk: high
+        default_policy: ask
+        protected: false
+        description: Run a browser-based OAuth login, save the resulting token, and optionally switch the runtime to oauth mode.
 
     tool_admin:
       tool_policy_list:
@@ -187,26 +193,6 @@ tool_approval:
         default_policy: ask
         protected: false
         description: Enable or disable one mutable tool capability group such as exa, python, shell, qmd, or mcp.
-
-    memory:
-      memory_add:
-        category: memory
-        risk: medium
-        default_policy: ask
-        protected: false
-        description: Add a fact or preference to persistent internal memory.
-      memory_list:
-        category: memory
-        risk: low
-        default_policy: auto
-        protected: false
-        description: List internal memory entries.
-      memory_remove:
-        category: memory
-        risk: high
-        default_policy: ask
-        protected: false
-        description: Remove a memory entry by id.
 
     skills:
       activate_skill:
@@ -462,7 +448,7 @@ tools:
   # Controls python_exec + python_sandbox_* tools.
   python:
     enabled: true
-    timeout: 30
+    timeout: 180
     install_timeout: 300
     # Dedicated sandbox/venv used for numpy, scipy, pandas, etc.
     sandbox_dir: "~/.k-ai/sandbox"
@@ -480,7 +466,7 @@ tools:
   # Controls the shell_exec tool.
   shell:
     enabled: true
-    timeout: 30
+    timeout: 180
     interactive_patterns:
       - "(?i)\\bsudo\\b"
       - "(?i)\\bpasswd\\b"
@@ -500,8 +486,8 @@ tools:
     enabled: true
     limit: 5
     query_timeout: 180
-    keyword_timeout: 30
-    vector_timeout: 30
+    keyword_timeout: 180
+    vector_timeout: 180
     # Restrict session/history retrieval to the dedicated k-ai collection.
     session_collection: "k-ai"
 

@@ -1,178 +1,235 @@
 # src/k_ai/memory.py
 """
-Persistent memory store for k-ai.
+Markdown-backed runtime context files for k-ai.
 
-Two levels:
-  - External (read-only): a file loaded into the system prompt (e.g. KERNEL.md).
-  - Internal (read-write): MEMORY.json with add/list/remove operations.
+Two durable files matter:
+  - AGENTS.md: agent instructions/context file loaded into the system prompt.
+  - MEMORY.md: mutable k-ai-specific memory and operating notes.
+
+The old JSON memory store is kept only as a compatibility layer at the API
+level; the on-disk source of truth is now Markdown.
 """
-import json
+from __future__ import annotations
+
+import re
 import shutil
-from datetime import datetime, timezone
+import warnings
 from pathlib import Path
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
+
+import yaml
 
 from .models import MemoryEntry
-from .exceptions import MemoryStoreError
+
+if TYPE_CHECKING:
+    from .config import ConfigManager
 
 
-_MEMORY_VERSION = 1
+_ENTRY_RE = re.compile(r"^\s*-\s*\[(\d+)\]\s+(.*?)\s*$", re.MULTILINE)
+_PREFERRED_USER_RE = re.compile(
+    r"(^|\n)-\s+(?:\[\d+\]\s+)?Preferred user name:\s*(.+?)\.?\s*(?=\n|$)",
+    re.IGNORECASE,
+)
+
+_DEFAULT_MEMORY_TEMPLATE = """---
+name: k-ai-memory
+description: k-ai runtime memory, preferences, and operating notes.
+license: private
+metadata:
+  author: KpihX
+  version: "1.1.0"
+  scope: runtime-memory
+  target-agent: k-ai
+allowed-tools: Read, Edit, Write
+---
+
+# k-ai Memory
+
+> THE AGENT MUST PROACTIVELY UPDATE THIS MEMORY AS SOON AS IT FINDS SOMETHING KEY TO REMEMBER, WITHOUT ASKING FOR APPROVAL.
+
+## Profile
+
+## Notes
+"""
+
+
+def resolve_memory_path(cm: "ConfigManager", default: str = "~/.k-ai/MEMORY.md") -> Path:
+    raw = (
+        cm.get_nested("memory", "path", default=None)
+        or cm.get_nested("memory", "internal_file", default=default)
+        or default
+    )
+    return Path(str(raw)).expanduser()
+
+
+def resolve_agents_path(cm: "ConfigManager", default: str = "~/.k-ai/AGENTS.md") -> Optional[Path]:
+    raw = (
+        cm.get_nested("memory", "agents_path", default=None)
+        or cm.get_nested("memory", "external_file", default=default)
+        or default
+    )
+    text = str(raw).strip()
+    if not text:
+        return None
+    return Path(text).expanduser()
+
+
+def load_context_file(path: Optional[str | Path]) -> str:
+    """Load one markdown context file. Missing/unreadable files return an empty string."""
+    if not path:
+        return ""
+    target = Path(path).expanduser()
+    if not target.exists():
+        return ""
+    try:
+        return target.read_text(encoding="utf-8")
+    except Exception:
+        return ""
+
+
+load_external_memory = load_context_file
 
 
 class MemoryStore:
-    """
-    Manages the internal MEMORY.json file.
-
-    File format::
-
-        {
-            "version": 1,
-            "entries": [
-                {"id": 1, "text": "...", "created_at": "2026-03-26T14:30:00Z"},
-                ...
-            ]
-        }
-    """
+    """Markdown-backed mutable runtime memory."""
 
     def __init__(self, path: Path):
         self.path = Path(path).expanduser()
+        self.content: str = ""
         self.entries: List[MemoryEntry] = []
         self._next_id: int = 1
 
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
-
     def load(self) -> None:
-        """Load entries from disk. Creates the file if missing."""
+        """Load or initialize MEMORY.md on disk."""
         if not self.path.exists():
-            self.entries = []
-            self._next_id = 1
+            self.content = self.default_template()
+            self._reindex()
+            self.save()
             return
-
         try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
-            self._validate_raw(raw)
-            self.entries = [
-                MemoryEntry(
-                    id=e["id"],
-                    text=e["text"],
-                    created_at=e.get("created_at", ""),
-                )
-                for e in raw.get("entries", [])
-            ]
-            self._next_id = max((e.id for e in self.entries), default=0) + 1
-        except (json.JSONDecodeError, MemoryStoreError) as exc:
+            self.content = self.path.read_text(encoding="utf-8")
+            if not self.content.strip():
+                self.content = self.default_template()
+                self.save()
+            self._validate_markdown(self.content)
+            self._reindex()
+        except Exception as exc:
             self._backup_and_reset(str(exc))
 
     def save(self) -> None:
-        """Persist current entries to disk."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        data = {
-            "version": _MEMORY_VERSION,
-            "entries": [
-                {"id": e.id, "text": e.text, "created_at": e.created_at}
-                for e in self.entries
-            ],
-        }
         tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        tmp.write_text(self.content.rstrip() + "\n", encoding="utf-8")
         tmp.replace(self.path)
+        self._reindex()
 
-    # ------------------------------------------------------------------
-    # CRUD
-    # ------------------------------------------------------------------
+    def validate(self) -> tuple[bool, str]:
+        if not self.path.exists():
+            return True, "Memory file does not exist yet (template will be created on load)."
+        try:
+            text = self.path.read_text(encoding="utf-8")
+            self._validate_markdown(text)
+            entry_count = len(list(_ENTRY_RE.finditer(text)))
+            return True, f"Valid Markdown memory. {entry_count} note entries."
+        except Exception as exc:
+            return False, f"Corrupt: {exc}"
+
+    def list_entries(self) -> List[MemoryEntry]:
+        return list(self.entries)
 
     def add(self, text: str) -> MemoryEntry:
-        """Add a new memory entry and persist."""
-        entry = MemoryEntry(
-            id=self._next_id,
-            text=text.strip(),
-            created_at=datetime.now(timezone.utc).isoformat(),
-        )
+        note = str(text or "").strip()
+        if not note:
+            raise ValueError("Memory entry text cannot be empty.")
+        entry = MemoryEntry(id=self._next_id, text=note, created_at="")
         self._next_id += 1
-        self.entries.append(entry)
+        block = f"- [{entry.id}] {entry.text}"
+        marker = "## Notes"
+        if marker in self.content:
+            head, tail = self.content.split(marker, 1)
+            tail = tail.strip("\n")
+            joined = f"{head}{marker}\n"
+            if tail:
+                joined += f"{tail}\n"
+            joined += f"{block}\n"
+            self.content = joined
+        else:
+            self.content = self.content.rstrip() + f"\n\n## Notes\n{block}\n"
         self.save()
         return entry
 
-    def list_entries(self) -> List[MemoryEntry]:
-        """Return all entries (read-only copy)."""
-        return list(self.entries)
-
     def remove(self, entry_id: int) -> bool:
-        """Remove an entry by ID. Returns True if found and removed."""
-        before = len(self.entries)
-        self.entries = [e for e in self.entries if e.id != entry_id]
-        if len(self.entries) < before:
+        removed = False
+        lines: List[str] = []
+        for line in self.content.splitlines():
+            match = re.match(r"^\s*-\s*\[(\d+)\]\s+(.*?)\s*$", line)
+            if match and int(match.group(1)) == int(entry_id):
+                removed = True
+                continue
+            lines.append(line)
+        if removed:
+            self.content = "\n".join(lines).rstrip() + "\n"
             self.save()
-            return True
-        return False
+        return removed
 
-    # ------------------------------------------------------------------
-    # Validation
-    # ------------------------------------------------------------------
+    def get_preferred_user_name(self) -> str:
+        match = _PREFERRED_USER_RE.search(self.content)
+        if not match:
+            return ""
+        return match.group(2).strip()
 
-    def validate(self) -> tuple[bool, str]:
-        """Check file integrity. Returns (ok, message)."""
-        if not self.path.exists():
-            return True, "Memory file does not exist yet (will be created on first add)."
-        try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
-            self._validate_raw(raw)
-            count = len(raw.get("entries", []))
-            return True, f"Valid. {count} entries, version {raw.get('version')}."
-        except (json.JSONDecodeError, MemoryStoreError) as exc:
-            return False, f"Corrupt: {exc}"
+    def set_preferred_user_name(self, user_name: str) -> None:
+        clean = str(user_name or "").strip().strip(".")
+        if not clean:
+            return
+        replacement = f"- Preferred user name: {clean}."
+        match = _PREFERRED_USER_RE.search(self.content)
+        if match:
+            self.content = self.content[:match.start()] + f"\n{replacement}" + self.content[match.end():]
+        elif "## Profile" in self.content:
+            self.content = self.content.replace("## Profile", f"## Profile\n\n{replacement}", 1)
+        else:
+            self.content = self.content.rstrip() + f"\n\n## Profile\n\n{replacement}\n"
+        self.save()
+
+    def has_meaningful_content(self) -> bool:
+        return self.content.strip() != self.default_template().strip()
 
     @staticmethod
-    def _validate_raw(raw: dict) -> None:
-        """Raise MemoryStoreError if the raw dict structure is invalid."""
-        if not isinstance(raw, dict):
-            raise MemoryStoreError(f"Expected dict, got {type(raw).__name__}")
-        if raw.get("version") != _MEMORY_VERSION:
-            raise MemoryStoreError(
-                f"Unsupported version: {raw.get('version')} (expected {_MEMORY_VERSION})"
-            )
-        entries = raw.get("entries")
-        if not isinstance(entries, list):
-            raise MemoryStoreError("'entries' must be a list")
-        for i, entry in enumerate(entries):
-            if not isinstance(entry, dict):
-                raise MemoryStoreError(f"Entry {i} is not a dict")
-            if "id" not in entry or "text" not in entry:
-                raise MemoryStoreError(f"Entry {i} missing 'id' or 'text'")
+    def default_template() -> str:
+        return _DEFAULT_MEMORY_TEMPLATE
+
+    def _reindex(self) -> None:
+        self.entries = [
+            MemoryEntry(id=int(match.group(1)), text=match.group(2).strip(), created_at="")
+            for match in _ENTRY_RE.finditer(self.content)
+        ]
+        self._next_id = max((entry.id for entry in self.entries), default=0) + 1
+
+    @staticmethod
+    def _validate_markdown(text: str) -> None:
+        lines = text.splitlines()
+        if not lines or lines[0].strip() != "---":
+            raise ValueError("missing YAML frontmatter opening delimiter")
+        closing_index = None
+        for idx in range(1, len(lines)):
+            if lines[idx].strip() == "---":
+                closing_index = idx
+                break
+        if closing_index is None:
+            raise ValueError("missing YAML frontmatter closing delimiter")
+        parsed = yaml.safe_load("\n".join(lines[1:closing_index])) or {}
+        if not isinstance(parsed, dict):
+            raise ValueError("frontmatter must be a mapping")
 
     def _backup_and_reset(self, reason: str) -> None:
-        """Backup a corrupt file and reset to empty state."""
         backup = self.path.with_suffix(".bak")
         if self.path.exists():
             shutil.copy2(self.path, backup)
-        self.entries = []
-        self._next_id = 1
+        self.content = self.default_template()
+        self._reindex()
         self.save()
-        import warnings
         warnings.warn(
-            f"MEMORY.json was corrupt ({reason}). "
-            f"Backed up to {backup.name} and reset to empty.",
+            f"MEMORY.md was corrupt ({reason}). Backed up to {backup.name} and reset to the default template.",
             stacklevel=2,
         )
-
-
-# ---------------------------------------------------------------------------
-# External memory loader (read-only)
-# ---------------------------------------------------------------------------
-
-def load_external_memory(path: Optional[str]) -> str:
-    """
-    Load the external memory file content (e.g. KERNEL.md).
-    Returns empty string if path is None or file doesn't exist.
-    """
-    if not path:
-        return ""
-    p = Path(path).expanduser()
-    if not p.exists():
-        return ""
-    try:
-        return p.read_text(encoding="utf-8")
-    except Exception:
-        return ""

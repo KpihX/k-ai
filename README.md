@@ -222,7 +222,7 @@ The local runtime store `~/.k-ai/` is now treated as a narrow git repo.
 Tracked:
 
 - `config.yaml`
-- `MEMORY.json`
+- `MEMORY.md`
 - `sessions/index.json`
 - `sessions/*.jsonl`
 
@@ -560,7 +560,7 @@ This is UI-only telemetry; it does not consume model tokens.
 ```text
 ~/.k-ai/
 ├── config.yaml
-├── MEMORY.json
+├── MEMORY.md
 ├── sandbox/
 └── sessions/
     ├── index.json

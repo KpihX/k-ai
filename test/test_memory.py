@@ -1,18 +1,15 @@
 # test/test_memory.py
 """
-Tests for MemoryStore and load_external_memory.
+Tests for MemoryStore and load_context_file.
 """
-import json
 import pytest
-from pathlib import Path
 
-from k_ai.memory import MemoryStore, load_external_memory
-from k_ai.exceptions import MemoryStoreError
+from k_ai.memory import MemoryStore, load_context_file
 
 
 @pytest.fixture
 def mem_path(tmp_path):
-    return tmp_path / "MEMORY.json"
+    return tmp_path / "MEMORY.md"
 
 
 @pytest.fixture
@@ -31,7 +28,7 @@ class TestMemoryStoreCRUD:
         entry = store.add("test fact")
         assert entry.id == 1
         assert entry.text == "test fact"
-        assert entry.created_at != ""
+        assert "- [1] test fact" in store.content
 
     def test_add_increments_id(self, store):
         e1 = store.add("first")
@@ -110,23 +107,17 @@ class TestMemoryStoreValidation:
         store.add("good")
         ok, msg = store.validate()
         assert ok is True
-        assert "1 entries" in msg
+        assert "1 note entries" in msg
 
-    def test_validate_corrupt_json(self, mem_path):
-        mem_path.write_text("NOT JSON", encoding="utf-8")
+    def test_validate_corrupt_markdown(self, mem_path):
+        mem_path.write_text("NOT MARKDOWN", encoding="utf-8")
         store = MemoryStore(mem_path)
         ok, msg = store.validate()
         assert ok is False
         assert "Corrupt" in msg
 
-    def test_validate_wrong_version(self, mem_path):
-        mem_path.write_text(json.dumps({"version": 99, "entries": []}), encoding="utf-8")
-        store = MemoryStore(mem_path)
-        ok, msg = store.validate()
-        assert ok is False
-
-    def test_validate_missing_entries(self, mem_path):
-        mem_path.write_text(json.dumps({"version": 1}), encoding="utf-8")
+    def test_validate_missing_frontmatter_closing(self, mem_path):
+        mem_path.write_text("---\nname: bad\n", encoding="utf-8")
         store = MemoryStore(mem_path)
         ok, msg = store.validate()
         assert ok is False
@@ -138,10 +129,13 @@ class TestMemoryStoreValidation:
             store.load()
         assert mem_path.with_suffix(".bak").exists()
         assert store.entries == []
+        assert store.content.startswith("---")
 
     def test_load_nonexistent_file(self, tmp_path):
-        store = MemoryStore(tmp_path / "nope.json")
-        store.load()  # Should not raise
+        target = tmp_path / "nope.md"
+        store = MemoryStore(target)
+        store.load()
+        assert target.exists()
         assert store.entries == []
 
 
@@ -149,18 +143,18 @@ class TestMemoryStoreValidation:
 # External memory loader
 # ---------------------------------------------------------------------------
 
-class TestLoadExternalMemory:
+class TestLoadContextFile:
     def test_load_existing_file(self, tmp_path):
-        p = tmp_path / "KERNEL.md"
+        p = tmp_path / "AGENTS.md"
         p.write_text("# Context\nSome info", encoding="utf-8")
-        content = load_external_memory(str(p))
+        content = load_context_file(str(p))
         assert "Context" in content
 
     def test_load_nonexistent_returns_empty(self):
-        assert load_external_memory("/nonexistent/file.md") == ""
+        assert load_context_file("/nonexistent/file.md") == ""
 
     def test_load_none_returns_empty(self):
-        assert load_external_memory(None) == ""
+        assert load_context_file(None) == ""
 
     def test_load_empty_string_returns_empty(self):
-        assert load_external_memory("") == ""
+        assert load_context_file("") == ""

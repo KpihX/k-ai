@@ -5,7 +5,7 @@
 mcp:
   enabled: true
   protocol_version: "2025-06-18"
-  read_timeout_seconds: 30
+  read_timeout_seconds: 180
   max_tools_per_server: 64
   max_resources_per_server: 128
   max_prompts_per_server: 128

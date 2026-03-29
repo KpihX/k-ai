@@ -65,7 +65,8 @@ def _resolve_qmd_collection(
     query: str,
     ctx: ToolContext,
 ) -> str | None:
-    return _session_collection(ctx)
+    selected = str(collection or "").strip()
+    return selected or None
 
 
 def _resolve_session_docid(raw: str, ctx: ToolContext) -> str | None:
@@ -222,7 +223,8 @@ class QmdQueryTool(InternalTool):
         table.add_column("field", style="dim")
         table.add_column("value")
         table.add_row("Query", str(arguments.get("query", "")))
-        table.add_row("Collection", _session_collection(ctx))
+        collection = _resolve_qmd_collection(arguments.get("collection"), str(arguments.get("query", "")), ctx)
+        table.add_row("Collection", collection or "all")
         default_n = _positive_int(ctx.config.get_nested("tools", "qmd", "limit", default=5), 5)
         table.add_row("Results", str(_positive_int(arguments.get("num_results", default_n), default_n)))
         return [("Search Request", table)]
@@ -430,7 +432,8 @@ class QmdLsTool(InternalTool):
             return disabled
         path = arguments.get("path", "")
         args = ["ls"]
-        args.append(path or _session_collection(ctx))
+        if path:
+            args.append(path)
         ok, out = await _run_qmd(*args)
         return ToolResult(success=ok, message=out)
 
@@ -453,7 +456,7 @@ class QmdCollectionListTool(InternalTool):
         disabled = _qmd_disabled_result(ctx)
         if disabled:
             return disabled
-        ok, out = await _run_qmd("collection", "show", _session_collection(ctx))
+        ok, out = await _run_qmd("collection", "list")
         return ToolResult(success=ok, message=out)
 
 

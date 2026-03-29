@@ -26,7 +26,8 @@ from rich.panel import Panel as RichPanel
 from rich.text import Text
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import InMemoryHistory
-from prompt_toolkit.completion import WordCompleter, FuzzyCompleter, ConditionalCompleter
+from prompt_toolkit.completion import WordCompleter, FuzzyCompleter, ConditionalCompleter, Completer, Completion
+from prompt_toolkit.document import Document
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.styles import Style as PTStyle
@@ -46,7 +47,7 @@ from .llm_core import get_provider, LLMProvider
 from .models import (
     Message, MessageRole, ToolCall, TokenUsage, SessionMetadata, ToolResult, LLMConfig,
 )
-from .memory import MemoryStore, load_external_memory
+from .memory import MemoryStore, load_context_file, resolve_agents_path, resolve_memory_path
 from .runtime_git import commit_runtime_state
 from .session_store import SessionStore
 from .hooks import HookManager
@@ -79,6 +80,52 @@ from .tool_capabilities import capability_enabled, capability_for_tool, list_cap
 _MAX_TOOL_ROUNDS = 10
 _MAX_EMPTY_ASSISTANT_ROUNDS = 2
 _INTERRUPTED_RESPONSE_MARKER = "[Response interrupted by user]"
+_TRUNCATED_TOOL_RESULT_GUIDANCE = (
+    "\n...(truncated for history)"
+    "\n[Tool context: result was truncated for history. "
+    "If you need the missing part, do not repeat the identical tool call. "
+    "Request a targeted partial read instead, for example specific lines, a smaller slice, "
+    "or a more precise tool call.]"
+)
+_SESSION_SUMMARY_LEADINS = (
+    r"^the user asked (?:to )?",
+    r"^the user requested (?:to )?",
+    r"^the chat started with ",
+    r"^the chat began with ",
+    r"^the conversation (?:was|started|began|focused|centered) (?:on|around|with) ",
+    r"^le chat (?:a commencé|a debuté|a débuté) (?:par|avec) ",
+    r"^la conversation (?:portait|a porté|a commence|a commencé|a debuté|a débuté) (?:sur|avec|par) ",
+    r"^l'utilisateur (?:a demandé|souhaite|voulait|veut) (?:de )?",
+    r"^(?:une |un )?demande de ",
+)
+
+
+class _RuntimePromptCompleter(Completer):
+    """Prompt completer for slash commands and explicit @skill references."""
+
+    def __init__(self, session: "ChatSession"):
+        self._session = session
+        self._slash = FuzzyCompleter(WordCompleter(SLASH_COMMANDS, sentence=True))
+
+    def get_completions(self, document: Document, complete_event):
+        text_before = document.text_before_cursor
+        if text_before.lstrip().startswith("/"):
+            yield from self._slash.get_completions(document, complete_event)
+            return
+        token = self._skill_token_before_cursor(text_before)
+        if not token:
+            return
+        start_position = -len(token)
+        for entry in self._session.skill_manager.completion_entries():
+            if entry.startswith(token):
+                yield Completion(entry, start_position=start_position)
+
+    @staticmethod
+    def _skill_token_before_cursor(text_before: str) -> str:
+        match = re.search(r"(^|\s)([@$][^\s]*)$", text_before)
+        if not match:
+            return ""
+        return match.group(2)
 
 
 class ChatSession:
@@ -104,8 +151,15 @@ class ChatSession:
         )
         self._current_cwd = self.workspace_root
 
-        initial_model = model if model is not None else (self.cm.get("model") or None)
-        self.llm: LLMProvider = get_provider(self.cm, provider=provider, model=initial_model)
+        initial_provider = provider or self.cm.configured_provider_name()
+        initial_model = model if model is not None else self.cm.effective_model_name(initial_provider)
+        initial_auth_mode = self.cm.configured_provider_auth_mode(initial_provider)
+        self.llm: LLMProvider = get_provider(
+            self.cm,
+            provider=initial_provider,
+            model=initial_model,
+            auth_mode=initial_auth_mode,
+        )
         self.history: List[Message] = []
         self.system_prompt: Optional[str] = None
         self.total_usage = TokenUsage()
@@ -114,12 +168,12 @@ class ChatSession:
         self.session_store = SessionStore(sessions_dir)
         self.session_store.init()
 
-        mem_path = self.cm.get_nested("memory", "internal_file", default="~/.k-ai/MEMORY.json")
-        self.memory = MemoryStore(Path(mem_path))
+        mem_path = resolve_memory_path(self.cm)
+        self.memory = MemoryStore(mem_path)
         self.memory.load()
 
-        ext_path = self.cm.get_nested("memory", "external_file", default="")
-        self.external_memory = load_external_memory(ext_path)
+        self.agents_path = resolve_agents_path(self.cm)
+        self.external_memory = load_context_file(self.agents_path)
         self.hook_manager = HookManager(self.cm, workspace_root=self.workspace_root)
         self.skill_manager = SkillManager(self.cm, workspace_root=self.workspace_root)
         self.mcp_manager = MCPManager(self.cm, workspace_root=self.workspace_root)
@@ -229,16 +283,27 @@ class ChatSession:
         provider: Optional[str] = None,
         model: Optional[str] = None,
     ) -> None:
-        effective_provider = provider or self.llm.provider_name
-        effective_model = model if model is not None else (self.cm.get("model") or None)
-        self.llm = get_provider(self.cm, provider=effective_provider, model=effective_model)
+        effective_provider = provider or self.cm.configured_provider_name() or self.llm.provider_name
+        effective_model = model if model is not None else self.cm.effective_model_name(effective_provider)
+        effective_auth_mode = self.cm.configured_provider_auth_mode(effective_provider)
+        self.llm = get_provider(
+            self.cm,
+            provider=effective_provider,
+            model=effective_model,
+            auth_mode=effective_auth_mode,
+        )
 
     def reload_config_from_disk(self) -> None:
         """Reload active config from disk and resync provider/runtime managers."""
         self.cm.reload()
+        self.memory = MemoryStore(resolve_memory_path(self.cm))
+        self.memory.load()
+        self._tool_ctx.memory = self.memory
+        self.agents_path = resolve_agents_path(self.cm)
+        self.external_memory = load_context_file(self.agents_path)
         self.reload_provider(
-            provider=self.cm.get("provider"),
-            model=self.cm.get("model") or None,
+            provider=self.cm.configured_provider_name(),
+            model=self.cm.effective_model_name(),
         )
         self.hook_manager = HookManager(self.cm, workspace_root=self.workspace_root)
         self.skill_manager = SkillManager(self.cm, workspace_root=self.workspace_root)
@@ -249,12 +314,8 @@ class ChatSession:
         self._apply_tool_catalog()
 
     def provider_default_model(self, provider: Optional[str] = None) -> Optional[str]:
-        effective_provider = provider or self.cm.get("provider") or self.llm.provider_name
-        cfg, _auth_mode = self.cm.get_provider_config_with_auth_mode(str(effective_provider))
-        if not cfg:
-            return None
-        default_model = cfg.get("default_model")
-        return str(default_model) if default_model else None
+        effective_provider = provider or self.cm.configured_provider_name() or self.llm.provider_name
+        return self.cm.provider_default_model(str(effective_provider))
 
     def current_cwd(self) -> Path:
         return self._current_cwd
@@ -496,9 +557,15 @@ class ChatSession:
             if key in {"provider", "model"}:
                 if key == "provider" and current != applied and self.history_has_nonportable_tool_state():
                     self.preserve_simple_history_only()
-                provider_name = self.cm.get("provider")
-                model_name = self.cm.get("model") or None
+                provider_name = self.cm.configured_provider_name()
+                model_name = self.cm.effective_model_name(provider_name)
                 self.reload_provider(provider=provider_name, model=model_name)
+            if key == "memory" or key.startswith("memory."):
+                self.memory = MemoryStore(resolve_memory_path(self.cm))
+                self.memory.load()
+                self._tool_ctx.memory = self.memory
+                self.agents_path = resolve_agents_path(self.cm)
+                self.external_memory = load_context_file(self.agents_path)
             if key == "mcp" or key.startswith("mcp.") or key == "tools.mcp" or key.startswith("tools.mcp."):
                 self._mcp_catalog_loaded = False
             if persist:
@@ -507,8 +574,8 @@ class ChatSession:
             self.cm.set(key, current)
             if key in {"provider", "model"}:
                 self.reload_provider(
-                    provider=self.cm.get("provider"),
-                    model=self.cm.get("model") or None,
+                    provider=self.cm.configured_provider_name(),
+                    model=self.cm.effective_model_name(),
                 )
             raise
         return {"key": key, "old_value": current, "value": applied, "saved_to": saved_to}
@@ -1114,15 +1181,11 @@ class ChatSession:
         parts.append(
             "## Instruction Priority Rule\n"
             "If instructions conflict, always apply this order of precedence:\n"
-            "1. Internal remembered facts managed through memory_add / memory_remove.\n"
-            "2. Built-in and session-specific internal prompts/instructions.\n"
-            "3. External user context loaded from a file.\n"
-            "When internal remembered facts conflict with any prompt instruction or external context, treat internal remembered facts as the source of truth."
+            "1. Built-in and session-specific internal prompts/instructions.\n"
+            "2. The configured AGENTS context file.\n"
+            "3. The configured MEMORY file.\n"
+            "Both AGENTS and MEMORY are normal markdown files. When the user asks to update either file, use filesystem read/edit tools directly on the configured real path."
         )
-
-        if self.memory.entries:
-            entries_text = "\n".join(f"- {e.text}" for e in self.memory.entries)
-            parts.append(f"## Remembered Facts\n{entries_text}")
 
         identity_key = "identity"
         if mode == "ask":
@@ -1221,8 +1284,15 @@ class ChatSession:
             parts.append(f"## Current Turn Guidance\n{self._turn_session_guidance}")
 
         if mode != "chat":
-            if mode == "ask" and bool(self.cm.get_nested("interaction", "ask", "include_external_memory", default=False)) and self.external_memory:
-                parts.append(f"## User Context\n{self.external_memory}")
+            if mode == "ask":
+                if bool(self.cm.get_nested("interaction", "ask", "include_external_memory", default=False)):
+                    agents_section = self._render_agents_context_section()
+                    if agents_section:
+                        parts.append(agents_section)
+                if bool(self.cm.get_nested("interaction", "ask", "include_internal_memory", default=True)):
+                    memory_section = self._render_memory_context_section()
+                    if memory_section:
+                        parts.append(memory_section)
             return "\n\n".join(parts)
 
         skill_hint = self._render_prompt_template(
@@ -1296,8 +1366,13 @@ class ChatSession:
                     f"## {self.hook_manager.config_text('hooks', 'runtime', 'context_section_title', default='Hook Context')}\n{body}"
                 )
 
-        if self.external_memory:
-            parts.append(f"## User Context\n{self.external_memory}")
+        agents_section = self._render_agents_context_section()
+        if agents_section:
+            parts.append(agents_section)
+
+        memory_section = self._render_memory_context_section()
+        if memory_section:
+            parts.append(memory_section)
 
         return "\n\n".join(parts)
 
@@ -1340,6 +1415,27 @@ class ChatSession:
         text = self.cm.get_nested("prompts", "notices", key, default=default)
         return self._render_prompt_template(text, **extra).strip()
 
+    def _render_agents_context_section(self) -> str:
+        if not self.external_memory:
+            return ""
+        path_text = str(self.agents_path) if self.agents_path else "(not configured)"
+        return (
+            "## AGENTS Context\n"
+            f"- configured path: {path_text}\n"
+            "- update path/file via filesystem edit tools when the user asks to change agent instructions or shared context\n\n"
+            f"{self.external_memory}"
+        )
+
+    def _render_memory_context_section(self) -> str:
+        if not self.memory.content.strip():
+            return ""
+        return (
+            "## MEMORY Context\n"
+            f"- configured path: {self.memory.path}\n"
+            "- update path/file via filesystem edit tools when the user asks to change k-ai memory or runtime notes\n\n"
+            f"{self.memory.content}"
+        )
+
     def _hook_notice_title(self, key: str, default: str) -> str:
         return self.hook_manager.config_text("hooks", "runtime", key, default=default).strip()
 
@@ -1371,12 +1467,7 @@ class ChatSession:
             )
 
     def _remembered_user_name(self) -> str:
-        pattern = re.compile(r"^Preferred user name:\s*(.+?)\.?$", re.IGNORECASE)
-        for entry in self.memory.list_entries():
-            match = pattern.match(entry.text.strip())
-            if match:
-                return match.group(1).strip()
-        return ""
+        return self.memory.get_preferred_user_name()
 
     def _active_tool_names(self) -> List[str]:
         return sorted(
@@ -1677,7 +1768,7 @@ class ChatSession:
     def _should_offer_init(self) -> bool:
         if self.history:
             return False
-        if self.memory.list_entries():
+        if self.memory.has_meaningful_content():
             return False
         return not bool(self.session_store.list_sessions(limit=1))
 
@@ -1787,9 +1878,7 @@ class ChatSession:
             await self._boot_greeting(recent)
 
         # Build prompt session with styled prompt, slash autocompletion, and multiline support
-        slash_completer = FuzzyCompleter(
-            WordCompleter(SLASH_COMMANDS, sentence=True)
-        )
+        runtime_completer = _RuntimePromptCompleter(self)
 
         pt_style = PTStyle.from_dict({
             "prompt": "bold ansicyan",
@@ -1808,7 +1897,7 @@ class ChatSession:
 
         prompt_session: PromptSession = PromptSession(
             history=InMemoryHistory(),
-            completer=slash_completer,
+            completer=runtime_completer,
             complete_while_typing=True,
             reserve_space_for_menu=4,
             style=pt_style,
@@ -1817,11 +1906,12 @@ class ChatSession:
         )
 
         @Condition
-        def _is_slash():
+        def _is_dynamic_completion():
             buf = prompt_session.app.current_buffer
-            return buf.text.lstrip().startswith("/")
+            text = buf.document.text_before_cursor
+            return text.lstrip().startswith("/") or bool(re.search(r"(^|\s)([@$][^\s]*)$", text))
 
-        prompt_session.completer = ConditionalCompleter(slash_completer, filter=_is_slash)
+        prompt_session.completer = ConditionalCompleter(runtime_completer, filter=_is_dynamic_completion)
 
         while True:
             if self._exit_requested:
@@ -2350,7 +2440,6 @@ class ChatSession:
         blocked_tools = {"switch_session", "new_session"} if suppress_switch else set()
         tools = self._get_active_tools(excluded_tools=blocked_tools)
         empty_rounds = 0
-        executed_tool_cache: Dict[str, str] = {}
         pending_tool_calls: List[ToolCall] = []
         full_content = ""
         self._turn_session_guidance = ""
@@ -2475,26 +2564,6 @@ class ChatSession:
                 any_executed = False
                 for tc in pending_tool_calls:
                     if self.tool_registry.is_internal(tc.function_name):
-                        signature = self._tool_call_signature(tc)
-                        if signature in executed_tool_cache:
-                            tool_content = executed_tool_cache[signature]
-                            tool_msg = Message(
-                                role=MessageRole.TOOL,
-                                content=tool_content,
-                                tool_call_id=tc.id,
-                                name=tc.function_name,
-                            )
-                            self.history.append(tool_msg)
-                            self._persist_message(tool_msg)
-                            any_executed = True
-                            render_notice(
-                                self.console,
-                                f"Appel identique à {tc.function_name} déjà exécuté dans ce tour: résultat réutilisé.",
-                                level="info",
-                                title="Tool Call Dupliqué",
-                            )
-                            continue
-
                         result = await self._execute_internal_tool(tc, rationale=rationale)
                         if tc.function_name in {"switch_session", "new_session"} and result.success and self._new_session_requested:
                             current_session_id = self._session_id
@@ -2542,7 +2611,6 @@ class ChatSession:
                         )
                         self.history.append(tool_msg)
                         self._persist_message(tool_msg)
-                        executed_tool_cache[signature] = tool_content
                         any_executed = True
 
                         if self._exit_requested or self._new_session_requested or self._load_session_id or self._init_requested:
@@ -2764,7 +2832,7 @@ class ChatSession:
         max_len = int(self.cm.get_nested("cli", "tool_result_max_history", default=4000))
         if len(content) <= max_len:
             return content
-        return content[:max_len] + "\n...(truncated for history)"
+        return content[:max_len] + _TRUNCATED_TOOL_RESULT_GUIDANCE
 
     def _build_interrupted_assistant_content(self, content: str) -> str:
         clean = content.rstrip()
@@ -2961,6 +3029,16 @@ class ChatSession:
                         padding=(0, 1),
                     ))
 
+    def _normalize_session_summary(self, summary: str) -> str:
+        text = re.sub(r"\s+", " ", str(summary or "").strip())
+        if not text:
+            return ""
+        for pattern in _SESSION_SUMMARY_LEADINS:
+            text = re.sub(pattern, "", text, flags=re.IGNORECASE).strip()
+        text = text.rstrip(" .!?:;,")
+        text = re.sub(r"\s+", " ", text)
+        return text[:86]
+
     def _persist_message(self, message: Message) -> None:
         if self._session_id:
             self.session_store.save_message(self._session_id, message)
@@ -3140,7 +3218,7 @@ class ChatSession:
             "prompts", "session_digest",
             default=(
                 "Return strict JSON with keys summary, themes, and session_type. "
-                "summary must be one short sentence describing the discussion. "
+                "summary must be a short title-like label, not a sentence or narration. "
                 "themes must be a short list of key topics. "
                 "session_type must be either 'classic' for a real task/topic session "
                 "or 'meta' for a session mainly about administration, settings, tooling, or chat management."
@@ -3149,7 +3227,7 @@ class ChatSession:
         digest_prompt = self._render_prompt_template(digest_prompt)
         summary_guidance = self.cm.get_nested(
             "prompts", "session_summary",
-            default="Summarize the user's intent and the discussion topic in one short sentence.",
+            default="Summarize the user's intent and the discussion topic as a short title, not a sentence.",
         )
         summary_guidance = self._render_prompt_template(summary_guidance)
         transcript = "\n".join(
@@ -3172,7 +3250,9 @@ class ChatSession:
             start = raw.find("{")
             end = raw.rfind("}")
             payload = json.loads(raw[start:end + 1] if start != -1 and end != -1 else raw)
-            summary = str(payload.get("summary", "")).strip().replace("\n", " ")[:120]
+            summary = self._normalize_session_summary(
+                str(payload.get("summary", "")).replace("\n", " ")
+            )
             raw_themes = payload.get("themes", [])
             if isinstance(raw_themes, list):
                 themes = [str(theme).strip()[:40] for theme in raw_themes if str(theme).strip()][:8]

@@ -642,3 +642,33 @@ class ConfigManager:
                     return cfg, section  # section name IS the auth_mode
 
         return None, None
+
+    def configured_provider_name(self) -> Optional[str]:
+        provider = self.get("provider")
+        return str(provider) if provider else None
+
+    def configured_provider_auth_mode(self, provider_name: Optional[str] = None) -> Optional[str]:
+        effective_provider = provider_name or self.configured_provider_name()
+        if not effective_provider:
+            return None
+        auth_mode = self.get_nested("provider_auth_mode_overrides", str(effective_provider), default=None)
+        if auth_mode in {"no_auth", "api_key", "oauth"}:
+            return str(auth_mode)
+        return None
+
+    def provider_default_model(self, provider_name: Optional[str] = None) -> Optional[str]:
+        effective_provider = provider_name or self.configured_provider_name()
+        if not effective_provider:
+            return None
+        cfg, _auth_mode = self.get_provider_config_with_auth_mode(str(effective_provider))
+        if not cfg:
+            return None
+        default_model = cfg.get("default_model")
+        return str(default_model) if default_model else None
+
+    def configured_model_override(self) -> Optional[str]:
+        model = self.get("model")
+        return str(model) if model else None
+
+    def effective_model_name(self, provider_name: Optional[str] = None) -> Optional[str]:
+        return self.configured_model_override() or self.provider_default_model(provider_name)

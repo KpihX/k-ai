@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Iterable, List, Sequence, Tuple
 
 from ..config import ConfigManager
-from .models import ActivatedSkill, SkillActivationResult, SkillIssue, SkillSummary
+from .models import ActivatedSkill, SkillActivationResult, SkillIssue, SkillReferenceContent, SkillSummary
 from .registry import SkillRegistry, SkillRoot
 from .selector import SkillSelector
+
+
+_SKILL_REFERENCE_RE = re.compile(r"(?<!\S)(?P<prefix>[@$])(?P<skill>[a-z0-9][a-z0-9-]*)(?:/(?P<path>[^\s]+))?")
+_IGNORED_REFERENCE_DIRS = {".git", "__pycache__", ".venv", "venv", "node_modules"}
 
 
 class SkillManager:
@@ -23,7 +28,7 @@ class SkillManager:
         )
         self._selector = SkillSelector(
             max_active=int(self._config.get_nested("skills", "max_active_per_turn", default=3) or 3),
-            explicit_prefixes=tuple(self._config.get_nested("skills", "explicit_prefixes", default=["$"]) or ["$"]),
+            explicit_prefixes=tuple(self._config.get_nested("skills", "explicit_prefixes", default=["$", "@"]) or ["$", "@"]),
             reasons=dict(self._config.get_nested("skills", "selection", "reasons", default={}) or {}),
         )
 
@@ -41,6 +46,9 @@ class SkillManager:
 
     def list_active_names(self, result: SkillActivationResult) -> Tuple[str, ...]:
         return tuple(item.document.summary.name for item in result.activated)
+
+    def explicit_prefixes(self) -> Tuple[str, ...]:
+        return tuple(self._config.get_nested("skills", "explicit_prefixes", default=["$", "@"]) or ["$", "@"])
 
     def should_keep_previous(self, user_input: str) -> bool:
         return self._selector.is_low_signal_message(user_input)
@@ -80,6 +88,7 @@ class SkillManager:
             document = self._registry.load_document(selection.summary.name)
             if document is None:
                 continue
+            references = self._load_explicit_references(user_input, document.summary)
             activated.append(
                 ActivatedSkill(
                     document=document,
@@ -87,6 +96,7 @@ class SkillManager:
                     activation_source="explicit" if selection.explicit else "continuation",
                     explicit=selection.explicit,
                     reused_from_context=selection.reused_from_context,
+                    references=references,
                 )
             )
 
@@ -101,6 +111,16 @@ class SkillManager:
 
     def load_named_skill(self, name: str):
         return self._registry.load_document(name)
+
+    def completion_entries(self) -> Tuple[str, ...]:
+        entries: List[str] = []
+        prefixes = tuple(prefix for prefix in self.explicit_prefixes() if prefix in {"@", "$"})
+        for skill in self.catalog():
+            for prefix in prefixes:
+                entries.append(f"{prefix}{skill.name}")
+                for relative_path in self._reference_candidates(skill):
+                    entries.append(f"{prefix}{skill.name}/{relative_path}")
+        return tuple(dict.fromkeys(entries))
 
     def config_text(self, *parts: str, default: str = "", **vars: str) -> str:
         raw = str(self._config.get_nested(*parts, default=default) or default)
@@ -257,7 +277,93 @@ class SkillManager:
                     skill_body=item.document.body,
                 ).strip()
             )
+            if item.references:
+                for ref in item.references:
+                    chunks.append(
+                        self.config_text(
+                            "skills",
+                            "runtime",
+                            "active",
+                            "reference_block_template",
+                            default=(
+                                "#### Referenced Skill File: {reference_path}\n"
+                                "- mention: {reference_mention}\n"
+                                "- source: {reference_source}\n\n"
+                                "{reference_body}"
+                            ),
+                            reference_path=ref.relative_path,
+                            reference_mention=ref.mention,
+                            reference_source=str(ref.absolute_path),
+                            reference_body=ref.content,
+                        ).strip()
+                    )
         return "\n\n".join(chunk for chunk in chunks if chunk).strip()
+
+    def _load_explicit_references(
+        self,
+        user_input: str,
+        summary: SkillSummary,
+    ) -> Tuple[SkillReferenceContent, ...]:
+        refs: List[SkillReferenceContent] = []
+        seen: set[str] = set()
+        for match in _SKILL_REFERENCE_RE.finditer(str(user_input or "")):
+            if match.group("skill") != summary.name:
+                continue
+            raw_path = str(match.group("path") or "").strip().rstrip(".,;:!?)]}")
+            if not raw_path:
+                continue
+            normalized = self._normalize_reference_path(raw_path)
+            if not normalized or normalized in seen:
+                continue
+            resolved = (summary.skill_dir / normalized).resolve()
+            try:
+                resolved.relative_to(summary.skill_dir.resolve())
+            except ValueError:
+                continue
+            if not resolved.exists() or not resolved.is_file():
+                continue
+            try:
+                content = resolved.read_text(encoding="utf-8")
+            except Exception:
+                continue
+            refs.append(
+                SkillReferenceContent(
+                    mention=match.group(0),
+                    relative_path=normalized,
+                    absolute_path=resolved,
+                    content=content.strip(),
+                )
+            )
+            seen.add(normalized)
+        return tuple(refs)
+
+    def _reference_candidates(self, summary: SkillSummary) -> Tuple[str, ...]:
+        skill_dir = summary.skill_dir
+        candidates: List[str] = []
+        for path in sorted(skill_dir.iterdir(), key=lambda item: item.name) if skill_dir.exists() else ():
+            if path.name.startswith(".") and path.name != "SKILL.md":
+                continue
+            if path.is_file():
+                candidates.append(path.name)
+                continue
+            if not path.is_dir() or path.name in _IGNORED_REFERENCE_DIRS:
+                continue
+            for child in sorted(path.iterdir(), key=lambda item: item.name):
+                if child.is_file() and not child.name.startswith("."):
+                    candidates.append(f"{path.name}/{child.name}")
+        return tuple(candidates)
+
+    @staticmethod
+    def _normalize_reference_path(raw_path: str) -> str:
+        candidate = str(raw_path or "").strip().lstrip("/")
+        if not candidate:
+            return ""
+        parts = [part for part in Path(candidate).parts if part not in {"", "."}]
+        if not parts or any(part == ".." for part in parts):
+            return ""
+        if len(parts) > 2:
+            return ""
+        return "/".join(parts)
 
     def _activation_label(self, item: ActivatedSkill) -> str:
         summary = item.document.summary

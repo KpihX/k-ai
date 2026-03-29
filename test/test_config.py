@@ -29,7 +29,7 @@ class TestDefaultLoad:
     def test_default_paths_resolve_inside_fake_home(self, cm):
         fake_home = Path("~").expanduser().resolve()
         sessions_dir = Path(str(cm.get_nested("sessions", "directory"))).expanduser().resolve()
-        memory_file = Path(str(cm.get_nested("memory", "internal_file"))).expanduser().resolve()
+        memory_file = Path(str(cm.get_nested("memory", "path"))).expanduser().resolve()
         persist_path = Path(str(cm.get_nested("config", "persist_path"))).expanduser().resolve()
         oauth_token = Path(str(cm.get_nested("oauth", "gemini", "token_path"))).expanduser().resolve()
 
@@ -39,8 +39,7 @@ class TestDefaultLoad:
         assert str(oauth_token).startswith(str(fake_home))
 
     def test_default_provider_exists(self, cm):
-        provider = cm.get("provider")
-        assert isinstance(provider, str) and len(provider) > 0
+        assert cm.get("provider") == "mistral"
 
     def test_default_temperature(self, cm):
         assert cm.get("temperature") == 0.7
@@ -68,6 +67,9 @@ class TestDefaultLoad:
         assert cfg["api_key_env_var"] == "ANTHROPIC_API_KEY"
         assert "default_model" in cfg
 
+    def test_default_mistral_model_is_small_latest(self, cm):
+        assert cm.provider_default_model("mistral") == "mistral-small-latest"
+
     def test_oauth_section_has_gemini(self, cm):
         cfg = cm.get_nested("oauth", "gemini")
         assert cfg["oauth_provider_name"] == "google"
@@ -77,6 +79,9 @@ class TestDefaultLoad:
         assert "no_auth" in psp
         assert "api_key" in psp
         assert "oauth" in psp
+
+    def test_provider_auth_mode_overrides_defaults_to_empty_mapping(self, cm):
+        assert cm.get("provider_auth_mode_overrides") == {}
 
     def test_missing_key_returns_default(self, cm):
         assert cm.get("does_not_exist") is None
@@ -203,6 +208,23 @@ class TestInlineKwargs:
         p = write_yaml(tmp_path, {"temperature": 0.5})
         cm = ConfigManager(override_path=str(p), temperature=0.99)
         assert cm.get("temperature") == 0.99
+
+
+class TestEffectiveModelSelection:
+    def test_effective_model_prefers_explicit_override(self, cm):
+        cm.set("provider", "mistral")
+        cm.set("model", "devstral-small-latest")
+        assert cm.effective_model_name() == "devstral-small-latest"
+
+    def test_effective_model_falls_back_to_provider_default(self, cm):
+        cm.set("provider", "mistral")
+        cm.set("model", "")
+        assert cm.effective_model_name() == "mistral-small-latest"
+
+    def test_configured_provider_auth_mode_reads_override(self, cm):
+        cm.set("provider", "gemini")
+        cm.set("provider_auth_mode_overrides.gemini", "oauth")
+        assert cm.configured_provider_auth_mode() == "oauth"
 
 
 # ---------------------------------------------------------------------------
@@ -396,7 +418,7 @@ class TestGetAllDump:
 
     def test_validate_runtime_coherence_warns_when_runtime_git_paths_are_misaligned(self, cm, tmp_path):
         cm.set("config.persist_path", str(tmp_path / "cfg" / "config.yaml"))
-        cm.set("memory.internal_file", str(tmp_path / "mem" / "MEMORY.json"))
+        cm.set("memory.path", str(tmp_path / "mem" / "MEMORY.md"))
         cm.set("sessions.directory", str(tmp_path / "sessions" / "store"))
         report = cm.validate_runtime_coherence()
         assert any("must share the same parent" in item for item in report["warnings"])

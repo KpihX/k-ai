@@ -15,7 +15,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from .config import ConfigManager
-from .memory import MemoryStore, load_external_memory
+from .memory import MemoryStore, load_context_file, resolve_agents_path
 from .secrets import resolve_secret
 from .session_store import SessionStore
 from .tools import create_registry
@@ -111,8 +111,7 @@ def _apply_resets(
         cm._load_and_merge()
 
     if "memory" in reset_targets:
-        memory.entries = []
-        memory._next_id = 1
+        memory.content = memory.default_template()
         memory.save()
         memory.load()
 
@@ -233,19 +232,19 @@ def _check_memory(cm: ConfigManager, memory: MemoryStore, console: Console) -> N
     table.add_column("status", width=6)
     table.add_column("item")
 
-    ext_path = cm.get_nested("memory", "external_file", default="")
-    if ext_path:
-        content = load_external_memory(ext_path)
+    agents_path = resolve_agents_path(cm)
+    if agents_path:
+        content = load_context_file(agents_path)
         if content:
-            table.add_row(_icon(True), f"External: {ext_path} ({len(content)} bytes)")
+            table.add_row(_icon(True), f"AGENTS: {agents_path} ({len(content)} bytes)")
         else:
-            table.add_row(_warn_icon(), f"External: {ext_path} (not found or empty)")
+            table.add_row(_warn_icon(), f"AGENTS: {agents_path} (not found or empty)")
     else:
-        table.add_row("[dim]--[/dim]", "External: not configured")
+        table.add_row("[dim]--[/dim]", "AGENTS: not configured")
 
     ok, msg = memory.validate()
-    count = len(memory.entries)
-    table.add_row(_icon(ok), f"Internal: {memory.path} ({count} entries) {msg}")
+    count = len(memory.list_entries())
+    table.add_row(_icon(ok), f"MEMORY: {memory.path} ({count} note entries) {msg}")
 
     console.print(Panel(table, title="[bold cyan]Memory[/bold cyan]", border_style="cyan"))
 

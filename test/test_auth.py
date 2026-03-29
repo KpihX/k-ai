@@ -11,6 +11,7 @@ from k_ai.auth import (
     OAuthProviderLoader,
     OAuthTokenState,
     TokenFileStore,
+    build_google_oauth_authorization_url,
 )
 from k_ai.config import ConfigManager
 from k_ai.exceptions import ConfigurationError, ProviderAuthenticationError
@@ -219,6 +220,24 @@ class TestOAuthLoaderRegistry:
         loaders = registry.build_token_loaders()
         assert "google" in loaders
         assert loaders["google"](str(path), []) == "tok"
+
+
+class TestGoogleOAuthLoginHelpers:
+    def test_build_google_oauth_authorization_url_contains_pkce_and_offline_access(self):
+        url = build_google_oauth_authorization_url(
+            client_id="cid",
+            redirect_uri="http://127.0.0.1:8765/oauth/google/callback",
+            scopes=["scope:a", "scope:b"],
+            state="state123",
+            code_challenge="challenge456",
+        )
+        assert "client_id=cid" in url
+        assert "redirect_uri=http%3A%2F%2F127.0.0.1%3A8765%2Foauth%2Fgoogle%2Fcallback" in url
+        assert "scope=scope%3Aa+scope%3Ab" in url
+        assert "access_type=offline" in url
+        assert "prompt=consent" in url
+        assert "state=state123" in url
+        assert "code_challenge=challenge456" in url
 
 
 class TestLiteLLMDriverOAuthErrors:

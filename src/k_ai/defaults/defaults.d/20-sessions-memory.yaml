@@ -42,11 +42,11 @@ compaction:
 # ==============================================================================
 
 memory:
-  # External read-only memory file injected into the system prompt.
-  external_file: "~/.agents/KERNEL.md"
+  # Agent instruction/context file injected into the system prompt.
+  agents_path: "~/.k-ai/AGENTS.md"
 
-  # Internal mutable memory store managed by k-ai tools.
-  internal_file: "~/.k-ai/MEMORY.json"
+  # Mutable k-ai memory markdown file injected into the system prompt.
+  path: "~/.k-ai/MEMORY.md"
 
 
 # ==============================================================================
@@ -57,7 +57,7 @@ runtime_git:
   # When enabled, k-ai treats the runtime store (~/.k-ai by default) as a local
   # git repo that snapshots the durable conversational state:
   #   - config.yaml
-  #   - MEMORY.json
+  #   - MEMORY.md
   #   - sessions/index.json
   #   - sessions/*.jsonl
   #

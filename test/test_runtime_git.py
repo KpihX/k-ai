@@ -13,7 +13,7 @@ from k_ai.runtime_git import (
 
 def _configure_runtime(cm: ConfigManager, runtime_root):
     cm.set("config.persist_path", str(runtime_root / "config.yaml"))
-    cm.set("memory.internal_file", str(runtime_root / "MEMORY.json"))
+    cm.set("memory.path", str(runtime_root / "MEMORY.md"))
     cm.set("sessions.directory", str(runtime_root / "sessions"))
 
 
@@ -36,7 +36,7 @@ def test_commit_runtime_state_tracks_only_runtime_files(tmp_path):
 
     (runtime_root / "sessions").mkdir(parents=True, exist_ok=True)
     (runtime_root / "config.yaml").write_text("model: mistral\n", encoding="utf-8")
-    (runtime_root / "MEMORY.json").write_text("[]\n", encoding="utf-8")
+    (runtime_root / "MEMORY.md").write_text("# memory\n", encoding="utf-8")
     (runtime_root / "sessions" / "index.json").write_text("[]\n", encoding="utf-8")
     (runtime_root / "sessions" / "abc123.jsonl").write_text('{"role":"user","content":"hi"}\n', encoding="utf-8")
     (runtime_root / "sandbox").mkdir(parents=True, exist_ok=True)
@@ -64,7 +64,7 @@ def test_commit_runtime_state_tracks_only_runtime_files(tmp_path):
     ).stdout.splitlines()
     assert ".gitignore" in tracked
     assert "config.yaml" in tracked
-    assert "MEMORY.json" in tracked
+    assert "MEMORY.md" in tracked
     assert "sessions/index.json" in tracked
     assert "sessions/abc123.jsonl" in tracked
     assert "sandbox/noise.txt" not in tracked
@@ -102,7 +102,7 @@ def test_commit_runtime_state_succeeds_without_preconfigured_git_identity(tmp_pa
 
     (runtime_root / "sessions").mkdir(parents=True, exist_ok=True)
     (runtime_root / "config.yaml").write_text("model: mistral\n", encoding="utf-8")
-    (runtime_root / "MEMORY.json").write_text("[]\n", encoding="utf-8")
+    (runtime_root / "MEMORY.md").write_text("# memory\n", encoding="utf-8")
     (runtime_root / "sessions" / "index.json").write_text("[]\n", encoding="utf-8")
     (runtime_root / "sessions" / "abc123.jsonl").write_text('{"role":"user","content":"hi"}\n', encoding="utf-8")
 

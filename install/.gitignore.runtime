@@ -2,7 +2,7 @@
 # Track only the durable runtime state that matters to the user.
 *
 !.gitignore
-!MEMORY.json
+!MEMORY.md
 !config.yaml
 !sessions/
 !sessions/index.json

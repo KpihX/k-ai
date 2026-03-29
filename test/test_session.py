@@ -10,10 +10,11 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from k_ai import ConfigManager
-from k_ai.session import ChatSession
+from k_ai.session import ChatSession, _RuntimePromptCompleter
 from k_ai.models import Message, MessageRole, ToolCall, ToolResult, TokenUsage, CompletionChunk
 from k_ai.exceptions import LLMError, ContextLengthExceededError
 from k_ai.tools.base import InternalTool
+from prompt_toolkit.document import Document
 
 
 # ---------------------------------------------------------------------------
@@ -76,12 +77,44 @@ class _HangingTool(InternalTool):
         return ToolResult(success=True, message="done")
 
 
+class _RetryableStateTool(InternalTool):
+    name = "retryable_state_tool"
+    description = "Succeeds only after state is toggled."
+    parameters_schema = {"type": "object", "properties": {}, "required": []}
+    requires_approval = False
+    requires_catalog_entry = False
+
+    def __init__(self, state):
+        self._state = state
+
+    async def execute(self, arguments, ctx):
+        self._state["retry_calls"] += 1
+        if self._state["ready"]:
+            return ToolResult(success=True, message="ready now")
+        return ToolResult(success=False, message="not ready yet")
+
+
+class _MarkReadyTool(InternalTool):
+    name = "mark_ready_tool"
+    description = "Marks the shared state as ready."
+    parameters_schema = {"type": "object", "properties": {}, "required": []}
+    requires_approval = False
+    requires_catalog_entry = False
+
+    def __init__(self, state):
+        self._state = state
+
+    async def execute(self, arguments, ctx):
+        self._state["ready"] = True
+        return ToolResult(success=True, message="state updated")
+
+
 @pytest.fixture
 def session(cm, tmp_path):
     """ChatSession with ollama (no key needed); uses tmp dir for isolation."""
     cm.set("provider", "ollama")
     cm.set("sessions.directory", str(tmp_path / "sessions"))
-    cm.set("memory.internal_file", str(tmp_path / "MEMORY.json"))
+    cm.set("memory.internal_file", str(tmp_path / "MEMORY.md"))
     sess = ChatSession(cm)
     return sess
 
@@ -263,11 +296,11 @@ class TestSystemPrompt:
         session.external_memory = "Preferred user name: OldExternal"
         session.memory.add("Preferred user name: NewInternal.")
         prompt = session._build_system_prompt()
-        assert "1. Internal remembered facts" in prompt
-        assert "2. Built-in and session-specific internal prompts/instructions." in prompt
-        assert "3. External user context loaded from a file." in prompt
+        assert "1. Built-in and session-specific internal prompts/instructions." in prompt
+        assert "2. The configured AGENTS context file." in prompt
+        assert "3. The configured MEMORY file." in prompt
         assert "Preferred user name: NewInternal." in prompt
-        assert prompt.index("## Remembered Facts") < prompt.index("## User Context")
+        assert prompt.index("## AGENTS Context") < prompt.index("## MEMORY Context")
 
     def test_runtime_snapshot_includes_current_cwd(self, session, tmp_path):
         session.set_current_cwd(tmp_path)
@@ -381,7 +414,7 @@ class TestSystemPrompt:
         prompt = session._build_system_prompt()
         assert "## Active Skills" in prompt
         assert "Look for bugs first." in prompt
-        assert prompt.index("## Active Skills") < prompt.index("## User Context")
+        assert prompt.index("## Active Skills") < prompt.index("## AGENTS Context")
 
 
 class TestRuntimeConfig:
@@ -470,6 +503,33 @@ class TestRuntimeConfig:
         assert snapshot["skills_summary"] == "python-review"
         assert snapshot["skills_catalog_count"] == 1
         assert snapshot["skills_visibility_mode"] == "announce"
+
+    def test_runtime_prompt_completer_suggests_explicit_skill_references(self, session, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        skill_dir = tmp_path / ".k-ai" / "skills" / "project"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\n"
+            "name: k-project\n"
+            "description: Project initialization.\n"
+            "---\n\n"
+            "# Project\n",
+            encoding="utf-8",
+        )
+        templates_dir = skill_dir / "templates"
+        templates_dir.mkdir(parents=True, exist_ok=True)
+        (templates_dir / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+        session.cm.set("skills.explicit_prefixes", ["@", "$"])
+        session.skill_manager = session.skill_manager.__class__(session.cm, workspace_root=tmp_path)
+
+        completer = _RuntimePromptCompleter(session)
+        completions = [
+            item.text
+            for item in completer.get_completions(Document(text="utilise @k-pro", cursor_position=len("utilise @k-pro")), None)
+        ]
+
+        assert "@k-project" in completions
+        assert "@k-project/templates/pyproject.toml" in completions
 
     @pytest.mark.asyncio
     async def test_prepare_runtime_snapshot_for_startup_preloads_mcp_catalog(self, session):
@@ -676,6 +736,45 @@ class TestHooksIntegration:
 
         assert session.history[-1].content == "Analyse terminée."
         assert any(msg.role == MessageRole.TOOL and msg.name == "activate_skill" for msg in session.history)
+
+    @pytest.mark.asyncio
+    async def test_process_message_can_rerun_identical_tool_call_in_later_round(self, session):
+        state = {"ready": False, "retry_calls": 0}
+        session.tool_registry.register(_RetryableStateTool(state))
+        session.tool_registry.register(_MarkReadyTool(state))
+        session.console = MagicMock()
+        session._tool_ctx.console = session.console
+
+        calls = []
+
+        async def chat_stream(messages, config=None, tools=None):
+            calls.append(messages)
+            if len(calls) == 1:
+                yield CompletionChunk(
+                    tool_calls=[ToolCall(id="t1", function_name="retryable_state_tool", arguments={})],
+                    finish_reason="tool_calls",
+                )
+                return
+            if len(calls) == 2:
+                yield CompletionChunk(
+                    tool_calls=[ToolCall(id="t2", function_name="mark_ready_tool", arguments={})],
+                    finish_reason="tool_calls",
+                )
+                return
+            if len(calls) == 3:
+                yield CompletionChunk(
+                    tool_calls=[ToolCall(id="t3", function_name="retryable_state_tool", arguments={})],
+                    finish_reason="tool_calls",
+                )
+                return
+            yield CompletionChunk(delta_content="ok final", finish_reason="stop")
+
+        session.llm.chat_stream = chat_stream
+
+        await session._process_message("run the stateful workflow", suppress_switch=True)
+
+        assert state["retry_calls"] == 2
+        assert session.history[-1].content == "ok final"
 
 
 class TestToolPolicies:
@@ -1216,10 +1315,12 @@ class TestTurnRollback:
 
     @pytest.mark.asyncio
     async def test_tool_result_is_truncated_before_adding_to_history(self, session):
+        session.cm.set("cli.tool_result_max_history", 100)
         huge_result = "x" * 5000
         normalized = session._normalize_tool_result_for_history(huge_result)
         assert len(normalized) < len(huge_result)
-        assert normalized.endswith("...(truncated for history)")
+        assert "...(truncated for history)" in normalized
+        assert "Request a targeted partial read instead" in normalized
 
     @pytest.mark.asyncio
     async def test_execute_internal_tool_ctrl_c_on_confirm_returns_interrupted(self, session):
@@ -1305,7 +1406,7 @@ class TestTurnRollback:
         session._execute_internal_tool.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_process_message_reuses_duplicate_tool_call_within_same_turn(self, session):
+    async def test_process_message_reruns_identical_tool_call_in_later_round(self, session):
         tc1 = ToolCall(id="c1", function_name="clear_screen", arguments={})
         tc2 = ToolCall(id="c2", function_name="clear_screen", arguments={})
         call_count = 0
@@ -1331,7 +1432,7 @@ class TestTurnRollback:
 
         await session._process_message("double")
 
-        session._execute_internal_tool.assert_awaited_once()
+        assert session._execute_internal_tool.await_count == 2
         tool_msgs = [m for m in session.history if m.role == MessageRole.TOOL]
         assert len(tool_msgs) == 2
         assert tool_msgs[0].content == "cleared"
@@ -1588,6 +1689,26 @@ class TestSessionDigest:
         await session.generate_session_digest(sid, persist=False)
         assert "For the summary field specifically" in seen_system[0]
         assert "Summarize the user's intent" in seen_system[0]
+        assert "short title" in seen_system[0]
+
+    @pytest.mark.asyncio
+    async def test_generate_session_digest_normalizes_narrative_summary(self, session):
+        session._do_new_session()
+        sid = session._session_id
+        session.session_store.save_message(sid, Message(role=MessageRole.USER, content="Vérifie les processus qui consomment le plus de CPU"))
+
+        async def digest_stream(messages, config=None, tools=None):
+            yield CompletionChunk(
+                delta_content='{"summary":"Le chat a débuté par une demande de vérifier les processus consommant le plus de CPU.","themes":["processus","cpu"],"session_type":"classic"}',
+                finish_reason="stop",
+            )
+
+        session.llm.chat_stream = digest_stream
+        digest = await session.generate_session_digest(sid, persist=True)
+        assert digest["summary"] == "vérifier les processus consommant le plus de CPU"
+        assert not digest["summary"].endswith(".")
+        meta = session.session_store.get_session(sid)
+        assert meta.summary == digest["summary"]
 
     @pytest.mark.asyncio
     async def test_auto_rename_on_exit_uses_exit_prompts(self, session):
@@ -1662,7 +1783,28 @@ class TestReloadProvider:
             mock_llm_obj.provider_name = original_name
             mock_gp.return_value = mock_llm_obj
             session.reload_provider()
-        mock_gp.assert_called_once_with(session.cm, provider=original_name, model=None)
+        mock_gp.assert_called_once_with(
+            session.cm,
+            provider=original_name,
+            model="phi4-mini:latest",
+            auth_mode=None,
+        )
+
+    def test_reload_uses_provider_auth_mode_override(self, session):
+        session.cm.set("provider", "gemini")
+        session.cm.set("model", "")
+        session.cm.set("provider_auth_mode_overrides.gemini", "oauth")
+        with patch("k_ai.session.get_provider") as mock_gp:
+            mock_llm_obj = MagicMock()
+            mock_llm_obj.provider_name = "gemini"
+            mock_gp.return_value = mock_llm_obj
+            session.reload_provider(provider="gemini")
+        mock_gp.assert_called_once_with(
+            session.cm,
+            provider="gemini",
+            model="gemini-2.5-flash",
+            auth_mode="oauth",
+        )
 
     def test_preserve_simple_history_only_removes_tool_related_messages(self, session):
         session._do_new_session()

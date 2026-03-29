@@ -10,7 +10,7 @@ from k_ai.session import ChatSession
 def session_for_commands(cm, tmp_path):
     cm.set("provider", "ollama")
     cm.set("sessions.directory", str(tmp_path / "sessions"))
-    cm.set("memory.internal_file", str(tmp_path / "MEMORY.json"))
+    cm.set("memory.internal_file", str(tmp_path / "MEMORY.md"))
     sess = ChatSession(cm)
     sess.console = MagicMock()
     sess._tool_ctx.console = sess.console
@@ -31,20 +31,6 @@ class TestCommandHandler:
         tool_call = session_for_commands._execute_internal_tool.await_args.args[0]
         assert tool_call.function_name == "qmd_search"
         assert tool_call.arguments["query"] == "session 753d3002"
-
-    @pytest.mark.asyncio
-    async def test_memory_add_routes_through_internal_tool_executor(self, session_for_commands):
-        handler = CommandHandler(session_for_commands)
-        session_for_commands._execute_internal_tool = AsyncMock(
-            return_value=ToolResult(success=True, message="ok")
-        )
-
-        await handler.handle("/memory add retenir ceci")
-
-        session_for_commands._execute_internal_tool.assert_awaited_once()
-        tool_call = session_for_commands._execute_internal_tool.await_args.args[0]
-        assert tool_call.function_name == "memory_add"
-        assert tool_call.arguments["text"] == "retenir ceci"
 
     @pytest.mark.asyncio
     async def test_skills_show_prints_skill_document(self, session_for_commands, tmp_path, monkeypatch):
@@ -167,7 +153,7 @@ class TestCommandHandler:
         handler = CommandHandler(session_for_commands)
         session_for_commands.cm.config.setdefault("api_key", {})["mistral"] = {
             "api_key_env_var": "MISTRAL_API_KEY",
-            "default_model": "magistral-small-latest",
+            "default_model": "mistral-small-latest",
         }
 
         await handler.handle("/provider list")
@@ -183,12 +169,16 @@ class TestCommandHandler:
         handler._switch_provider = AsyncMock(return_value=True)
         handler._provider_choices = MagicMock(return_value=[
             ("ollama", "no_auth", "phi4-mini:latest"),
-            ("mistral", "api_key", "magistral-small-latest"),
+            ("mistral", "api_key", "mistral-small-latest"),
         ])
 
         await handler.handle("/provider set 2")
 
-        handler._switch_provider.assert_awaited_once_with("mistral", session_for_commands.provider_default_model("mistral"))
+        handler._switch_provider.assert_awaited_once_with(
+            "mistral",
+            session_for_commands.provider_default_model("mistral"),
+            explicit_model=False,
+        )
 
     @pytest.mark.asyncio
     async def test_model_list_renders_available_models(self, session_for_commands):
@@ -210,7 +200,57 @@ class TestCommandHandler:
 
         tool_call = session_for_commands._execute_internal_tool.await_args.args[0]
         assert tool_call.function_name == "set_config"
-        assert tool_call.arguments == {"key": "model", "value": "phi4:latest"}
+        assert tool_call.arguments == {"key": "model", "value": "phi4:latest", "persist": True}
+
+    @pytest.mark.asyncio
+    async def test_model_default_clears_explicit_override_persistently(self, session_for_commands):
+        handler = CommandHandler(session_for_commands)
+        session_for_commands._execute_internal_tool = AsyncMock(return_value=ToolResult(success=True, message="ok"))
+        session_for_commands.provider_default_model = MagicMock(return_value="mistral-small-latest")
+
+        await handler.handle("/model default")
+
+        tool_call = session_for_commands._execute_internal_tool.await_args.args[0]
+        assert tool_call.function_name == "set_config"
+        assert tool_call.arguments == {"key": "model", "value": "", "persist": True}
+
+    @pytest.mark.asyncio
+    async def test_switch_provider_clears_model_override_when_using_provider_default(self, session_for_commands):
+        handler = CommandHandler(session_for_commands)
+        session_for_commands._execute_internal_tool = AsyncMock(return_value=ToolResult(success=True, message="ok"))
+
+        await handler._switch_provider("mistral", "mistral-small-latest", explicit_model=False)
+
+        tool_calls = [call.args[0] for call in session_for_commands._execute_internal_tool.await_args_list]
+        assert [tool.function_name for tool in tool_calls] == ["set_config", "set_config"]
+        assert tool_calls[0].arguments == {"key": "model", "value": "", "persist": True}
+        assert tool_calls[1].arguments == {"key": "provider", "value": "mistral", "persist": True}
+
+    @pytest.mark.asyncio
+    async def test_switch_provider_persists_explicit_model_override(self, session_for_commands):
+        handler = CommandHandler(session_for_commands)
+        session_for_commands._execute_internal_tool = AsyncMock(return_value=ToolResult(success=True, message="ok"))
+
+        await handler._switch_provider("mistral", "devstral-small-latest", explicit_model=True)
+
+        tool_calls = [call.args[0] for call in session_for_commands._execute_internal_tool.await_args_list]
+        assert tool_calls[0].arguments == {"key": "model", "value": "devstral-small-latest", "persist": True}
+        assert tool_calls[1].arguments == {"key": "provider", "value": "mistral", "persist": True}
+
+    @pytest.mark.asyncio
+    async def test_oauth_login_routes_through_internal_tool_executor(self, session_for_commands):
+        handler = CommandHandler(session_for_commands)
+        session_for_commands._execute_internal_tool = AsyncMock(return_value=ToolResult(success=True, message="ok"))
+
+        await handler.handle("/oauth login google")
+
+        tool_call = session_for_commands._execute_internal_tool.await_args.args[0]
+        assert tool_call.function_name == "oauth_login"
+        assert tool_call.arguments == {
+            "provider": "google",
+            "persist": True,
+            "switch_provider": True,
+        }
 
     @pytest.mark.asyncio
     async def test_init_routes_through_internal_tool_executor(self, session_for_commands):
@@ -348,8 +388,7 @@ class TestCommandHandler:
 
         tool_call = session_for_commands._execute_internal_tool.await_args.args[0]
         assert tool_call.function_name == "set_config"
-        assert tool_call.arguments["key"] == "model"
-        assert tool_call.arguments["value"] == "phi4-mini:latest"
+        assert tool_call.arguments == {"key": "model", "value": "", "persist": True}
 
     @pytest.mark.asyncio
     async def test_model_default_resets_to_current_provider_default(self, session_for_commands):
@@ -362,8 +401,7 @@ class TestCommandHandler:
 
         tool_call = session_for_commands._execute_internal_tool.await_args.args[0]
         assert tool_call.function_name == "set_config"
-        assert tool_call.arguments["key"] == "model"
-        assert tool_call.arguments["value"] == "phi4-mini:latest"
+        assert tool_call.arguments == {"key": "model", "value": "", "persist": True}
 
     @pytest.mark.asyncio
     async def test_set_routes_through_internal_tool_executor(self, session_for_commands):
@@ -450,8 +488,8 @@ class TestCommandHandler:
         session_for_commands._finalize_active_session.assert_awaited_once()
         session_for_commands._do_new_session.assert_called_once()
         calls = session_for_commands._execute_internal_tool.await_args_list
-        assert calls[0].args[0].arguments == {"key": "provider", "value": "mistral"}
-        assert calls[1].args[0].arguments == {"key": "model", "value": "mistral-medium-latest"}
+        assert calls[0].args[0].arguments == {"key": "model", "value": "", "persist": True}
+        assert calls[1].args[0].arguments == {"key": "provider", "value": "mistral", "persist": True}
 
     @pytest.mark.asyncio
     async def test_provider_change_with_complex_history_can_keep_only_simple_history(self, session_for_commands):
@@ -470,8 +508,8 @@ class TestCommandHandler:
 
         session_for_commands.preserve_simple_history_only.assert_called_once()
         calls = session_for_commands._execute_internal_tool.await_args_list
-        assert calls[0].args[0].arguments == {"key": "provider", "value": "mistral"}
-        assert calls[1].args[0].arguments == {"key": "model", "value": "mistral-medium-latest"}
+        assert calls[0].args[0].arguments == {"key": "model", "value": "", "persist": True}
+        assert calls[1].args[0].arguments == {"key": "provider", "value": "mistral", "persist": True}
 
     @pytest.mark.asyncio
     async def test_tools_auto_routes_through_policy_set_tool(self, session_for_commands):

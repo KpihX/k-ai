@@ -12,11 +12,11 @@ def _build_runtime(tmp_path: Path):
     cm = ConfigManager()
     runtime_dir = tmp_path / "runtime"
     sessions_dir = runtime_dir / "sessions"
-    memory_path = runtime_dir / "MEMORY.json"
+    memory_path = runtime_dir / "MEMORY.md"
     config_path = runtime_dir / "config.yaml"
 
     cm.set("sessions.directory", str(sessions_dir))
-    cm.set("memory.internal_file", str(memory_path))
+    cm.set("memory.path", str(memory_path))
     cm.set("config.persist_path", str(config_path))
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(cm.dump_yaml(), encoding="utf-8")
@@ -36,7 +36,7 @@ def test_backup_runtime_state_copies_runtime_files(tmp_path):
     cm, memory, store = _build_runtime(tmp_path)
     backup_dir = backup_runtime_state(cm, memory, store)
     assert (backup_dir / "config.yaml").exists()
-    assert (backup_dir / "MEMORY.json").exists()
+    assert (backup_dir / "MEMORY.md").exists()
     assert (backup_dir / "sessions").exists()
 
 

@@ -5,6 +5,7 @@ Core LLM interaction logic, powered by LiteLLM.
 import json
 import asyncio
 import litellm
+from pathlib import Path
 from typing import AsyncGenerator, List, Dict, Optional, Any
 from abc import ABC, abstractmethod
 
@@ -181,6 +182,7 @@ class LiteLLMDriver(LLMProvider):
         super().__init__(config_manager, provider_name, model_name, auth_mode)
 
         self.api_key: Optional[str] = None
+        self.oauth_access_token: Optional[str] = None
 
         if self.auth_mode == "api_key":
             api_key_var = self.provider_config.get("api_key_env_var")
@@ -214,6 +216,62 @@ class LiteLLMDriver(LLMProvider):
                 )
 
             self.api_key = auth.TOKEN_LOADERS[oauth_provider_name](token_path, scopes)
+            self.oauth_access_token = self.api_key
+
+    def _infer_google_project_from_token_payload(self, payload: dict[str, Any]) -> Optional[str]:
+        for key in ("quota_project_id", "project_id"):
+            value = str(payload.get(key, "") or "").strip()
+            if value:
+                return value
+        client_id = str(payload.get("client_id", "") or "").strip()
+        if client_id and "-" in client_id:
+            prefix = client_id.split("-", 1)[0].strip()
+            if prefix:
+                return prefix
+        return None
+
+    def _google_gemini_oauth_litellm_params(self) -> dict[str, Any]:
+        oauth_provider_name = str(self.provider_config.get("oauth_provider_name", "") or "").strip().lower()
+        token_path = str(self.provider_config.get("token_path", "") or "").strip()
+        if self.provider_name != "gemini" or oauth_provider_name != "google" or not token_path:
+            return {}
+
+        try:
+            payload = json.loads(Path(token_path).expanduser().read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise ConfigurationError(f"Invalid Google OAuth token file at '{token_path}': {exc}") from exc
+        if not isinstance(payload, dict):
+            raise ConfigurationError(f"Google OAuth token file at '{token_path}' must contain a JSON object.")
+
+        project_env_var = str(self.provider_config.get("vertex_project_env_var", "VERTEXAI_PROJECT") or "VERTEXAI_PROJECT")
+        location_env_var = str(self.provider_config.get("vertex_location_env_var", "VERTEXAI_LOCATION") or "VERTEXAI_LOCATION")
+        project = (
+            str(self.provider_config.get("vertex_project", "") or "").strip()
+            or resolve_secret(project_env_var)[0]
+            or resolve_secret("GOOGLE_CLOUD_PROJECT")[0]
+            or resolve_secret("GCLOUD_PROJECT")[0]
+            or self._infer_google_project_from_token_payload(payload)
+        )
+        location = (
+            str(self.provider_config.get("vertex_location", "") or "").strip()
+            or resolve_secret(location_env_var)[0]
+            or "us-central1"
+        )
+        if not project:
+            raise ConfigurationError(
+                "Gemini OAuth requires a Google Cloud project. Set oauth.gemini.vertex_project, "
+                f"{project_env_var}, GOOGLE_CLOUD_PROJECT, or GCLOUD_PROJECT."
+            )
+
+        authorized_user = dict(payload)
+        authorized_user["type"] = "authorized_user"
+        authorized_user.setdefault("quota_project_id", project)
+        return {
+            "model": f"vertex_ai/{self.model_name}",
+            "vertex_project": str(project),
+            "vertex_location": str(location),
+            "vertex_credentials": json.dumps(authorized_user),
+        }
 
     async def chat_stream(
         self,
@@ -248,8 +306,11 @@ class LiteLLMDriver(LLMProvider):
         # When a base_url is set (local/proxied OpenAI-compatible endpoint),
         # LiteLLM must route via "openai/" prefix to hit /v1/chat/completions.
         # Without it, "ollama/..." would be sent to the native /api/generate endpoint.
+        oauth_litellm_params = self._google_gemini_oauth_litellm_params() if self.auth_mode == "oauth" else {}
         base_url = self.provider_config.get("base_url")
-        if base_url:
+        if oauth_litellm_params:
+            model_str = str(oauth_litellm_params["model"])
+        elif base_url:
             model_str = f"openai/{self.model_name}"
         else:
             model_str = f"{self.provider_name}/{self.model_name}"
@@ -275,7 +336,13 @@ class LiteLLMDriver(LLMProvider):
             "temperature": cfg_temperature,
             "max_tokens":  cfg_max_tokens,
         }
-        if self.api_key is not None:
+        if oauth_litellm_params:
+            params.update({
+                "vertex_project": oauth_litellm_params["vertex_project"],
+                "vertex_location": oauth_litellm_params["vertex_location"],
+                "vertex_credentials": oauth_litellm_params["vertex_credentials"],
+            })
+        elif self.api_key is not None:
             params["api_key"] = self.api_key
         elif base_url is not None:
             # OpenAI-compatible endpoints (ollama, etc.) routed via openai/ prefix

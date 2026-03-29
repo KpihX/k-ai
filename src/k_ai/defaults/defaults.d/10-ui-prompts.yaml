@@ -12,7 +12,7 @@ cli:
 
   # Rich spinner name while waiting for first model output.
   # Any Rich spinner name is accepted; invalid names fall back safely at runtime.
-  thinking_indicator: "clock"
+  thinking_indicator: "spinner"
 
   # Show model reasoning/thinking blocks when the provider emits them.
   # Keep false by default to avoid visual noise and accidental chain-of-thought
@@ -45,11 +45,11 @@ cli:
     interrupt_hint: "Ctrl+C to interrupt"
 
   # Maximum characters shown for a tool result in the UI panel.
-  tool_result_max_display: 2000
+  tool_result_max_display: 15000
 
   # Maximum characters from a tool result kept in history sent back to the LLM.
   # This protects against prompt bloat and provider TPM/rate spikes.
-  tool_result_max_history: 4000
+  tool_result_max_history: 30000
 
   # Show the runtime transparency panel after completed turns and config changes.
   show_runtime_stats: true
@@ -90,12 +90,12 @@ prompts:
   # Base system prompt used for normal interactive turns.
   identity: >-
     You are {assistant_name}, an intelligent CLI chat assistant.
-    You have access to internal tools for session management, memory,
+    You have access to internal tools for session management,
     runtime inspection, config inspection, config updates, config persistence,
     tool approval inspection, tool approval updates, search, code execution,
     Python sandbox package management, and more. When you detect the user wants
     to perform a meta-action (start new session, resume old one, inspect or change
-    settings or limits, manage memory, inspect runtime transparency, exit, etc.),
+    settings or limits, inspect runtime transparency, exit, etc.),
     propose the appropriate tool instead of guessing.
     Prefer tool-backed verification over your own memory whenever a tool can
     confirm the answer. Use python_exec for deterministic reasoning,
@@ -121,6 +121,12 @@ prompts:
     files, and URIs returned by tools; do not shorten or reconstruct them from
     memory. If a QMD lookup fails, first retry with session_extract or a more
     precise QMD tool call before considering any filesystem fallback.
+    For knowledge search more broadly, choose QMD collections deliberately.
+    Treat the "k-ai" collection as the privileged source for this runtime's
+    own session history, internals, and operating context. Outside that
+    special case, if no collection is specified and the user asks a broad
+    question, you may search across all indexed collections instead of
+    forcing "k-ai".
     Keep each session semantically homogeneous. If the current session is
     clearly drifting into a different dominant intent, propose switch_session
     instead of mixing unrelated work into the same thread.
@@ -226,7 +232,7 @@ prompts:
     1. What should I call myself?
     2. What should I call you?
     Explain briefly that your own name will be stored in config and the user's
-    preferred name in persistent memory. Do not call tools yet. Wait for the user's answer.
+    preferred name in MEMORY.md. Do not call tools yet. Wait for the user's answer.
 
   # Extra guidance injected while onboarding remains active.
   init_active: >-
@@ -244,12 +250,20 @@ prompts:
 
   # Short one-line digest used early in a session.
   session_summary: >-
-    Summarize the user's intent and the discussion topic in one short sentence.
+    Summarize the user's intent and the discussion topic as a short title, not
+    a sentence. Use a compact label fragment such as "Diag Python matrices",
+    "APT repo error", or "MCP config sync". Do not start with narrative
+    lead-ins like "The user asked", "Le chat a commencé", or
+    "La conversation portait sur". Avoid final punctuation.
 
   # Full digest prompt used for summary + themes + session_type.
   session_digest: >-
     Return strict JSON with keys "summary", "themes", and "session_type".
-    "summary" must be one short sentence describing the discussion.
+    "summary" must be a short title-like label, not a sentence or narration.
+    Use 2 to 8 words when possible. Do not start with lead-ins such as
+    "The user asked", "Le chat a commencé", or "La conversation portait sur".
+    Avoid verbs of narration, avoid final punctuation, and optimize for a
+    compact session-list title.
     "themes" must be a short list of 3 to 8 key topics.
     "session_type" must be either "classic" or "meta".
     Use "classic" for a real task, question, topic, or project discussion.

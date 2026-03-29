@@ -452,15 +452,13 @@ def doctor_cmd(
 ):
     """Run a full diagnostic check."""
     from .doctor import run_doctor
-    from .memory import MemoryStore
+    from .memory import MemoryStore, resolve_memory_path
     from .session_store import SessionStore
-    from pathlib import Path
 
     try:
         cm = ConfigManager(override_path=config_path)
 
-        mem_path = cm.get_nested("memory", "internal_file", default="~/.k-ai/MEMORY.json")
-        memory = MemoryStore(Path(mem_path))
+        memory = MemoryStore(resolve_memory_path(cm))
         memory.load()
 
         sessions_dir = cm.get_nested("sessions", "directory", default="~/.k-ai/sessions")

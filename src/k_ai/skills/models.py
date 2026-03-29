@@ -37,6 +37,16 @@ class SkillDocument:
 
 
 @dataclass(frozen=True)
+class SkillReferenceContent:
+    """Additional file content loaded from inside a skill directory."""
+
+    mention: str
+    relative_path: str
+    absolute_path: Path
+    content: str
+
+
+@dataclass(frozen=True)
 class ActivatedSkill:
     """A skill selected for the current turn."""
 
@@ -45,6 +55,7 @@ class ActivatedSkill:
     activation_source: str = "explicit"
     explicit: bool = False
     reused_from_context: bool = False
+    references: Tuple[SkillReferenceContent, ...] = ()
 
 
 @dataclass(frozen=True)

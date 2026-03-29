@@ -31,6 +31,12 @@
 
 ## Next candidates
 
+- [ ] Inject stable runtime context into every system prompt/request: current date, current time, timezone, host/OS, shell, cwd, and core machine facts.
+- [ ] Add explicit resume modes with startup selection dialog: resume by session id, guided recent-session pick, or resume without preselection.
+- [ ] Repoint external read-only memory from `~/.agents/KERNEL.md` to `~/.agents/AGENTS.md` everywhere and remove legacy references once the migration is fully stable.
+- [ ] Add adaptive auto-planning mode: for sufficiently complex tasks, let the model build and maintain an explicit execution plan before acting so important steps are not forgotten.
+- [ ] Add fine-grained file reading support beyond `head`/`tail`: explicit `start`, `offset`, `limit`, and targeted windowed reads so agents can fetch the missing slice instead of rereading a whole file.
+- [ ] Let the user send live hints to the agent while it is still working, queue them, and feed them back right after the current tool/action completes.
 - [x] Refactor long-response streaming away from a single full-height Rich `Live` panel to avoid bottom ellipsis/clipping, blinking redraws, and delayed visibility when content exceeds terminal height.
 - [x] Implement the hooks layer after skills stabilization: structured lifecycle hooks with timeout policies, discovery roots, auditability, and Claude-style event naming.
 - [ ] Deepen MCP runtime sophistication beyond the current foundation: persistent sessions where useful, richer roots refresh semantics, broader transport tuning, and higher-level server templates.
@@ -40,3 +46,4 @@
 - [ ] Add integration tests for interruption behavior in an interactive PTY.
 - [ ] Reduce shell-side visual noise further during focused PTY interaction without weakening login-shell environment fidelity.
 - [ ] Add a doctor sub-check that verifies Git remotes and publish prerequisites before `make release`.
+- [ ] Implement intelligent command policy management: let the agent proactively propose patterns (regex or specific binaries) to "always allow" based on observed safe usage, allowing the user to validate or request specific auto-pass rules.

@@ -11,7 +11,7 @@ from k_ai.tools.base import InternalTool, ToolContext, ToolRegistry
 from k_ai.tools.meta import (
     NewSessionTool, LoadSessionTool, ExitSessionTool, RenameSessionTool,
     ListSessionsTool, SessionDigestTool, SessionExtractTool, DeleteSessionTool, ClearScreenTool, SetConfigTool,
-    GetConfigTool, ListConfigTool, RuntimeStatusTool, SaveConfigTool,
+    GetConfigTool, ListConfigTool, RuntimeStatusTool, SaveConfigTool, OAuthLoginTool,
     ToolPolicyListTool, ToolPolicySetTool, ToolPolicyResetTool, ToolCapabilityListTool, ToolCapabilitySetTool,
     SwitchSessionTool, InitSystemTool,
     register_meta_tools,
@@ -38,7 +38,7 @@ def ctx(tmp_path, monkeypatch):
     """Build a ToolContext with real stores but mocked callbacks."""
     cm = ConfigManager()
     cm.set("tools.python.sandbox_dir", str(tmp_path / "sandbox"))
-    mem = MemoryStore(tmp_path / "MEMORY.json")
+    mem = MemoryStore(tmp_path / "MEMORY.md")
     mem.load()
     ss = SessionStore(tmp_path / "sessions")
     ss.init()
@@ -107,7 +107,7 @@ class TestToolRegistry:
     def test_register_meta_tools(self, ctx):
         registry = ToolRegistry()
         register_meta_tools(registry, ctx)
-        assert len(registry.list_tools()) == 22  # all meta/runtime/config/admin tools
+        assert len(registry.list_tools()) == 23  # all meta/runtime/config/admin tools
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +165,39 @@ class TestMetaTools:
         assert ctx.config.get_nested("prompts", "assistant_name") == "K-Prime"
         assert any(entry.text == "Preferred user name: Ivann." for entry in ctx.memory.list_entries())
         ctx.complete_init.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_oauth_login_switches_provider_and_persists(self, ctx, monkeypatch):
+        ctx.reload_provider = MagicMock()
+        monkeypatch.setattr("k_ai.tools.meta.auth.run_google_oauth_login", MagicMock(return_value={
+            "token_path": "/tmp/google.json",
+            "browser_opened": True,
+            "redirect_uri": "http://127.0.0.1:9999/oauth/google/callback",
+            "auth_url": "https://accounts.google.com/o/oauth2/v2/auth?...",
+            "client_id_source": "os.environ",
+            "client_secret_source": "os.environ",
+            "scopes": ["https://www.googleapis.com/auth/cloud-platform"],
+        }))
+        tool = OAuthLoginTool()
+        result = await tool.execute({"provider": "google", "persist": True, "switch_provider": True}, ctx)
+        assert result.success is True
+        assert ctx.config.get("provider") == "gemini"
+        assert ctx.config.get("model") == ""
+        assert ctx.config.get_nested("provider_auth_mode_overrides", "gemini") == "oauth"
+        assert result.data["saved_to"]
+        ctx.reload_provider.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_oauth_login_failure_keeps_diagnostic_fields(self, ctx, monkeypatch):
+        monkeypatch.setattr(
+            "k_ai.tools.meta.auth.run_google_oauth_login",
+            MagicMock(side_effect=RuntimeError("Google OAuth login requires GOOGLE_CLIENT_ID to be available.")),
+        )
+        tool = OAuthLoginTool()
+        result = await tool.execute({"provider": "google", "persist": True, "switch_provider": True}, ctx)
+        assert result.success is False
+        assert result.data["provider"] == "gemini"
+        assert result.data["client_id_env_var"] == "GOOGLE_CLIENT_ID"
 
     @pytest.mark.asyncio
     async def test_tool_capability_list(self, ctx):
@@ -604,6 +637,38 @@ class TestQmdTools:
         assert result.success is True
         assert captured["args"] == ("get", f"qmd://k-ai/{meta.id}.jsonl")
         assert result.message == "ok"
+
+    @pytest.mark.asyncio
+    async def test_qmd_query_without_collection_searches_all_collections(self, ctx, monkeypatch):
+        captured = {}
+
+        async def fake_run_qmd(*args, timeout=60):
+            captured["args"] = args
+            return True, "[]"
+
+        monkeypatch.setattr("k_ai.tools.qmd._run_qmd", fake_run_qmd)
+
+        tool = QmdQueryTool()
+        result = await tool.execute({"query": "imhotep", "num_results": 3}, ctx)
+
+        assert result.success is True
+        assert captured["args"] == ("query", "imhotep", "-n", "3", "--json")
+
+    @pytest.mark.asyncio
+    async def test_qmd_query_with_explicit_collection_scopes_search(self, ctx, monkeypatch):
+        captured = {}
+
+        async def fake_run_qmd(*args, timeout=60):
+            captured["args"] = args
+            return True, "[]"
+
+        monkeypatch.setattr("k_ai.tools.qmd._run_qmd", fake_run_qmd)
+
+        tool = QmdQueryTool()
+        result = await tool.execute({"query": "imhotep", "collection": "presentation"}, ctx)
+
+        assert result.success is True
+        assert captured["args"] == ("query", "imhotep", "-n", "5", "--json", "-c", "presentation")
 
     @pytest.mark.asyncio
     async def test_python_exec_error(self, ctx):

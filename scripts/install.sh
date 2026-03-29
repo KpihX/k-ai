@@ -252,7 +252,7 @@ PY
 
 K_AI_DIR="$(expand_path "${K_AI_DIR}")"
 SESSIONS_DIR="${K_AI_DIR}/sessions"
-MEMORY_FILE="${K_AI_DIR}/MEMORY.json"
+MEMORY_FILE="${K_AI_DIR}/MEMORY.md"
 CONFIG_FILE="${K_AI_DIR}/config.yaml"
 HOOK_FILE="${K_AI_DIR}/.git/hooks/post-commit"
 SANDBOX_DIR="$(expand_path "${PYTHON_SANDBOX_DIR}")"
@@ -337,7 +337,27 @@ step "Preparing runtime store"
 mkdir -p "${SESSIONS_DIR}"
 if [[ ! -f "${MEMORY_FILE}" ]]; then
   mkdir -p "$(dirname "${MEMORY_FILE}")"
-  printf '{"version": 1, "entries": []}\n' > "${MEMORY_FILE}"
+  cat > "${MEMORY_FILE}" <<'EOF'
+---
+name: k-ai-memory
+description: k-ai runtime memory, preferences, and operating notes.
+license: private
+metadata:
+  author: KpihX
+  version: "1.1.0"
+  scope: runtime-memory
+  target-agent: k-ai
+allowed-tools: Read, Edit, Write
+---
+
+# k-ai Memory
+
+> THE AGENT MUST PROACTIVELY UPDATE THIS MEMORY AS SOON AS IT FINDS SOMETHING KEY TO REMEMBER, WITHOUT ASKING FOR APPROVAL.
+
+## Profile
+
+## Notes
+EOF
   ok "Created ${MEMORY_FILE}"
 else
   ok "Memory file already exists"
@@ -462,7 +482,7 @@ def as_bool(name: str) -> bool:
 
 cm = ConfigManager(override_path=os.environ["CONFIG_FILE"])
 cm.set("config.persist_path", os.environ["CONFIG_FILE"])
-cm.set("memory.internal_file", os.environ["MEMORY_FILE"])
+cm.set("memory.path", os.environ["MEMORY_FILE"])
 cm.set("sessions.directory", os.environ["SESSIONS_DIR"])
 cm.set("config.editor", os.environ["EDITOR_CHOICE"])
 cm.set("runtime_git.enabled", as_bool("RUNTIME_GIT_ENABLED"))

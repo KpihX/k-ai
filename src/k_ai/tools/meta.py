@@ -10,6 +10,7 @@ from typing import Any, Dict
 
 import yaml
 
+from .. import auth
 from ..models import ToolResult
 from ..tool_capabilities import normalize_capability_name
 from ..ui_theme import resolve_syntax_theme
@@ -46,6 +47,30 @@ def _resolve_session_id(raw: str, ctx: ToolContext) -> str | None:
 
 def _session_summary(meta) -> str:
     return meta.summary or (meta.title if meta.title != meta.id else "(untitled)")
+
+
+def _resolve_oauth_target(raw: str, ctx: ToolContext) -> tuple[str, Dict[str, Any]]:
+    oauth_section = ctx.config.get("oauth", {}) or {}
+    if not isinstance(oauth_section, dict) or not oauth_section:
+        raise ValueError("No OAuth providers are configured in this runtime.")
+    normalized = str(raw or "").strip().lower()
+    if not normalized:
+        raise ValueError("OAuth provider is required.")
+    direct = oauth_section.get(normalized)
+    if isinstance(direct, dict):
+        return normalized, direct
+    matches = [
+        (provider_name, cfg)
+        for provider_name, cfg in oauth_section.items()
+        if isinstance(cfg, dict) and str(cfg.get("oauth_provider_name", "")).strip().lower() == normalized
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        names = ", ".join(provider_name for provider_name, _cfg in matches)
+        raise ValueError(f"OAuth provider name '{raw}' matches multiple configured providers: {names}")
+    available = ", ".join(sorted(str(name) for name in oauth_section))
+    raise ValueError(f"Unknown OAuth provider '{raw}'. Available configured providers: {available}")
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +127,7 @@ class InitSystemTool(InternalTool):
     accent_color = "blue"
     description = (
         "Start or complete the onboarding flow: set the assistant display name in config, "
-        "store how the user wants to be addressed in memory, then continue with a capability overview."
+        "store how the user wants to be addressed in MEMORY.md, then continue with a capability overview."
     )
     parameters_schema = {
         "type": "object",
@@ -113,7 +138,7 @@ class InitSystemTool(InternalTool):
             },
             "user_name": {
                 "type": "string",
-                "description": "Preferred user name to persist in internal memory.",
+                "description": "Preferred user name to persist in MEMORY.md.",
             },
         },
         "required": [],
@@ -144,11 +169,7 @@ class InitSystemTool(InternalTool):
 
         user_memory_updated = False
         if user_name:
-            pattern = re.compile(r"^Preferred user name:\s*", re.IGNORECASE)
-            for entry in list(ctx.memory.list_entries()):
-                if pattern.match(entry.text):
-                    ctx.memory.remove(entry.id)
-            ctx.memory.add(f"Preferred user name: {user_name}.")
+            ctx.memory.set_preferred_user_name(user_name)
             user_memory_updated = True
 
         if ctx.complete_init:
@@ -1003,6 +1024,155 @@ class ToolPolicySetTool(InternalTool):
         return table
 
 
+class OAuthLoginTool(InternalTool):
+    name = "oauth_login"
+    display_name = "OAuth Login"
+    category = "config"
+    danger_level = "high"
+    accent_color = "cyan"
+    description = "Open the browser OAuth flow for one configured provider, save the resulting token, and optionally switch the runtime to oauth mode."
+    parameters_schema = {
+        "type": "object",
+        "properties": {
+            "provider": {"type": "string", "description": "Configured oauth provider key such as 'gemini', or oauth provider name such as 'google'."},
+            "persist": {"type": "boolean", "description": "Persist auth-mode/provider updates to disk after login."},
+            "switch_provider": {"type": "boolean", "description": "Also switch the current runtime provider to the resolved provider after login."},
+        },
+        "required": ["provider"],
+    }
+    requires_approval = True
+
+    async def execute(self, arguments: Dict[str, Any], ctx: ToolContext) -> ToolResult:
+        requested_provider = str(arguments.get("provider", "") or "")
+        try:
+            provider_name, provider_cfg = _resolve_oauth_target(requested_provider, ctx)
+        except Exception as exc:
+            return ToolResult(success=False, message=str(exc), data={"provider": requested_provider})
+
+        oauth_provider_name = str(provider_cfg.get("oauth_provider_name", "") or "").strip().lower()
+        if oauth_provider_name != "google":
+            return ToolResult(
+                success=False,
+                message=f"OAuth login is not implemented for provider '{oauth_provider_name}'.",
+                data={"provider": provider_name, "oauth_provider_name": oauth_provider_name},
+            )
+
+        token_path = str(provider_cfg.get("token_path", "") or "").strip()
+        scopes = list(provider_cfg.get("oauth_scopes", []) or [])
+        if not token_path or not scopes:
+            return ToolResult(
+                success=False,
+                message=f"OAuth config for '{provider_name}' is missing token_path or oauth_scopes.",
+                data={"provider": provider_name, "oauth_provider_name": oauth_provider_name, "token_path": token_path or "-"},
+            )
+
+        persist = bool(arguments.get("persist", True))
+        switch_provider = bool(arguments.get("switch_provider", True))
+        client_id_env_var = str(provider_cfg.get("client_id_env_var", "GOOGLE_CLIENT_ID") or "GOOGLE_CLIENT_ID")
+        client_secret_env_var = str(provider_cfg.get("client_secret_env_var", "GOOGLE_CLIENT_SECRET") or "GOOGLE_CLIENT_SECRET")
+        try:
+            login = auth.run_google_oauth_login(
+                token_path=token_path,
+                scopes=scopes,
+                client_id_env_var=client_id_env_var,
+                client_secret_env_var=client_secret_env_var,
+                callback_host=str(provider_cfg.get("callback_host", "127.0.0.1") or "127.0.0.1"),
+                callback_port=int(provider_cfg.get("callback_port", 0) or 0),
+                timeout_seconds=int(provider_cfg.get("login_timeout_seconds", 180) or 180),
+            )
+        except Exception as exc:
+            return ToolResult(
+                success=False,
+                message=str(exc),
+                data={
+                    "provider": provider_name,
+                    "oauth_provider_name": oauth_provider_name,
+                    "token_path": token_path,
+                    "client_id_env_var": client_id_env_var,
+                    "client_secret_env_var": client_secret_env_var,
+                },
+            )
+
+        saved_to = None
+        try:
+            ctx.config.set(f"provider_auth_mode_overrides.{provider_name}", "oauth")
+            if switch_provider:
+                ctx.config.set("model", "")
+                ctx.config.set("provider", provider_name)
+            if ctx.reload_provider:
+                ctx.reload_provider(
+                    provider=ctx.config.configured_provider_name(),
+                    model=ctx.config.effective_model_name(),
+                )
+            if persist:
+                saved_to = str(ctx.config.save_active_yaml())
+        except Exception as exc:
+            return ToolResult(success=False, message=f"OAuth login succeeded but runtime update failed: {exc}")
+
+        message = f"OAuth login completed for {provider_name}."
+        if saved_to:
+            message += f"\nSaved to {saved_to}"
+        return ToolResult(
+            success=True,
+            message=message,
+            data={
+                "provider": provider_name,
+                "oauth_provider_name": oauth_provider_name,
+                "token_path": login["token_path"],
+                "saved_to": saved_to,
+                "browser_opened": login["browser_opened"],
+                "redirect_uri": login["redirect_uri"],
+                "auth_url": login["auth_url"],
+                "switch_provider": switch_provider,
+                "client_id_source": login["client_id_source"],
+                "client_secret_source": login["client_secret_source"],
+            },
+        )
+
+    def proposal_sections(self, arguments: Dict[str, Any], ctx: ToolContext) -> list[tuple[str, Any]]:
+        from rich.table import Table
+
+        table = Table(show_header=False, box=None, padding=(0, 1))
+        table.add_column("field", style="dim")
+        table.add_column("value")
+        table.add_row("Provider", str(arguments.get("provider", "")))
+        table.add_row("Persist", str(bool(arguments.get("persist", True))))
+        table.add_row("Switch Provider", str(bool(arguments.get("switch_provider", True))))
+        return [("OAuth Login", table)]
+
+    def result_renderable(self, result: ToolResult, max_display_length: int, ctx: ToolContext) -> Any:
+        from rich.panel import Panel
+        from rich.table import Table
+
+        data = result.data or {}
+        if not result.success:
+            table = Table(show_header=False, box=None, padding=(0, 1))
+            table.add_column("field", style="dim", no_wrap=True)
+            table.add_column("value")
+            table.add_row("Provider", str(data.get("provider", "")))
+            table.add_row("OAuth Provider", str(data.get("oauth_provider_name", "")))
+            table.add_row("Token Path", str(data.get("token_path", "")))
+            table.add_row("Client ID Env", str(data.get("client_id_env_var") or "-"))
+            table.add_row("Client Secret Env", str(data.get("client_secret_env_var") or "-"))
+            return Panel(
+                table,
+                title=f"[bold red]{str(result.message)[:max_display_length]}[/bold red]",
+                border_style="red",
+            )
+        table = Table(show_header=False, box=None, padding=(0, 1))
+        table.add_column("field", style="dim", no_wrap=True)
+        table.add_column("value")
+        table.add_row("Provider", str(data.get("provider", "")))
+        table.add_row("OAuth Provider", str(data.get("oauth_provider_name", "")))
+        table.add_row("Token Path", str(data.get("token_path", "")))
+        table.add_row("Browser Opened", str(bool(data.get("browser_opened", False))))
+        table.add_row("Redirect URI", str(data.get("redirect_uri", "")))
+        table.add_row("Config Saved", str(data.get("saved_to") or "-"))
+        table.add_row("Client ID Source", str(data.get("client_id_source") or "-"))
+        table.add_row("Client Secret Source", str(data.get("client_secret_source") or "-"))
+        return table
+
+
 class ToolPolicyResetTool(InternalTool):
     name = "tool_policy_reset"
     display_name = "Reset Tool Policy"
@@ -1196,5 +1366,6 @@ def register_meta_tools(registry: ToolRegistry, ctx: ToolContext) -> None:
         ListConfigTool,
         SetConfigTool,
         SaveConfigTool,
+        OAuthLoginTool,
     ]:
         registry.register(tool_cls())

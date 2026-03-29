@@ -34,12 +34,12 @@ SLASH_COMMANDS = [
     "/compact", "/clear", "/reset",
     "/digest", "/extract",
     "/history", "/model", "/model list", "/model set", "/provider", "/provider list", "/provider set", "/system",
+    "/oauth", "/oauth login",
     "/cwd", "/focus",
     "/set", "/settings", "/status",
     "/tools", "/tools capabilities", "/tools enable", "/tools disable",
     "/config show", "/config save", "/config get", "/config sections", "/config edit",
     "/save", "/tokens",
-    "/memory list", "/memory add", "/memory remove",
     "/skills", "/skills list", "/skills show", "/skills reload", "/skills active",
     "/hooks", "/hooks list", "/hooks reload",
     "/mcp", "/mcp list", "/mcp tools", "/mcp resources", "/mcp templates", "/mcp prompts", "/mcp reload",
@@ -110,6 +110,11 @@ _HELP: dict[str, tuple[str, str, str]] = {
         "list | set <number|name>",
         "/provider set 2",
     ),
+    "/oauth login <provider|oauth-provider>": (
+        "Open the browser-based OAuth flow, save the token locally, and switch the matching provider to oauth mode.",
+        "login google | login gemini",
+        "/oauth login google",
+    ),
     "/system [prompt|off]": ("Show, set, or disable the session-specific system prompt.", "free text or off", "/system You are concise."),
     "/cwd [path]": (
         "Show the current working directory, or set it for chat, shell blocks, python blocks, and runtime tools.",
@@ -148,9 +153,6 @@ _HELP: dict[str, tuple[str, str, str]] = {
     ),
     "/save [filename]": ("Export the current chat history to a JSON file.", "optional filename", "/save debug_chat.json"),
     "/tokens": ("Show cumulative token accounting for the current session.", "-", "/tokens"),
-    "/memory list": ("List persistent memory entries.", "-", "/memory list"),
-    "/memory add <text>": ("Add one persistent memory entry.", "free text", "/memory add User prefers French."),
-    "/memory remove <id>": ("Remove one persistent memory entry by ID.", "memory id", "/memory remove 3"),
     "/skills [list|show|reload|active]": (
         "Inspect discovered skills, view one full SKILL.md body, refresh the skill catalog, or show the session skill context.",
         "optional subcommand",
@@ -259,7 +261,7 @@ class CommandHandler:
             return value
         raise ValueError(f"Unknown {noun}: {value}")
 
-    async def _switch_provider(self, target_provider: str, target_model: str | None) -> bool:
+    async def _switch_provider(self, target_provider: str, target_model: str | None, *, explicit_model: bool = False) -> bool:
         if (
             self.session._session_id
             and self.session.history
@@ -290,9 +292,11 @@ class CommandHandler:
                     f"[yellow]Kept only simple user/assistant text history ({removed} complex tool messages removed) before switching provider.[/yellow]"
                 )
 
-        await self._run_internal_tool("set_config", {"key": "provider", "value": target_provider})
-        if target_model:
-            await self._run_internal_tool("set_config", {"key": "model", "value": target_model})
+        if explicit_model and target_model:
+            await self._run_internal_tool("set_config", {"key": "model", "value": target_model, "persist": True})
+        else:
+            await self._run_internal_tool("set_config", {"key": "model", "value": "", "persist": True})
+        await self._run_internal_tool("set_config", {"key": "provider", "value": target_provider, "persist": True})
         return True
 
     async def handle(self, text: str) -> bool:
@@ -328,6 +332,7 @@ class CommandHandler:
             "history": self._history,
             "model": self._model,
             "provider": self._provider,
+            "oauth": self._oauth,
             "system": self._system,
             "cwd": self._cwd,
             "focus": self._focus,
@@ -338,7 +343,6 @@ class CommandHandler:
             "config": self._config,
             "save": self._save,
             "tokens": self._tokens,
-            "memory": self._memory,
             "skills": self._skills,
             "hooks": self._hooks,
             "mcp": self._mcp,
@@ -540,38 +544,6 @@ class CommandHandler:
         return await self._run_internal_tool(tool_name, arguments)
 
     # ------------------------------------------------------------------
-    # Memory commands
-    # ------------------------------------------------------------------
-
-    async def _memory(self, args: List[str]) -> bool:
-        if not args:
-            self.console.print(
-                "[yellow]Usage:[/yellow] /memory list | /memory add <text> | /memory remove <id>"
-            )
-            return True
-
-        sub = args[0].lower()
-        if sub == "list":
-            entries = self.session.memory.list_entries()
-            if not entries:
-                self.console.print("[dim]Memory is empty.[/dim]")
-            else:
-                for e in entries:
-                    self.console.print(f"  [cyan]#{e.id}[/cyan] {e.text}")
-        elif sub == "add" and len(args) > 1:
-            return await self._run_internal_tool("memory_add", {"text": " ".join(args[1:])})
-        elif sub == "remove" and len(args) > 1:
-            try:
-                return await self._run_internal_tool("memory_remove", {"entry_id": int(args[1])})
-            except ValueError:
-                self.console.print("[red]ID must be a number.[/red]")
-        else:
-            self.console.print(
-                "[yellow]Usage:[/yellow] /memory list | /memory add <text> | /memory remove <id>"
-            )
-        return True
-
-    # ------------------------------------------------------------------
     # Skills
     # ------------------------------------------------------------------
 
@@ -768,14 +740,13 @@ class CommandHandler:
             except ValueError as exc:
                 self.console.print(f"[bold red]Error:[/bold red] {exc}")
                 return True
-            return await self._run_internal_tool("set_config", {"key": "model", "value": target_model})
+            return await self._run_internal_tool("set_config", {"key": "model", "value": target_model, "persist": True})
         if not args or sub == "default":
-            default_model = self.session.provider_default_model()
-            if not default_model:
+            if not self.session.provider_default_model():
                 self.console.print("[red]No default model is configured for the current provider.[/red]")
                 return True
-            return await self._run_internal_tool("set_config", {"key": "model", "value": default_model})
-        return await self._run_internal_tool("set_config", {"key": "model", "value": args[0]})
+            return await self._run_internal_tool("set_config", {"key": "model", "value": "", "persist": True})
+        return await self._run_internal_tool("set_config", {"key": "model", "value": args[0], "persist": True})
 
     async def _provider(self, args: List[str]) -> bool:
         sub = args[0].lower() if args else "status"
@@ -796,13 +767,15 @@ class CommandHandler:
             except ValueError as exc:
                 self.console.print(f"[bold red]Error:[/bold red] {exc}")
                 return True
-            target_model = args[2] if len(args) > 2 else self.session.provider_default_model(target_provider)
-            return await self._switch_provider(target_provider, target_model)
+            explicit_model = len(args) > 2
+            target_model = args[2] if explicit_model else self.session.provider_default_model(target_provider)
+            return await self._switch_provider(target_provider, target_model, explicit_model=explicit_model)
         if not args:
             return await self._run_internal_tool("runtime_status", {"mode": "compact"})
         target_provider = args[0]
-        target_model = args[1] if len(args) > 1 else self.session.provider_default_model(target_provider)
-        return await self._switch_provider(target_provider, target_model)
+        explicit_model = len(args) > 1
+        target_model = args[1] if explicit_model else self.session.provider_default_model(target_provider)
+        return await self._switch_provider(target_provider, target_model, explicit_model=explicit_model)
 
     async def _system(self, args: List[str]) -> bool:
         if not args:
@@ -819,6 +792,20 @@ class CommandHandler:
             self.session.system_prompt = " ".join(args)
             self.console.print("[green]System prompt set.[/green]")
         return True
+
+    async def _oauth(self, args: List[str]) -> bool:
+        sub = args[0].lower() if args else ""
+        if sub != "login" or len(args) < 2:
+            self.console.print("[yellow]Usage:[/yellow] /oauth login <provider|oauth-provider>")
+            return True
+        return await self._run_internal_tool(
+            "oauth_login",
+            {
+                "provider": args[1],
+                "persist": True,
+                "switch_provider": True,
+            },
+        )
 
     async def _set(self, args: List[str]) -> bool:
         if len(args) < 2:

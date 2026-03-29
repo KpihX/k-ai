@@ -15,14 +15,22 @@ without turning this file into provider-specific spaghetti:
 from __future__ import annotations
 
 import json
+import secrets
+import threading
+import webbrowser
+from base64 import urlsafe_b64encode
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from hashlib import sha256
 from pathlib import Path
 from typing import Callable, Dict, List
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
 
 from .exceptions import ConfigurationError, ProviderAuthenticationError
+from .secrets import resolve_secret
 
 
 TokenLoader = Callable[[str, List[str]], str]
@@ -225,6 +233,183 @@ class GoogleOAuthLoader(OAuthProviderLoader):
             updated["refresh_token"] = refreshed["refresh_token"]
         store.save(updated)
         return OAuthTokenState(payload=updated)
+
+
+def _urlsafe_b64_no_pad(raw: bytes) -> str:
+    return urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def build_google_oauth_authorization_url(
+    *,
+    client_id: str,
+    redirect_uri: str,
+    scopes: List[str],
+    state: str,
+    code_challenge: str,
+) -> str:
+    params = {
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": " ".join(scopes),
+        "access_type": "offline",
+        "include_granted_scopes": "true",
+        "prompt": "consent",
+        "state": state,
+        "code_challenge": code_challenge,
+        "code_challenge_method": "S256",
+    }
+    return "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params)
+
+
+def run_google_oauth_login(
+    *,
+    token_path: str,
+    scopes: List[str],
+    client_id_env_var: str = "GOOGLE_CLIENT_ID",
+    client_secret_env_var: str = "GOOGLE_CLIENT_SECRET",
+    callback_host: str = "127.0.0.1",
+    callback_port: int = 0,
+    timeout_seconds: int = 180,
+) -> dict:
+    client_id, client_id_source = resolve_secret(client_id_env_var)
+    if not client_id:
+        raise ProviderAuthenticationError(
+            f"Google OAuth login requires {client_id_env_var} to be available."
+        )
+    client_secret, client_secret_source = resolve_secret(client_secret_env_var)
+    if not client_secret:
+        raise ProviderAuthenticationError(
+            f"Google OAuth login requires {client_secret_env_var} to be available."
+        )
+
+    verifier = _urlsafe_b64_no_pad(secrets.token_bytes(48))
+    challenge = _urlsafe_b64_no_pad(sha256(verifier.encode("ascii")).digest())
+    state = secrets.token_urlsafe(24)
+    token_uri = GoogleOAuthLoader.default_token_uri
+    payload_holder: dict[str, str] = {}
+    event = threading.Event()
+
+    class OAuthCallbackHandler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            parsed = urlparse(self.path)
+            params = parse_qs(parsed.query)
+            payload_holder["path"] = parsed.path
+            payload_holder["state"] = params.get("state", [""])[0]
+            payload_holder["code"] = params.get("code", [""])[0]
+            payload_holder["error"] = params.get("error", [""])[0]
+            body = ""
+            status = 200
+            if payload_holder["error"]:
+                status = 400
+                body = "Google OAuth login failed. You can close this tab and return to k-ai."
+            elif payload_holder["state"] != state or not payload_holder["code"]:
+                status = 400
+                body = "Google OAuth callback was invalid. You can close this tab and return to k-ai."
+            else:
+                body = "Google OAuth login completed. You can close this tab and return to k-ai."
+            self.send_response(status)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(body.encode("utf-8"))
+            event.set()
+
+        def log_message(self, format, *args):  # noqa: A003
+            return
+
+    try:
+        server = ThreadingHTTPServer((callback_host, callback_port), OAuthCallbackHandler)
+    except OSError as exc:
+        raise ProviderAuthenticationError(
+            f"Could not start local Google OAuth callback server on {callback_host}:{callback_port}: {exc}"
+        ) from exc
+
+    redirect_uri = f"http://{callback_host}:{server.server_port}/oauth/google/callback"
+    auth_url = build_google_oauth_authorization_url(
+        client_id=client_id,
+        redirect_uri=redirect_uri,
+        scopes=scopes,
+        state=state,
+        code_challenge=challenge,
+    )
+
+    thread = threading.Thread(target=server.handle_request, daemon=True)
+    thread.start()
+    browser_opened = webbrowser.open(auth_url, new=1, autoraise=True)
+    if not browser_opened:
+        server.server_close()
+        raise ProviderAuthenticationError(
+            "Could not open the browser automatically for Google OAuth login. "
+            f"Open this URL manually: {auth_url}"
+        )
+    if not event.wait(timeout_seconds):
+        server.server_close()
+        raise ProviderAuthenticationError(
+            f"Google OAuth login timed out after {timeout_seconds} seconds waiting for the browser callback."
+        )
+    server.server_close()
+
+    error = payload_holder.get("error", "").strip()
+    if error:
+        raise ProviderAuthenticationError(f"Google OAuth login failed: {error}")
+    if payload_holder.get("path") != "/oauth/google/callback":
+        raise ProviderAuthenticationError("Google OAuth callback arrived on an unexpected path.")
+    code = payload_holder.get("code", "").strip()
+    if not code:
+        raise ProviderAuthenticationError("Google OAuth callback did not include an authorization code.")
+
+    try:
+        response = httpx.post(
+            token_uri,
+            data={
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "code": code,
+                "code_verifier": verifier,
+                "grant_type": "authorization_code",
+                "redirect_uri": redirect_uri,
+            },
+            timeout=30.0,
+        )
+        response.raise_for_status()
+        exchanged = response.json()
+    except httpx.HTTPStatusError as exc:
+        raise ProviderAuthenticationError(
+            f"Google OAuth token exchange failed with HTTP {exc.response.status_code}."
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise ProviderAuthenticationError(f"Google OAuth token exchange failed: {exc}") from exc
+    except ValueError as exc:
+        raise ProviderAuthenticationError("Google OAuth token exchange returned invalid JSON.") from exc
+
+    access_token = str(exchanged.get("access_token", "") or "").strip()
+    if not access_token:
+        raise ProviderAuthenticationError("Google OAuth token exchange returned no access_token.")
+
+    token_payload = {
+        "access_token": access_token,
+        "refresh_token": str(exchanged.get("refresh_token", "") or "").strip(),
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "token_uri": token_uri,
+        "scopes": list(scopes),
+    }
+    if "expires_in" in exchanged:
+        token_payload["expires_in"] = exchanged["expires_in"]
+        token_payload["expires_at"] = (
+            datetime.now(timezone.utc) + timedelta(seconds=float(exchanged["expires_in"]))
+        ).isoformat()
+    store = TokenFileStore.for_path(token_path, "Google")
+    store.save(token_payload)
+    return {
+        "token_path": str(store.path),
+        "browser_opened": browser_opened,
+        "redirect_uri": redirect_uri,
+        "auth_url": auth_url,
+        "client_id_source": client_id_source,
+        "client_secret_source": client_secret_source,
+        "scopes": list(scopes),
+    }
 
 
 class OAuthLoaderRegistry:
