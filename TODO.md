@@ -47,3 +47,16 @@
 - [ ] Reduce shell-side visual noise further during focused PTY interaction without weakening login-shell environment fidelity.
 - [ ] Add a doctor sub-check that verifies Git remotes and publish prerequisites before `make release`.
 - [ ] Implement intelligent command policy management: let the agent proactively propose patterns (regex or specific binaries) to "always allow" based on observed safe usage, allowing the user to validate or request specific auto-pass rules.
+- [ ] **Fonctionnalités souhaitées :**
+    - Téléchargement de médias : L'agent doit pouvoir télécharger et ingérer de la musique, des vidéos et des images.
+- [ ] **Règles pour l'Agent (AGENT Rules) :**
+    - Journalisation obligatoire : Une règle stricte doit être ajoutée dans `AGENTS.md`. Après chaque utilisation des outils `mail-mcp`, `whats-mcp`, ou `linkedin-mcp`, l'agent doit obligatoirement enregistrer l'action dans un fichier de log spécifique.
+- [ ] Définir des patterns de commandes toujours autorisées.
+- [ ] Créer des "patterns intelligents" pour les policies qui s'adaptent au contexte.
+- [ ] Transformer l'outil d'exécution Python en un MCP dédié.
+- [ ] Afficher clairement la date et l'heure actuelles.
+- [ ] Intégrer une fonction de résumé plus poussée.
+- [ ] Gérer la saisie multi-ligne (Shift+Entrée / Ctrl+Entrée).
+- [ ] Améliorer le shell interactif (investiguer boucle infinie avec `gh auth refresh -h github.com -s delete_repo`).
+- [ ] Activer le chargement automatique de fichiers spécifiques (ex: AGENTS.md) dans les répertoires autorisés (récursivité max 1 niveau).
+- [ ] Mettre à jour `install.sh` pour supporter la nouvelle variable d'environnement `OLLAMA_URL` (configuration centralisée).

@@ -658,8 +658,19 @@ if [[ "${RUNTIME_GIT_ENABLED}" == "true" ]]; then
   cat > "${HOOK_FILE}" <<'HOOK'
 #!/usr/bin/env bash
 set -euo pipefail
-if command -v qmd >/dev/null 2>&1; then
-  (qmd update >/dev/null 2>&1 || true)
+COLLECTION="k-ai"
+QMD="${QMD:-$HOME/.npm-global/bin/qmd}"
+EMBED_LOG="${TMPDIR:-/tmp}/qmd-embed-${COLLECTION}.log"
+if command -v "$QMD" >/dev/null 2>&1 || command -v qmd >/dev/null 2>&1; then
+  QMD_BIN="$QMD"
+  if ! command -v "$QMD_BIN" >/dev/null 2>&1; then
+    QMD_BIN="qmd"
+  fi
+  if "$QMD_BIN" update "$COLLECTION" >/dev/null 2>&1; then
+    if ! pgrep -af "qmd(.js)? embed ${COLLECTION}" >/dev/null 2>&1; then
+      nohup "$QMD_BIN" embed "$COLLECTION" > "$EMBED_LOG" 2>&1 &
+    fi
+  fi
 fi
 HOOK
   chmod +x "${HOOK_FILE}"

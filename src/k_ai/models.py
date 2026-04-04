@@ -149,7 +149,7 @@ class LLMConfig(BaseModel):
     """Per-call overrides for the global ConfigManager temperature/max_tokens settings."""
 
     temperature: float = 0.7
-    max_tokens: int = 4096
+    max_tokens: int = 32768
     stream: bool = True
 
 

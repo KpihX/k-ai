@@ -2,6 +2,7 @@
 """
 Core LLM interaction logic, powered by LiteLLM.
 """
+import os
 import json
 import asyncio
 import litellm
@@ -308,10 +309,13 @@ class LiteLLMDriver(LLMProvider):
         # Without it, "ollama/..." would be sent to the native /api/generate endpoint.
         oauth_litellm_params = self._google_gemini_oauth_litellm_params() if self.auth_mode == "oauth" else {}
         base_url = self.provider_config.get("base_url")
+
+        # Standard environment variable expansion (e.g. $OLLAMA_HOST)
+        if base_url:
+            base_url = os.path.expandvars(base_url)
+
         if oauth_litellm_params:
             model_str = str(oauth_litellm_params["model"])
-        elif base_url:
-            model_str = f"openai/{self.model_name}"
         else:
             model_str = f"{self.provider_name}/{self.model_name}"
 
@@ -342,17 +346,20 @@ class LiteLLMDriver(LLMProvider):
                 "vertex_location": oauth_litellm_params["vertex_location"],
                 "vertex_credentials": oauth_litellm_params["vertex_credentials"],
             })
-        elif self.api_key is not None:
+        if self.api_key is not None and self.provider_name != "ollama":
             params["api_key"] = self.api_key
-        elif base_url is not None:
-            # OpenAI-compatible endpoints (ollama, etc.) routed via openai/ prefix
-            # need a non-None api_key to satisfy the SDK client constructor,
+        elif self.provider_name == "ollama" and base_url:
+            # Ollama needs a non-None api_key to satisfy the SDK client constructor,
             # even though the server ignores it.
             params["api_key"] = "no-key-required"
         if base_url is not None:
-            params["base_url"] = base_url
+            params["api_base"] = base_url
         if tools:
             params["tools"] = tools
+
+        # Allow for arbitrary litellm-specific params from the config
+        if self.provider_config.get("litellm_params"):
+            params.update(self.provider_config["litellm_params"])
 
         try:
             response = await litellm.acompletion(**params)
@@ -490,18 +497,32 @@ class LiteLLMDriver(LLMProvider):
 
         provider_prefix = f"{self.provider_name}/"
         base_url = self.provider_config.get("base_url")
+        if base_url:
+            base_url = os.path.expandvars(base_url)
 
-        # --- Strategy 1: OpenAI-compatible /v1/models endpoint ---
+        # --- Strategy 1: OpenAI-compatible /v1/models or Ollama native endpoint ---
         if base_url:
             try:
                 headers = {}
                 if self.api_key:
                     headers["Authorization"] = f"Bearer {self.api_key}"
+                
+                # Special handling for Ollama native API
+                url = f"{base_url.rstrip('/')}/models"
+                if self.provider_name == "ollama":
+                    url = f"{base_url.rstrip('/')}/api/tags"
+
                 async with httpx.AsyncClient(timeout=10.0) as client:
-                    resp = await client.get(f"{base_url.rstrip('/')}/models", headers=headers)
+                    resp = await client.get(url, headers=headers)
                     resp.raise_for_status()
-                    data = resp.json().get("data", [])
-                    models = sorted(item["id"] for item in data if "id" in item)
+                    
+                    if self.provider_name == "ollama":
+                        data = resp.json().get("models", [])
+                        models = sorted(item["name"] for item in data if "name" in item)
+                    else:
+                        data = resp.json().get("data", [])
+                        models = sorted(item["id"] for item in data if "id" in item)
+                    
                     return models or [self.model_name]
             except Exception:
                 # Fall through to other strategies silently

@@ -6,6 +6,7 @@ Every command either maps directly to an internal tool (same action the LLM
 can propose) or is a UI-only shortcut.  This ensures uniform behaviour:
 ``/compact`` and "please compact the discussion" do the exact same thing.
 """
+import asyncio
 import json
 import os
 import subprocess
@@ -193,7 +194,6 @@ class CommandHandler:
     def __init__(self, session: "ChatSession"):
         self.session = session
         self.console = session.console
-        self._last_provider_choices: list[str] = []
         self._last_model_choices: list[str] = []
 
     async def _run_internal_tool(self, tool_name: str, arguments: Dict[str, object]) -> bool:
@@ -208,28 +208,34 @@ class CommandHandler:
         await self.session._execute_internal_tool(tool_call, rationale="Triggered explicitly via slash command.")
         return True
 
-    def _provider_choices(self) -> list[tuple[str, str, str]]:
+    def _provider_choices(self) -> list[tuple[str, str, str, str, bool]]:
         seen: set[str] = set()
-        rows: list[tuple[str, str, str]] = []
+        rows: list[tuple[str, str, str, str, bool]] = []
         for auth_mode, providers in self.session.cm.list_providers().items():
             for provider in providers:
                 if provider in seen:
                     continue
                 seen.add(provider)
                 default_model = self.session.provider_default_model(provider) or "-"
-                rows.append((provider, auth_mode, default_model))
+                cfg, _ = self.session.cm.get_provider_config_with_auth_mode(provider)
+                description = str((cfg or {}).get("description", ""))
+                has_free_trial = bool((cfg or {}).get("has_free_trial", False))
+                rows.append((provider, auth_mode, default_model, description, has_free_trial))
         return rows
 
-    def _render_provider_table(self, rows: list[tuple[str, str, str]]) -> None:
+    def _render_provider_table(self, rows: list[tuple[str, str, str, str, bool]]) -> None:
         table = Table(title="Providers", header_style="bold cyan")
         table.add_column("#", style="dim", width=4)
         table.add_column("Provider", style="cyan")
         table.add_column("Auth", style="magenta")
         table.add_column("Default Model", style="green")
+        table.add_column("Free", style="yellow", width=5, justify="center")
+        table.add_column("Description", style="white")
         current = self.session.llm.provider_name
-        for idx, (provider, auth_mode, default_model) in enumerate(rows, start=1):
+        for idx, (provider, auth_mode, default_model, description, has_free_trial) in enumerate(rows, start=1):
             label = f"{provider} [dim](current)[/dim]" if provider == current else provider
-            table.add_row(str(idx), label, auth_mode, default_model)
+            free_label = "✓" if has_free_trial else ""
+            table.add_row(str(idx), label, auth_mode, default_model, free_label, description)
         self.console.print(table)
 
     async def _list_models_for_current_provider(self) -> list[str]:
@@ -297,6 +303,9 @@ class CommandHandler:
         else:
             await self._run_internal_tool("set_config", {"key": "model", "value": "", "persist": True})
         await self._run_internal_tool("set_config", {"key": "provider", "value": target_provider, "persist": True})
+        # Invalidate model cache and silently re-warm for the new provider
+        self._last_model_choices = []
+        asyncio.create_task(self._list_models_for_current_provider())
         return True
 
     async def handle(self, text: str) -> bool:
@@ -732,7 +741,12 @@ class CommandHandler:
             return True
         if sub == "set":
             if len(args) < 2:
-                self.console.print("[yellow]Usage:[/yellow] /model set <number|name>")
+                models = await self._list_models_for_current_provider()
+                if not models:
+                    self.console.print("[yellow]No models found for the current provider.[/yellow]")
+                    return True
+                self._render_model_table(models)
+                self.console.print("[dim]Usage:[/dim] /model set <number|name>")
                 return True
             models = self._last_model_choices or await self._list_models_for_current_provider()
             try:
@@ -752,7 +766,6 @@ class CommandHandler:
         sub = args[0].lower() if args else "status"
         if sub in {"list", "ls"}:
             rows = self._provider_choices()
-            self._last_provider_choices = [provider for provider, _auth, _default in rows]
             self._render_provider_table(rows)
             return True
         if sub == "set":
@@ -760,8 +773,7 @@ class CommandHandler:
                 self.console.print("[yellow]Usage:[/yellow] /provider set <number|name> [model_number|model_name]")
                 return True
             rows = self._provider_choices()
-            choices = [provider for provider, _auth, _default in rows]
-            self._last_provider_choices = choices
+            choices = [provider for provider, *_ in rows]
             try:
                 target_provider = self._resolve_index_or_name(args[1], choices, "provider")
             except ValueError as exc:

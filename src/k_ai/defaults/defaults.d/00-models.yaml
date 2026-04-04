@@ -24,7 +24,7 @@ temperature: 0.7
 
 # Max completion tokens requested from the backend for a single answer.
 # This is a hard runtime knob and can be changed live from chat.
-max_tokens: 4096
+max_tokens: 32768
 
 # Stream tokens live in the terminal. False waits for the full answer first.
 stream: true
@@ -52,13 +52,38 @@ provider_auth_mode_overrides: {}
 #   base_url       API root including /v1 when relevant
 #   default_model  model used when `model: ""`
 #   context_window approximate maximum input context
+#   description    one-line summary shown in /provider list
+#   has_free_trial true if a permanent free tier exists (no CC required)
 no_auth:
   ollama:
+    description: "Local inference via Ollama — fully sovereign, no network, no quota."
+    has_free_trial: true  # local = free indefinitely 
     # Typical local endpoint exposed by `ollama serve`.
     base_url: "http://localhost:11434/v1"
     # Safe small default for local usage; override freely.
     default_model: "phi4-mini:latest"
     context_window: 32768
+    #
+    # ── Last fetched: 2026-03-30 ─────────────────────────────────────────────
+    # Local models detected at time of config generation (depends on your pull list):
+    #
+    # Reasoning / agentic:
+    #   deepseek-r1:latest           DeepSeek R1 — chain-of-thought reasoning, math, code
+    #
+    # General chat:
+    #   mistral-small:latest         Mistral Small — fast general chat (local mirror)
+    #   phi4-mini:latest             Microsoft Phi-4 Mini — compact, great for light tasks
+    #   phi3:medium                  Microsoft Phi-3 Medium — efficient, solid coding
+    #   phi3.5:latest                Phi-3.5 — improved multilingual over Phi-3
+    #   qwen3.5:9b                   Qwen 3.5 9B — Alibaba; strong multilingual + tool use
+    #   qwen3.5:latest               Qwen 3.5 latest tag
+    #
+    # SWE/coding:
+    #   devstral-small-2:latest      Devstral Small v2 — open SWE model by Mistral
+    #
+    # Embedding (not chat-compatible, used with /embed or pipelines):
+    #   mxbai-embed-large:latest     MixedBread large embedding model
+    #   nomic-embed-text:latest      Nomic Atlas text embedding
 
 
 # ==============================================================================
@@ -70,93 +95,401 @@ no_auth:
 #   .env -> current environment -> login shell environment
 api_key:
   mistral:
+    description: >-
+      Mistral AI — generous permanent free tier: all models (incl. Large &
+      Codestral), 2 RPM, 500K TPM, 1B tok/month. Best free API for quality.
+    has_free_trial: true
     # Name of the environment variable holding the provider key.
     api_key_env_var: "MISTRAL_API_KEY"
     base_url: "https://api.mistral.ai/v1"
-
-    # Tool-calling capable Mistral chat models (official docs, March 28 2026).
-    #
-    # Recommended general-purpose tool users:
-    #   - mistral-large-latest
-    #       Flagship general model. Best default when you want broad capability,
-    #       strong tool choice, and solid final answer quality without specializing.
-    #   - mistral-medium-2508
-    #       Strong frontier multimodal model. Good balance of quality/latency,
-    #       but use the dated ID explicitly because the old alias
-    #       "mistral-medium-latest" refers to an older legacy model.
-    #   - mistral-small-latest   (currently Mistral Small 3.2 / mistral-small-2506)
-    #       Faster and cheaper general model with tool use support.
-    #
-    # Reasoning / agentic models:
-    #   - magistral-medium-latest   (currently Magistral Medium 1.2 / magistral-medium-2509)
-    #       Best Mistral choice here for agentic reasoning, planning, and harder
-    #       multi-step tool flows.
-    #   - magistral-small-2509
-    #       Lighter reasoning model when you want Magistral-style behavior at lower cost.
-    #
-    # SWE-specialized models:
-    #   - devstral-latest
-    #       Best specialized model for software engineering agents, codebase exploration,
-    #       multi-file edits, and developer tooling.
-    #   - devstral-medium-2507
-    #       Enterprise-grade SWE model.
-    #   - devstral-small-2507
-    #       Smaller open SWE-oriented model.
-    #
-    # Coding model:
-    #   - codestral-2508
-    #       Strong coding model; useful when the task is code-heavy, but less of a
-    #       universal agentic default than Magistral or Mistral Large.
-    #
-    # Edge / compact tool-capable models:
-    #   - ministral-14b-2512
-    #   - ministral-8b-2512
-    #   - ministral-3b-2512
-    #       Compact edge-deployable models with function calling support.
-    #
-    # Vision-capable tool users:
-    #   - mistral-large-2512
-    #   - mistral-medium-2508
-    #   - mistral-small-2506
-    #   - ministral-14b-2512 / ministral-8b-2512 / ministral-3b-2512
-    #       Use these when the same agent must inspect images and call tools.
-    #
-    # Legacy alias to avoid:
-    #   - mistral-medium-latest
-    #       Old alias called out in the Mistral changelog; do not use as the default.
     default_model: "mistral-small-latest"
     context_window: 128000
+    #
+    # Free tier ("Experiment" plan): no CC required, phone verification needed.
+    #   RPM: 2 · TPM: 500,000 · Monthly: 1,000,000,000 tokens
+    #   All models included — including Large, Codestral, Devstral.
+    #
+    # ── Last fetched: 2026-03-30 ─────────────────────────────────────────────
+    #
+    # General-purpose (flagship + balanced):
+    #   mistral-large-latest         Flagship; best broad capability + strong tool use
+    #   mistral-large-2512           Dated flagship ID (vision + tools)
+    #   mistral-medium-2508          Strong frontier multimodal (vision+tools); use dated ID
+    #   mistral-medium-2505          Previous medium generation
+    #   mistral-small-latest         Fast general model with tool use; RECOMMENDED DEFAULT
+    #   mistral-small-2603           Latest small dated ID
+    #   mistral-small-2506           Previous small dated ID
+    #
+    # Reasoning / agentic:
+    #   magistral-medium-latest      Best for agentic reasoning, planning, multi-step tool flows
+    #   magistral-medium-2509        Dated Magistral Medium ID
+    #   magistral-small-latest       Lighter reasoning; Magistral-style at lower cost
+    #   magistral-small-2509         Dated Magistral Small ID
+    #
+    # SWE / coding specialists:
+    #   devstral-latest              Top SWE model; codebase exploration, multi-file edits
+    #   devstral-medium-latest       Enterprise-grade SWE
+    #   devstral-medium-2507         Dated Devstral Medium ID
+    #   devstral-small-latest        Smaller open SWE model
+    #   devstral-small-2507          Dated Devstral Small ID
+    #   devstral-2512                Older Devstral dated ID
+    #   codestral-latest             Strong coding model; use when task is code-heavy
+    #   codestral-2508               Dated Codestral ID
+    #
+    # Edge / compact (function calling + vision):
+    #   ministral-14b-latest         14B edge model with tool use and vision
+    #   ministral-14b-2512           Dated 14B ID
+    #   ministral-8b-latest          8B edge model
+    #   ministral-8b-2512            Dated 8B ID
+    #   ministral-3b-latest          3B ultra-compact edge model
+    #   ministral-3b-2512            Dated 3B ID
+    #
+    # Audio / speech:
+    #   voxtral-small-latest         Voxtral Small — speech understanding + generation
+    #   voxtral-mini-latest          Voxtral Mini — compact speech model
+    #   (various dated voxtral IDs omitted for brevity)
+    #
+    # Vision / OCR:
+    #   pixtral-large-latest         Pixtral Large — multimodal image + text
+    #   mistral-ocr-latest           OCR specialist; structured doc extraction
+    #
+    # Embeddings (not chat):
+    #   mistral-embed                Text embedding model
+    #
+    # Labs / experimental:
+    #   labs-leanstral-2603          Experimental efficient model
+    #   labs-mistral-small-creative  Creative writing variant
+    #
+    # Legacy aliases to avoid:
+    #   mistral-medium-latest        Old alias → legacy model; do NOT use as default
+    #   mistral-medium               Oldest medium; no tool support
 
   openai:
+    description: >-
+      OpenAI — $5 signup credit only; effectively paid-only after trial.
+      Tier 0 free: 3 RPM, GPT-3.5 only. Best models require spend.
+    has_free_trial: false
     api_key_env_var: "OPENAI_API_KEY"
     default_model: "gpt-4o"
     context_window: 128000
+    #
+    # No persistent free tier. New accounts get $5 credit (expires 3 months).
+    # Tier 0 (post-credit): 3 RPM, GPT-3.5 Turbo only.
+    # Tier 1+ requires $5 deposit.
+    #
+    # ── Last fetched: 2026-03-30 (no OPENAI_API_KEY) ─────────────────────────
+    #
+    # Flagship multimodal:
+    #   gpt-4o                       Multimodal flagship; best audio/vision/voice apps
+    #   gpt-4o-mini                  Fast/cheap multimodal; high-volume tasks
+    #
+    # GPT-4.1 coding series:
+    #   gpt-4.1                      Coding + instruction following; 1M ctx; best for web dev
+    #   gpt-4.1-mini                 Balanced coding; faster/cheaper than 4.1
+    #   gpt-4.1-nano                 Fastest/cheapest; classification, autocompletion
+    #
+    # Reasoning (o-series):
+    #   o3                           Most powerful reasoning; coding/math/science/visual
+    #   o3-mini                      Small reasoning; optimized for science/math/code
+    #   o3-pro                       Extra-compute o3; hardest tasks
 
   groq:
+    description: >-
+      Groq — permanent free tier, no CC: 30-60 RPM, 100K-500K TPD per model.
+      Ultra-fast LPU inference. Best free tier for throughput + speed combo.
+    has_free_trial: true
     api_key_env_var: "GROQ_API_KEY"
     base_url: "https://api.groq.com/openai/v1"
     default_model: "qwen/qwen3-32b"
     context_window: 131072
+    #
+    # Free tier (permanent, no CC): limits per org, per model:
+    #   qwen/qwen3-32b:          60 RPM  · 1,000 RPD · 6,000 TPM  · 500,000 TPD
+    #   llama-4-scout:           30 RPM  · 1,000 RPD · 30,000 TPM · 500,000 TPD
+    #   llama-3.3-70b-versatile: 30 RPM  · 1,000 RPD · 12,000 TPM · 100,000 TPD
+    #   llama-3.1-8b-instant:    30 RPM  · 14,400 RPD· 6,000 TPM  · 500,000 TPD
+    #
+    # ── Last fetched: 2026-03-30 ─────────────────────────────────────────────
+    #
+    # Recommended general-purpose:
+    #   qwen/qwen3-32b               Qwen3 32B — strong reasoning; RECOMMENDED DEFAULT (60 RPM free)
+    #   meta-llama/llama-4-scout-17b-16e-instruct  Llama 4 Scout (MoE 109B/17B active); 4M ctx
+    #   llama-3.3-70b-versatile      Llama 3.3 70B — well-rounded general model
+    #   llama-3.1-8b-instant         Llama 3.1 8B — ultra-fast lightweight
+    #
+    # Open-weight models:
+    #   openai/gpt-oss-120b          GPT-OSS 120B (Apache 2); compound reasoning model
+    #   openai/gpt-oss-20b           GPT-OSS 20B — lighter variant
+    #   moonshotai/kimi-k2-instruct  Kimi K2 — Moonshot AI agentic model
+    #
+    # Safeguard / moderation:
+    #   meta-llama/llama-prompt-guard-2-22m   Lightweight content filter
+    #   meta-llama/llama-prompt-guard-2-86m   Stronger content filter
+    #   openai/gpt-oss-safeguard-20b          GPT-OSS safety model
+    #
+    # Compound / agentic:
+    #   groq/compound                Groq compound pipeline — orchestrates sub-models
+    #   groq/compound-mini           Lighter compound pipeline
+    #
+    # Multilingual:
+    #   allam-2-7b                   ALLaM 2 7B — Arabic-English bilingual
+    #
+    # Audio (speech, not chat-compatible):
+    #   whisper-large-v3             OpenAI Whisper large v3 — STT
+    #   whisper-large-v3-turbo       Faster Whisper large v3
+    #   canopylabs/orpheus-v1-english      Orpheus v1 — TTS English
+    #   canopylabs/orpheus-arabic-saudi    Orpheus — TTS Arabic (Saudi)
 
   gemini:
+    description: >-
+      Google Gemini — permanent free tier via AI Studio API key: 10-15 RPM,
+      250-1000 RPD. 1M token context. Quotas per project (not per key).
+    has_free_trial: true
     api_key_env_var: "GOOGLE_API_KEY"
     default_model: "gemini-2.5-flash"
     context_window: 1000000
+    #
+    # Free tier (permanent, no CC, via Google AI Studio):
+    #   gemini-2.5-pro:       5 RPM  · 100 RPD  · 250K TPM  ← severely limited
+    #   gemini-2.5-flash:     10 RPM · 250 RPD  · 250K TPM  ← best daily quota
+    #   gemini-2.5-flash-lite: 15 RPM · 1,000 RPD · 250K TPM ← best RPM/RPD
+    # Note: quotas are per-project, not per API key. Reduced ~50-80% in Dec 2025.
+    #
+    # ── Last fetched: 2026-03-30 ─────────────────────────────────────────────
+    #
+    # Current stable models (recommended):
+    #   gemini-2.5-pro               Most capable; complex reasoning, code, multimodal; 1M ctx
+    #   gemini-2.5-flash             Fast + balanced; best default for most tasks; 1M ctx
+    #   gemini-2.5-flash-lite        Cheapest/fastest; high-throughput classification; 1M ctx
+    #
+    # Previous generation (stable, lower quota cost):
+    #   gemini-2.0-flash             2.0 Flash — still solid, lower cost
+    #   gemini-2.0-flash-001         Dated 2.0 Flash ID
+    #   gemini-2.0-flash-lite        2.0 Lite — ⚠️ deprecated, shutting down June 1 2026
+    #
+    # Preview / experimental (may change or disappear):
+    #   gemini-3-flash-preview       Gemini 3 Flash — next generation, preview
+    #   gemini-3-pro-preview         Gemini 3 Pro — next generation, preview
+    #   gemini-3.1-flash-lite-preview  Gemini 3.1 Flash Lite preview
+    #   gemini-3.1-pro-preview       Gemini 3.1 Pro preview
+    #   gemini-2.5-flash-native-audio-latest  Native audio understanding
+    #   gemini-2.5-pro-preview-tts   TTS preview
+    #   gemini-2.5-computer-use-preview-10-2025  Computer use / GUI agent preview
+    #
+    # Open models (via Gemini API):
+    #   gemma-3-27b-it               Gemma 3 27B instruction-tuned (open weight)
+    #   gemini-gemma-2-27b-it        Gemma 2 27B via Gemini API
+    #   gemini-gemma-2-9b-it         Gemma 2 9B via Gemini API
+    #
+    # Multimodal / robotics:
+    #   gemini-robotics-er-1.5-preview  Robotics embodied reasoning preview
+    #
+    # Audio generation (not chat-compatible):
+    #   lyria-3-pro-preview          Lyria 3 Pro — music generation
+    #   lyria-3-clip-preview         Lyria 3 Clip — short audio generation
+    #   learnlm-1.5-pro-experimental LearnLM 1.5 Pro — education-tuned
+    #
+    # Live / realtime (streaming, not standard completions):
+    #   gemini-3.1-flash-live-preview  Live streaming preview
 
   anthropic:
+    description: >-
+      Anthropic Claude — $5 signup credit only; no free tier. ~5 RPM pre-deposit.
+      Premium quality; pay-to-play in practice.
+    has_free_trial: false
     api_key_env_var: "ANTHROPIC_API_KEY"
     default_model: "claude-sonnet-4-6"
     context_window: 200000
+    #
+    # No persistent free tier. New accounts: $5 credit only.
+    # Pre-deposit rate limits: ~5 RPM, 8K TPM (Tier 0).
+    # Tier 1 requires $5 deposit: 50 RPM, 40K TPM.
+    #
+    # ── Last fetched: 2026-03-30 (no ANTHROPIC_API_KEY) ─────────────────────
+    #
+    # Current models (model IDs from Anthropic docs, March 2026):
+    #   claude-opus-4-6              Flagship; hardest tasks, complex reasoning (claude-opus-4-6)
+    #   claude-sonnet-4-6            Best intelligence/speed balance; RECOMMENDED DEFAULT
+    #   claude-haiku-4-5-20251001    Fast/cheap; classification, high-volume
 
   dashscope:
+    description: >-
+      Alibaba DashScope/Qwen — free quota for new users (1M tokens, Singapore
+      region only). qwen-flash is fast free default; qwen3-max for flagship.
+    has_free_trial: true
     api_key_env_var: "DASHSCOPE_API_KEY"
-    default_model: "qwen-turbo"
-    context_window: 131072
+    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    default_model: "qwen-flash"
+    context_window: 1000000
+    #
+    # Free tier: 1M tokens per model for new users — Singapore region only.
+    # International users outside SG: no free quota (paid only).
+    # Note: qwen-turbo deprecated — migrate to qwen-flash.
+    #
+    # ── Last fetched: 2026-03-30 ─────────────────────────────────────────────
+    #
+    # Fast / free-tier models:
+    #   qwen-flash                   New fast/cheap default; 1M ctx; replaces qwen-turbo
+    #   qwen-flash-2025-07-28        Dated Flash ID
+    #   qwen-turbo                   ⚠️ Legacy — no longer updated; migrate to qwen-flash
+    #   qwen-turbo-latest            ⚠️ Legacy latest alias
+    #
+    # Balanced:
+    #   qwen-plus                    Balanced performance; 131K ctx
+    #   qwen-plus-latest             Latest Plus alias
+    #   (qwen-plus-2025-xx-xx        Various dated Plus IDs)
+    #
+    # Flagship / reasoning:
+    #   qwen3-max                    Qwen3 flagship; 32K ctx (paid only)
+    #   qwen3-max-2026-01-23         Dated Qwen3 Max ID
+    #   qwen3.5-plus                 Qwen 3.5 Plus; powerful, 1M ctx, 65K output (paid)
+    #   qwq-plus                     QwQ Plus — strong reasoning model; math/science
+    #   qwen3-30b-a3b                Qwen3 30B MoE (3B active params); fast + capable
+    #
+    # Coding specialists:
+    #   qwen3-coder-plus             Qwen3 Coder Plus — agentic coding, large codebase
+    #   qwen3-coder-plus-2025-07-22  Dated Coder Plus ID
+    #   qwen3-coder-flash            Qwen3 Coder Flash — fast coding variant
+    #   qwen3-coder-flash-2025-07-28 Dated Coder Flash ID
+    #   qwen-coder                   General Qwen Coder alias
+    #
+    # Vision / multimodal:
+    #   qwen3-vl-235b-a22b-instruct  Qwen3 VL 235B — largest vision-language model
+    #   qwen3-vl-235b-a22b-thinking  Qwen3 VL with thinking/reasoning
+    #   qwen3-vl-32b-instruct        Qwen3 VL 32B — vision + text
+    #   qwen3-vl-32b-thinking        Qwen3 VL 32B with reasoning
+    #   qwen3-vl-plus                Qwen3 VL Plus alias
+    #   qwen-max                     Legacy Qwen Max — older flagship
+    #
+    # Experimental / preview:
+    #   qwen3-next-80b-a3b-instruct  Qwen3 Next 80B MoE preview
+    #   qwen3-next-80b-a3b-thinking  Qwen3 Next 80B with thinking
+    #   qwen3-max-preview            Qwen3 Max preview alias
 
   xai:
+    description: >-
+      xAI Grok — $25 signup credits + $150/month via data-sharing program.
+      No persistent free tier; spend-based tier unlocks. Grok 4 is latest.
+    has_free_trial: false
     api_key_env_var: "GROK_API_KEY"
     default_model: "grok-3-fast-beta"
     context_window: 131072
+    #
+    # No persistent free tier.
+    # New users: $25 promotional credits + $150/month data-sharing opt-in.
+    # Tiers unlock automatically based on cumulative spend since Jan 1 2026.
+    #
+    # ── Last fetched: 2026-03-30 ─────────────────────────────────────────────
+    #
+    # Grok 4 (latest generation, ~2026):
+    #   grok-4                       Latest flagship; replaces Grok 3 as primary model
+    #   grok-4-latest                Latest Grok 4 alias
+    #   grok-4-0709                  Dated Grok 4 ID
+    #   grok-4-1-fast                Grok 4.1 — fast variant
+    #   grok-4-fast-reasoning        Grok 4 with reasoning mode
+    #   grok-4-fast-non-reasoning    Grok 4 without reasoning (standard)
+    #   grok-code-fast               Grok Code — coding specialist (fast)
+    #   grok-code-fast-1             Dated Grok Code ID
+    #
+    # Grok 3 (previous generation, stable):
+    #   grok-3                       Grok 3 standard; enterprise use (data extraction, finance)
+    #   grok-3-latest                Latest Grok 3 alias
+    #   grok-3-beta                  Beta channel
+    #   grok-3-fast-beta             Grok 3 on fast hardware; ~3-5x lower TTFT; CURRENT DEFAULT
+    #   grok-3-fast-latest           Fast latest alias
+    #   grok-3-mini                  Smaller/cheaper Grok 3 variant
+    #   grok-3-mini-latest           Mini latest alias
+    #   grok-3-mini-beta             Mini beta channel
+    #   grok-3-mini-fast             Mini on fast hardware
+    #   grok-3-mini-fast-beta        Mini fast beta
+    #
+    # Vision:
+    #   grok-2-vision                Grok 2 with vision (image + text)
+    #   grok-2-vision-latest         Vision latest alias
+    #   grok-vision-beta             Earlier vision beta
+    #
+    # Legacy Grok 2:
+    #   grok-2                       Grok 2 — previous generation
+    #   grok-2-latest                Grok 2 latest alias
+    #   grok-beta                    Original Grok beta
+
+  cerebras:
+    description: >-
+      Cerebras — permanent free tier: 30 RPM, 60K TPM, 1M tok/day. World's
+      fastest inference (~2-3K tok/s on wafer hardware). Best free for speed.
+    has_free_trial: true
+    api_key_env_var: "CEREBRAS_API_KEY"
+    base_url: "https://api.cerebras.ai/v1"
+    default_model: "gpt-oss-120b"
+    context_window: 131072
+    #
+    # Free tier (permanent, no CC):
+    #   RPM: 30 · TPM: 60,000 · Daily tokens: 1,000,000
+    #   Note: limits temporarily reduced due to high demand on gpt-oss-120b.
+    # Key differentiator: ~20x faster than GPU — ~2,000-3,000 tok/s on wafer hardware.
+    #
+    # ── Last fetched: 2026-03-30 ─────────────────────────────────────────────
+    #
+    # Current active models:
+    #   gpt-oss-120b                 OpenAI open-weight 120B (Apache 2); configurable reasoning
+    #                                  budget; RECOMMENDED DEFAULT — ultra-fast wafer inference
+    #   qwen-3-235b-a22b-instruct-2507  Qwen3 235B MoE on Cerebras (22B active params); powerful
+    #   llama3.1-8b                  Llama 3.1 8B — fast and light fallback
+    #
+    # Deprecated (migrate away from):
+    #   llama-3.3-70b                ⚠️ DEPRECATED 2026-02-16 → migrate to gpt-oss-120b
+    #   qwen-3-32b                   ⚠️ DEPRECATED 2026-02-16 → migrate to gpt-oss-120b
+
+  sambanova:
+    description: >-
+      SambaNova — permanent free tier: 10-30 RPM, 20M tok/day. RDU hardware.
+      Llama 4 Scout/Maverick + DeepSeek models free. Best for large open models.
+    has_free_trial: true
+    api_key_env_var: "SAMBANOVA_API_KEY"
+    base_url: "https://api.sambanova.ai/v1"
+    # Llama 4 Scout — 4M context, fast, comparable to GPT-4o mini
+    default_model: "Meta-Llama-4-Scout-17B-16E-Instruct"
+    context_window: 4194304
+    #
+    # Free tier (permanent, no CC; + $5 intro credits valid 30 days):
+    #   8B  models:  30 RPM free  (Developer: 45 RPM)
+    #   70B models:  20 RPM free  (Developer: 30 RPM)
+    #   405B+ models: 10 RPM free (Developer: 15 RPM)
+    #   Daily tokens: 20M
+    # Speed highlight: DeepSeek-R1 at ~200 tok/s on SambaNova RDU.
+    #
+    # ── Last fetched: 2026-03-30 ─────────────────────────────────────────────
+    #
+    # Llama 4 (latest Meta generation):
+    #   Meta-Llama-4-Scout-17B-16E-Instruct    Llama 4 Scout MoE (109B total/17B active); 4M ctx; RECOMMENDED DEFAULT
+    #   Llama-4-Maverick-17B-128E-Instruct     Llama 4 Maverick MoE (402B total/17B active); 4M ctx; beats Claude 3.7 Sonnet
+    #
+    # Llama 3 (stable generation):
+    #   Meta-Llama-3.3-70B-Instruct            Llama 3.3 70B; 131K ctx; solid general-purpose
+    #   Meta-Llama-3.1-8B-Instruct             Llama 3.1 8B; fast and lightweight
+    #   Llama-3.3-Swallow-70B-Instruct-v0.4   Llama 3.3 Swallow — Japanese-tuned 70B
+    #
+    # DeepSeek reasoning:
+    #   DeepSeek-R1-0528             DeepSeek R1 (May 2028 snapshot) — CoT reasoning specialist
+    #   DeepSeek-R1-Distill-Llama-70B  R1 knowledge distilled into Llama 70B
+    #   DeepSeek-V3-0324             DeepSeek V3 (March 2024) — general flagship
+    #   DeepSeek-V3.1                DeepSeek V3.1 — updated flagship
+    #   DeepSeek-V3.1-Terminus       V3.1 Terminus variant
+    #   DeepSeek-V3.2                DeepSeek V3.2 — latest V3 generation
+    #
+    # Qwen:
+    #   Qwen3-235B                   Qwen3 235B MoE — powerful multilingual
+    #   Qwen3-32B                    Qwen3 32B — strong reasoning + tool use
+    #
+    # Other:
+    #   MiniMax-M2.5                 MiniMax M2.5 — long-context multimodal
+    #   gpt-oss-120b                 GPT-OSS 120B (OpenAI open-weight) also available here
+    #
+    # Embedding (not chat-compatible):
+    #   E5-Mistral-7B-Instruct       E5-Mistral embedding model
+    #
+    # Google Gemma:
+    #   gemma-3-12b-it               Gemma 3 12B instruction-tuned
 
 
 # ==============================================================================
@@ -166,6 +499,8 @@ api_key:
 # Browser-login providers. Useful when API-key auth is not desired.
 oauth:
   gemini:
+    description: "Google Gemini via OAuth (Vertex AI scope) — for projects needing browser-based auth."
+    has_free_trial: true
     oauth_provider_name: "google"
     oauth_scopes:
       - "https://www.googleapis.com/auth/cloud-platform"

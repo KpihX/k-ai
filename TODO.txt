@@ -1,0 +1,298 @@
+--- ━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ #    ┃ Model                          ┃
+┡━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ 1    │ llama3.1-8b                    │
+│ 2    │ qwen-3-235b-a22b-instruct-2507 │
+└──────┴────────────────────────────────┘
+╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────── User ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ hi                                                                                                                                                                                                                                         │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+Give Feedback / Get Help: https://github.com/BerriAI/litellm/issues/new
+LiteLLM.Info: If you need to debug this error, use `litellm._turn_on_debug()'.
+
+
+Give Feedback / Get Help: https://github.com/BerriAI/litellm/issues/new
+LiteLLM.Info: If you need to debug this error, use `litellm._turn_on_debug()'.
+
+LLM error: LiteLLM error: litellm.NotFoundError: NotFoundError: OpenAIException - Model llama-3.3-70b does not exist or you do not have access to it.
+You: 
+
+*** il faut vraiment eviter d'halluciner e mettre le vrais modles (va checker sur le net) ou mieux lance get_moles pour chaque provider question de mettre la liste à jour ds config
+
+- ive Feedback / Get Help: https://github.com/BerriAI/litellm/issues/new
+LiteLLM.Info: If you need to debug this error, use `litellm._turn_on_debug()'.
+
+Boot greeting skipped: Authentication failed: litellm.AuthenticationError: AuthenticationError: DashscopeException - Incorrect API key provided. For details, see: https://help.aliyun.com/zh/model-studio/error-code#apikey-error
+You: 
+alors que le clé dAPI est correct j'ai regeneré meme, update sync  ; donc le pb n'est pas coté clé d'api
+
+
+- desync entre 00-models.yaml (mistral) et vertiable modele par defaut)
+
+
+- description pour chaque model (champ qui explique si cas gratuit ce qu'on a comme quota, à quoi s'attendre..)
+  - et donc recevable via /.. ou en demandant à l'ia -> car centralisé ds le noyau
+  - - en cas pb llm : on liste les descriptions des free triers pour les essayer
+  - si possible on suit meme les quotas restants des free triers
+
+
+
+  ┏━━━━━━┳━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ #    ┃ Provider            ┃ Auth    ┃ Default Model                       ┃
+┡━━━━━━╇━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ 1    │ ollama              │ no_auth │ phi4-mini:latest                    │
+│ 2    │ anthropic           │ api_key │ claude-sonnet-4-6                   │
+│ 3    │ cerebras            │ api_key │ llama3.3-70b                        │
+│ 4    │ dashscope (current) │ api_key │ qwen-turbo                          │
+│ 5    │ gemini              │ api_key │ gemini-2.5-flash                    │
+│ 6    │ groq                │ api_key │ qwen/qwen3-32b                      │
+│ 7    │ mistral             │ api_key │ mistral-small-latest                │
+│ 8    │ openai              │ api_key │ gpt-4o                              │
+│ 9    │ sambanova           │ api_key │ Meta-Llama-4-Scout-17B-16E-Instruct │
+│ 10   │ xai                 │ api_key │ grok-3-fast-beta                    │
+└──────┴─────────────────────┴─────────┴─────────────────────────────────────┘
+Usage: /provider set <number|name> 
+╭────────────────────────────────────────────────────────────────────────────────────────────────────────────── Tool Proposal ───────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Set Config  config  High impact                                                                                                                                                                                                            │
+│ ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── │
+│ ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────── Justification ─────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ │
+│ │ Triggered explicitly via slash command.                                                                                                                                                                                                │ │
+│ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ │
+│ ╭─────────────────────────────────────────────────────────────────────────────────────────────────────────── Approval Policy ────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ │
+│ │  Effective         ask (default)                                                                                                                                                                                                       │ │
+│ │  Default           ask                                                                                                                                                                                                                 │ │
+│ │  Session override  -                                                                                                                                                                                                                   │ │
+│ │  Global override   -                                                                                                                                                                                                                   │ │
+│ │  Protected         False                                                                                                                                                                                                               │ │
+│ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ │
+│ ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────── Config Change ─────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ │
+│ │  Key      model                                                                                                                                                                                                                        │ │
+│ │  Value    ''                                                                                                                                                                                                                           │ │
+│ │  Persist  True                                                                                                                                                                                                                         │ │
+│ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ │
+╰────────────────────────────────────────────────────────────────────────────── Validation required Press Enter/Y to approve, N to cancel, Ctrl+C to interrupt ──────────────────────────────────────────────────────────────────────────────╯
+Error: 'ChatSession' object has no attribute '_show_notice'
+--- ━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ #    ┃ Model                          ┃
+┡━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ 1    │ llama3.1-8b                    │
+│ 2    │ qwen-3-235b-a22b-instruct-2507 │
+└──────┴────────────────────────────────┘
+╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────── User ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ hi                                                                                                                                                                                                                                         │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+Give Feedback / Get Help: https://github.com/BerriAI/litellm/issues/new
+LiteLLM.Info: If you need to debug this error, use `litellm._turn_on_debug()'.
+
+
+Give Feedback / Get Help: https://github.com/BerriAI/litellm/issues/new
+LiteLLM.Info: If you need to debug this error, use `litellm._turn_on_debug()'.
+
+LLM error: LiteLLM error: litellm.NotFoundError: NotFoundError: OpenAIException - Model llama-3.3-70b does not exist or you do not have access to it.
+You: 
+
+*** il faut vraiment eviter d'halluciner e mettre le vrais modles (va checker sur le net) ou mieux lance get_moles pour chaque provider question de mettre la liste à jour ds config
+
+- ive Feedback / Get Help: https://github.com/BerriAI/litellm/issues/new
+LiteLLM.Info: If you need to debug this error, use `litellm._turn_on_debug()'.
+
+Boot greeting skipped: Authentication failed: litellm.AuthenticationError: AuthenticationError: DashscopeException - Incorrect API key provided. For details, see: https://help.aliyun.com/zh/model-studio/error-code#apikey-error
+You: 
+alors que le clé dAPI est correct j'ai regeneré meme, update sync  ; donc le pb n'est pas coté clé d'api
+
+
+- desync entre 00-models.yaml (mistral) et vertiable modele par defaut)
+
+
+- description pour chaque model (champ qui explique si cas gratuit ce qu'on a comme quota, à quoi s'attendre..)
+  - et donc recevable via /.. ou en demandant à l'ia -> car centralisé ds le noyau
+  - - en cas pb llm : on liste les descriptions des free triers pour les essayer
+  - si possible on suit meme les quotas restants des free triers
+
+
+
+  ┏━━━━━━┳━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ #    ┃ Provider            ┃ Auth    ┃ Default Model                       ┃
+┡━━━━━━╇━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ 1    │ ollama              │ no_auth │ phi4-mini:latest                    │
+│ 2    │ anthropic           │ api_key │ claude-sonnet-4-6                   │
+│ 3    │ cerebras            │ api_key │ llama3.3-70b                        │
+│ 4    │ dashscope (current) │ api_key │ qwen-turbo                          │
+│ 5    │ gemini              │ api_key │ gemini-2.5-flash                    │
+│ 6    │ groq                │ api_key │ qwen/qwen3-32b                      │
+│ 7    │ mistral             │ api_key │ mistral-small-latest                │
+│ 8    │ openai              │ api_key │ gpt-4o                              │
+│ 9    │ sambanova           │ api_key │ Meta-Llama-4-Scout-17B-16E-Instruct │
+│ 10   │ xai                 │ api_key │ grok-3-fast-beta                    │
+└──────┴─────────────────────┴─────────┴─────────────────────────────────────┘
+Usage: /provider set <number|name> 
+╭────────────────────────────────────────────────────────────────────────────────────────────────────────────── Tool Proposal ───────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Set Config  config  High impact                                                                                                                                                                                                            │
+│ ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── │
+│ ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────── Justification ─────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ │
+│ │ Triggered explicitly via slash command.                                                                                                                                                                                                │ │
+│ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ │
+│ ╭─────────────────────────────────────────────────────────────────────────────────────────────────────────── Approval Policy ────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ │
+│ │  Effective         ask (default)                                                                                                                                                                                                       │ │
+│ │  Default           ask                                                                                                                                                                                                                 │ │
+│ │  Session override  -                                                                                                                                                                                                                   │ │
+│ │  Global override   -                                                                                                                                                                                                                   │ │
+│ │  Protected         False                                                                                                                                                                                                               │ │
+│ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ │
+│ ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────── Config Change ─────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ │
+│ │  Key      model                                                                                                                                                                                                                        │ │
+│ │  Value    ''                                                                                                                                                                                                                           │ │
+│ │  Persist  True                                                                                                                                                                                                                         │ │
+│ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ │
+╰────────────────────────────────────────────────────────────────────────────── Validation required Press Enter/Y to approve, N to cancel, Ctrl+C to interrupt ──────────────────────────────────────────────────────────────────────────────╯
+Error: 'ChatSession' object has no attribute '_show_notice'
+
+
+
+
+
+
+
+
+╭────────────────────────────────────────────────────────────────────────────────────────────────────────── Tool Result Set Config ──────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│  Key       model                                                                                                                                                                                                                           │
+│  Previous  ''                                                                                                                                                                                                                              │
+│  Applied   'llama3.1-8b'                                                                                                                                                                                                                   │
+│  Saved     /home/kpihx/.k-ai/config.yaml                                                                                                                                                                                                   │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────── Success config ──────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭───────────────────────────────────────────────────────────────────────────────────────────────────────────── Runtime Updated ──────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ cerebras / llama3.1-8b                                                                                                                                                                                                 temp 0.7   max 4096 │
+│ ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── │
+│ Session            e5043701                                                                                            Type             classic                                                                                            │
+│ CWD                /home/kpihx                                                                                                                                                                                                             │
+│ Context            0 / 131,072 tok  (0.0%)                                                                             Auth             api_key                                                                                            │
+│ Compaction         104,857 tok  (80%)                                                                                  Remaining        131,072 tok                                                                                        │
+│ Tokens             26,381 in / 0 out / 0 total (estimated)                                                             History          0 msgs                                                                                             │
+│ Stream             True                                                                                                                                                                                                                    │
+│ Skills             none                                                                                                Catalog          26 discovered                                                                                      │
+│ Hooks              No hooks discovered.                                                                                Hook cfg         0 matcher(s)                                                                                       │
+│ MCP                9 server(s) | 220 tool(s) | 0 resource(s) | 0 prompt(s)                                             Catalog          9 server(s) / 220 tool(s) / 0 resource(s) / 0 prompt(s)                                            │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────── User ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ hi                                                                                                                                                                                                                                         │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+Give Feedback / Get Help: https://github.com/BerriAI/litellm/issues/new
+LiteLLM.Info: If you need to debug this error, use `litellm._turn_on_debug()'.
+
+Context length exceeded. Use /compact or /clear.
+
+
+
+
+╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────── User ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ hi                                                                                                                                                                                                                                         │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+Give Feedback / Get Help: https://github.com/BerriAI/litellm/issues/new
+LiteLLM.Info: If you need to debug this error, use `litellm._turn_on_debug()'.
+
+Context length exceeded. Use /compact or /clear.
+New classic session started.
+╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────── User ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ hi                                                                                                                                                                                                                                         │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+Give Feedback / Get Help: https://github.com/BerriAI/litellm/issues/new
+LiteLLM.Info: If you need to debug this error, use `litellm._turn_on_debug()'.
+
+Context length exceeded. Use /compact or /clear.
+You: /
+
+
+
+
+
+
+
+
+
+- transformer en skills nos fonctions k-ai (allger la longueur des json echangés)
+
+
+- ds le tableaux des modeles il faut toutes les infos (desc n max de token / contexte ..)
+
+- limite exa ?
+
+- shotgub
+
+
+
+
+
+
+
+
+
+╭────────────────────────────────────────────────────────────────────────────────────────────────────────── Tool Result Set Config ──────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│  Key       model                                                                                                                                                                                                                           │
+│  Previous  ''                                                                                                                                                                                                                              │
+│  Applied   'llama3.1-8b'                                                                                                                                                                                                                   │
+│  Saved     /home/kpihx/.k-ai/config.yaml                                                                                                                                                                                                   │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────── Success config ──────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭───────────────────────────────────────────────────────────────────────────────────────────────────────────── Runtime Updated ──────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ cerebras / llama3.1-8b                                                                                                                                                                                                 temp 0.7   max 4096 │
+│ ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── │
+│ Session            e5043701                                                                                            Type             classic                                                                                            │
+│ CWD                /home/kpihx                                                                                                                                                                                                             │
+│ Context            0 / 131,072 tok  (0.0%)                                                                             Auth             api_key                                                                                            │
+│ Compaction         104,857 tok  (80%)                                                                                  Remaining        131,072 tok                                                                                        │
+│ Tokens             26,381 in / 0 out / 0 total (estimated)                                                             History          0 msgs                                                                                             │
+│ Stream             True                                                                                                                                                                                                                    │
+│ Skills             none                                                                                                Catalog          26 discovered                                                                                      │
+│ Hooks              No hooks discovered.                                                                                Hook cfg         0 matcher(s)                                                                                       │
+│ MCP                9 server(s) | 220 tool(s) | 0 resource(s) | 0 prompt(s)                                             Catalog          9 server(s) / 220 tool(s) / 0 resource(s) / 0 prompt(s)                                            │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────── User ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ hi                                                                                                                                                                                                                                         │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+Give Feedback / Get Help: https://github.com/BerriAI/litellm/issues/new
+LiteLLM.Info: If you need to debug this error, use `litellm._turn_on_debug()'.
+
+Context length exceeded. Use /compact or /clear.
+
+
+
+
+╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────── User ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ hi                                                                                                                                                                                                                                         │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+Give Feedback / Get Help: https://github.com/BerriAI/litellm/issues/new
+LiteLLM.Info: If you need to debug this error, use `litellm._turn_on_debug()'.
+
+Context length exceeded. Use /compact or /clear.
+New classic session started.
+╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────── User ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ hi                                                                                                                                                                                                                                         │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+Give Feedback / Get Help: https://github.com/BerriAI/litellm/issues/new
+LiteLLM.Info: If you need to debug this error, use `litellm._turn_on_debug()'.
+
+Context length exceeded. Use /compact or /clear.
+You: /
+
+
+
+
+
+
+
+
+
+- transformer en skills nos fonctions k-ai (allger la longueur des json echangés)
+
+
+- ds le tableaux des modeles il faut toutes les infos (desc n max de token / contexte ..)
+
+- shotgub
+

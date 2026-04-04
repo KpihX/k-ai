@@ -109,9 +109,28 @@ class _RuntimePromptCompleter(Completer):
 
     def get_completions(self, document: Document, complete_event):
         text_before = document.text_before_cursor
-        if text_before.lstrip().startswith("/"):
+        stripped = text_before.lstrip()
+
+        # /model set <token> → suggest model names from cache (substring match)
+        if stripped.startswith("/model set "):
+            token = stripped[len("/model set "):]
+            for model in self._session.command_handler._last_model_choices:
+                if not token or token.lower() in model.lower():
+                    yield Completion(model, start_position=-len(token))
+            return
+
+        # /provider set <token> → suggest provider names (sync, direct from loaded config)
+        if stripped.startswith("/provider set "):
+            token = stripped[len("/provider set "):]
+            for p, *_ in self._session.command_handler._provider_choices():
+                if not token or token.lower() in p.lower():
+                    yield Completion(p, start_position=-len(token))
+            return
+
+        if stripped.startswith("/"):
             yield from self._slash.get_completions(document, complete_event)
             return
+
         token = self._skill_token_before_cursor(text_before)
         if not token:
             return
@@ -1879,6 +1898,8 @@ class ChatSession:
 
         # Build prompt session with styled prompt, slash autocompletion, and multiline support
         runtime_completer = _RuntimePromptCompleter(self)
+        # Pre-warm model cache so /model set autocomplete is ready from first keystroke
+        asyncio.get_event_loop().create_task(self.command_handler._list_models_for_current_provider())
 
         pt_style = PTStyle.from_dict({
             "prompt": "bold ansicyan",
